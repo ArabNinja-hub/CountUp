@@ -123,7 +123,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
                 <Icon className="w-4 h-4" />
                 <span>{item.label}</span>
                 {item.badge !== undefined && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 leading-tight">
+                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 leading-tight">
                     {item.badge}
                   </span>
                 )}

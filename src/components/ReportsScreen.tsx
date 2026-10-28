@@ -35,10 +35,13 @@ export const ReportsScreen: React.FC = () => {
     if (timeView === 'day') {
       startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     } else if (timeView === 'week') {
-      const day = now.getDay();
-      const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Start on Monday
-      startDate = new Date(now.setDate(diff));
-      startDate.setHours(0, 0, 0, 0);
+      // Start on Monday without mutating `now` (preserves the month view below)
+      const day = now.getDay(); // 0 = Sunday
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      monday.setDate(monday.getDate() + mondayOffset);
+      monday.setHours(0, 0, 0, 0);
+      startDate = monday;
     } else {
       // Month
       startDate = new Date(now.getFullYear(), now.getMonth(), 1);

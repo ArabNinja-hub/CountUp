@@ -251,7 +251,11 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const itemsCol = collection(db, 'shops', shop.id, 'items');
     const unsubItems = onSnapshot(itemsCol, (snap) => {
       const remoteItems: Item[] = [];
-      snap.forEach((d) => remoteItems.push(d.data() as Item));
+      snap.forEach((d) => {
+        const data = d.data() as Item & { isDeleted?: boolean };
+        // Skip items that were soft-deleted so they don't reappear after a sync
+        if (!data.isDeleted) remoteItems.push(data);
+      });
       if (remoteItems.length > 0) {
         setItems(remoteItems);
       }

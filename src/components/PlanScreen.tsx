@@ -409,7 +409,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
                           {plan.name}
                         </span>
                         {plan.discountBadge && (
-                          <span className="text-[10px] font-bold bg-amber-500 text-slate-950 px-2 py-0.2 rounded-md">
+                          <span className="text-[10px] font-bold bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md">
                             {plan.discountBadge}
                           </span>
                         )}

@@ -294,11 +294,11 @@ export const CreditBookScreen: React.FC = () => {
                           {customer.name}
                         </span>
                         {owesMoney ? (
-                          <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-200">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-200">
                             Owes
                           </span>
                         ) : (
-                          <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
                             Cleared
                           </span>
                         )}
@@ -424,7 +424,7 @@ export const CreditBookScreen: React.FC = () => {
                         <div>
                           <div className="flex items-center space-x-1.5">
                             <span
-                              className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                 tx.type === 'sale'
                                   ? 'bg-amber-100 text-amber-900'
                                   : 'bg-emerald-100 text-emerald-800'

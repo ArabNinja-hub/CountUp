@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
+  "name": "countup-zambia",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Countup — a mobile-first sales book, credit tracker, and stock manager in Zambian kwacha for kiosks, market stalls, and small shops.",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -29,7 +30,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

@@ -519,7 +519,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 <Receipt className="w-4 h-4 text-emerald-800" />
                 <h2 className="font-bold text-sm text-slate-900">Current Sale</h2>
                 {cart.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">
                     {totalItemsCount} items
                   </span>
                 )}
