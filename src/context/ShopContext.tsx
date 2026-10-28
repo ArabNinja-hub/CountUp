@@ -16,6 +16,8 @@ import { auth, db, handleFirestoreError, OperationType, testConnection } from '.
 import {
   signInAnonymously,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   onAuthStateChanged,
   User,
@@ -117,6 +119,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return cached ? JSON.parse(cached) : null;
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  
+  // Refs for useEffect to avoid stale closures
+  const shopRef = React.useRef(shop);
+  shopRef.current = shop;
+  const isLoadingRef = React.useRef(isLoading);
+  isLoadingRef.current = isLoading;
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [language, setLanguageState] = useState<Language>(() => {
     const saved = localStorage.getItem('countup_language') as Language;
@@ -222,16 +230,46 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('countup_pending_queue', JSON.stringify(pendingQueue));
   }, [pendingQueue]);
 
-  // Auth state listener
+  // Auth state listener + handle Google redirect result
   useEffect(() => {
+    let mounted = true;
+
+    // Check for redirect result on initial load
+    const checkRedirectResult = async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (result?.user) {
+          // Redirect completed successfully, user is now signed in
+          console.log('Google redirect result:', result.user.email);
+          // The onAuthStateChanged will fire next, but we can also handle here
+        }
+      } catch (e) {
+        console.warn('Redirect result check:', e);
+      }
+    };
+
+    void checkRedirectResult();
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!mounted) return;
       setUser(currentUser);
       if (currentUser?.email === 'ronisherbwalya@gmail.com') {
         setIsAdmin(true);
       }
+      
+      // Handle Google sign-in user if they just signed in via redirect/popup
+      // and don't have a shop yet
+      if (currentUser && !shopRef.current && !isLoadingRef.current) {
+        // Check if this is a Google user (has provider data)
+        const isGoogleUser = currentUser.providerData.some(p => p.providerId === 'google.com');
+        if (isGoogleUser) {
+          await handleGoogleUser(currentUser);
+        }
+      }
+      
       setIsLoading(false);
     });
-    return () => unsubscribe();
+    return () => { mounted = false; unsubscribe(); };
   }, []);
 
   // Listen to Firestore real-time updates when shop is loaded and online
@@ -391,107 +429,125 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Google Sign-In (Official provider enabled by default in AI Studio Firebase)
+  // Google Sign-In - uses redirect for better mobile/preview compatibility
   const loginWithGoogle = async (): Promise<boolean> => {
     setIsLoading(true);
     try {
       const provider = new GoogleAuthProvider();
-      const cred = await signInWithPopup(auth, provider);
-      const googleUser = cred.user;
-      setUser(googleUser);
-
-      if (googleUser.email === 'ronisherbwalya@gmail.com') {
-        setIsAdmin(true);
-      }
-
-      // Check if user already has an existing shop in Firestore
-      if (navigator.onLine) {
-        try {
-          const q = query(collection(db, 'shops'));
-          const snap = await getDocs(q);
-          let foundShop: Shop | null = null;
-          snap.forEach((d) => {
-            const data = d.data() as Shop;
-            if (data.ownerUid === googleUser.uid || (data.ownerEmail && data.ownerEmail === googleUser.email)) {
-              foundShop = data;
-            }
-          });
-          if (foundShop) {
-            setShop(foundShop);
-            setIsLoading(false);
-            return true;
-          }
-        } catch (e) {
-          console.warn('Google user shop lookup note:', e);
-        }
-      }
-
-      // If user already had a local shop, link it
-      if (shop) {
-        const linkedShop: Shop = {
-          ...shop,
-          ownerUid: googleUser.uid,
-          ownerEmail: googleUser.email || undefined,
-        };
-        setShop(linkedShop);
-        if (navigator.onLine) {
-          try {
-            await setDoc(doc(db, 'shops', shop.id), linkedShop, { merge: true });
-          } catch (e) {
-            console.warn('Link shop firestore note:', e);
-          }
-        }
-      } else {
-        // Create new shop for Google user
-        const newShopId = `shop_${googleUser.uid.substring(0, 15)}`;
-        const now = new Date();
-        const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-        const autoShop: Shop = {
-          id: newShopId,
-          name: googleUser.displayName ? `${googleUser.displayName}'s Kiosk` : 'My Zambian Kiosk',
-          ownerPhone: googleUser.phoneNumber || '0977 123 456',
-          ownerEmail: googleUser.email || undefined,
-          ownerUid: googleUser.uid,
-          pin: '1234',
-          planStatus: 'trial',
-          planType: 'trial',
-          createdAt: now.toISOString(),
-          trialEndsAt: trialEnds.toISOString(),
-          planExpiryDate: trialEnds.toISOString(),
-          isDeactivated: false,
-          currency: 'ZMW',
-        };
-        const seeded = DEFAULT_ZAMBIAN_ITEMS.map((item, idx) => ({
-          id: `item_${newShopId}_${idx}`,
-          shopId: newShopId,
-          name: item.name,
-          buyingPrice: item.buyingPrice,
-          sellingPrice: item.sellingPrice,
-          quantity: item.quantity,
-          lowStockThreshold: item.lowStockThreshold,
-          createdAt: now.toISOString(),
-          updatedAt: now.toISOString(),
-        }));
-        setShop(autoShop);
-        setItems(seeded);
-        if (navigator.onLine) {
-          try {
-            await setDoc(doc(db, 'shops', newShopId), autoShop);
-            for (const item of seeded) {
-              await setDoc(doc(db, 'shops', newShopId, 'items', item.id), item);
-            }
-          } catch (e) {
-            console.warn('Auto shop firestore creation note:', e);
-          }
-        }
-      }
-
-      setIsLoading(false);
+      provider.addScope('email');
+      provider.addScope('profile');
+      
+      // Use redirect for better compatibility (especially in preview/iframe environments)
+      await signInWithRedirect(auth, provider);
+      // Note: After redirect, the page reloads and onAuthStateChanged handles the rest
+      // This function won't return until after redirect completes (page reload)
       return true;
     } catch (err: any) {
-      console.error('Google Sign-in error:', err);
-      setIsLoading(false);
-      return false;
+      console.error('Google Sign-In redirect error:', err);
+      // Fallback to popup if redirect fails
+      try {
+        const provider = new GoogleAuthProvider();
+        provider.addScope('email');
+        provider.addScope('profile');
+        const cred = await signInWithPopup(auth, provider);
+        const googleUser = cred.user;
+        setUser(googleUser);
+        await handleGoogleUser(googleUser);
+        setIsLoading(false);
+        return true;
+      } catch (popupErr) {
+        console.error('Google Sign-In popup error:', popupErr);
+        setIsLoading(false);
+        return false;
+      }
+    }
+  };
+
+  // Handle Google user after authentication (used by both redirect and popup)
+  const handleGoogleUser = async (googleUser: User) => {
+    if (googleUser.email === 'ronisherbwalya@gmail.com') {
+      setIsAdmin(true);
+    }
+
+    // Check if user already has an existing shop in Firestore
+    if (navigator.onLine) {
+      try {
+        const q = query(collection(db, 'shops'));
+        const snap = await getDocs(q);
+        let foundShop: Shop | null = null;
+        snap.forEach((d) => {
+          const data = d.data() as Shop;
+          if (data.ownerUid === googleUser.uid || (data.ownerEmail && data.ownerEmail === googleUser.email)) {
+            foundShop = data;
+          }
+        });
+        if (foundShop) {
+          setShop(foundShop);
+          return;
+        }
+      } catch (e) {
+        console.warn('Google user shop lookup note:', e);
+      }
+    }
+
+    // If user already had a local shop, link it
+    if (shop) {
+      const linkedShop: Shop = {
+        ...shop,
+        ownerUid: googleUser.uid,
+        ownerEmail: googleUser.email || undefined,
+      };
+      setShop(linkedShop);
+      if (navigator.onLine) {
+        try {
+          await setDoc(doc(db, 'shops', shop.id), linkedShop, { merge: true });
+        } catch (e) {
+          console.warn('Link shop firestore note:', e);
+        }
+      }
+    } else {
+      // Create new shop for Google user
+      const newShopId = `shop_${googleUser.uid.substring(0, 15)}`;
+      const now = new Date();
+      const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const autoShop: Shop = {
+        id: newShopId,
+        name: googleUser.displayName ? `${googleUser.displayName}'s Kiosk` : 'My Zambian Kiosk',
+        ownerPhone: googleUser.phoneNumber || '0977 123 456',
+        ownerEmail: googleUser.email || undefined,
+        ownerUid: googleUser.uid,
+        pin: '1234',
+        planStatus: 'trial',
+        planType: 'trial',
+        createdAt: now.toISOString(),
+        trialEndsAt: trialEnds.toISOString(),
+        planExpiryDate: trialEnds.toISOString(),
+        isDeactivated: false,
+        currency: 'ZMW',
+      };
+      const seeded = DEFAULT_ZAMBIAN_ITEMS.map((item, idx) => ({
+        id: `item_${newShopId}_${idx}`,
+        shopId: newShopId,
+        name: item.name,
+        buyingPrice: item.buyingPrice,
+        sellingPrice: item.sellingPrice,
+        quantity: item.quantity,
+        lowStockThreshold: item.lowStockThreshold,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      }));
+      setShop(autoShop);
+      setItems(seeded);
+      if (navigator.onLine) {
+        try {
+          await setDoc(doc(db, 'shops', newShopId), autoShop);
+          for (const item of seeded) {
+            await setDoc(doc(db, 'shops', newShopId, 'items', item.id), item);
+          }
+        } catch (e) {
+          console.warn('Auto shop firestore creation note:', e);
+        }
+      }
     }
   };
 

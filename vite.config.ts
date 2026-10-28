@@ -4,6 +4,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // GitHub Pages deployment - repository is at https://github.com/ArabNinja-hub/CountUp
+    base: '/CountUp/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
