@@ -1,0 +1,131 @@
+{
+  "entities": {
+    "Shop": {
+      "title": "Shop",
+      "description": "A small business shop, kiosk or stall in Zambia",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "ownerPhone": { "type": "string", "maxLength": 20 },
+        "ownerEmail": { "type": "string", "maxLength": 100 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "planStatus": { "type": "string", "enum": ["trial", "active", "grace", "expired"] },
+        "planType": { "type": "string", "enum": ["monthly", "quarterly", "biannual", "trial"] },
+        "trialEndsAt": { "type": "string" },
+        "planExpiryDate": { "type": "string" },
+        "isDeactivated": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "ownerPhone", "ownerUid", "planStatus"]
+    },
+    "Item": {
+      "title": "Item",
+      "description": "Product or good in shop stock",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "shopId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "buyingPrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "quantity": { "type": "number" },
+        "lowStockThreshold": { "type": "number" },
+        "lastSoldAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "buyingPrice", "sellingPrice", "quantity", "lowStockThreshold"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Sales record in Zambian Kwacha",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "shopId": { "type": "string", "maxLength": 128 },
+        "totalAmount": { "type": "number" },
+        "totalCost": { "type": "number" },
+        "profit": { "type": "number" },
+        "paymentType": { "type": "string", "enum": ["cash", "credit"] },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "customerPhone": { "type": "string", "maxLength": 20 },
+        "itemsCount": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["totalAmount", "paymentType", "createdAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer in the credit book",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "shopId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "totalOwed": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "totalOwed"]
+    },
+    "CreditPayment": {
+      "title": "CreditPayment",
+      "description": "Repayment of debt by a credit customer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "shopId": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "amount": { "type": "number" },
+        "note": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["customerId", "amount", "createdAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Operating expense recorded by shop owner",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "shopId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "enum": ["rent", "transport", "restock", "council_fee", "helper_wage", "other"] },
+        "amount": { "type": "number" },
+        "note": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["category", "amount", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/shops/{shopId}": {
+      "schema": "Shop",
+      "description": "Root shop entity"
+    },
+    "/shops/{shopId}/items/{itemId}": {
+      "schema": "Item",
+      "description": "Products in shop stock"
+    },
+    "/shops/{shopId}/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Sales records"
+    },
+    "/shops/{shopId}/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Credit book customers"
+    },
+    "/shops/{shopId}/credit_payments/{paymentId}": {
+      "schema": "CreditPayment",
+      "description": "Payment records toward customer credit"
+    },
+    "/shops/{shopId}/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Shop expenses"
+    }
+  }
+}

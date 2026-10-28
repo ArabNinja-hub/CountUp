@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isPlatformAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == "ronisherbwalya@gmail.com" ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isShopOwner(shopId) {
+      return isSignedIn() && (
+        request.auth.uid == shopId ||
+        (exists(/databases/$(database)/documents/shops/$(shopId)) &&
+         get(/databases/$(database)/documents/shops/$(shopId)).data.ownerUid == request.auth.uid)
+      );
+    }
+
+    // Test connection doc used for client connectivity verification
+    match /test/connection {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Admins registry
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isPlatformAdmin();
+    }
+
+    // Shops
+    match /shops/{shopId} {
+      // Platform admin can read all shops; shop owner can read their own shop
+      allow get: if isShopOwner(shopId) || isPlatformAdmin();
+      allow list: if isPlatformAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+
+      // Create: User can create a shop with themselves as owner
+      allow create: if isSignedIn() && (
+        request.resource.data.ownerUid == request.auth.uid || isPlatformAdmin()
+      );
+
+      // Update: Shop owner can update basic info; platform admin can update any fields (extend/deactivate)
+      allow update: if isPlatformAdmin() || (
+        isShopOwner(shopId) &&
+        request.resource.data.ownerUid == resource.data.ownerUid
+      );
+
+      // Subcollections
+      match /items/{itemId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+
+      match /sales/{saleId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+
+      match /customers/{customerId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+
+      match /credit_payments/{paymentId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+
+      match /expenses/{expenseId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+    }
+  }
+}
