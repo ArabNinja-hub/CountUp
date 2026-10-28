@@ -5,7 +5,6 @@ import {
   Phone,
   KeyRound,
   ArrowRight,
-  Sparkles,
   Shield,
   Lock,
   FileText,
@@ -13,8 +12,6 @@ import {
   EyeOff,
   Loader2,
   AlertCircle,
-  Building2,
-  ShoppingBag,
 } from 'lucide-react';
 import { Language } from '../types';
 import logo from '/brand/logo.png';
@@ -25,7 +22,6 @@ export const AuthScreen: React.FC = () => {
     loginWithPhoneAndPin,
     loginWithGoogle,
     registerNewShop,
-    loadDemoShop,
     isLoading,
     t,
     language,
@@ -65,7 +61,9 @@ export const AuthScreen: React.FC = () => {
       }
       const success = await registerNewShop(shopName, cleanPhone, cleanPin);
       if (!success) {
-        setErrorMessage('Could not create shop. Check connection and try again.');
+        setErrorMessage(
+          'Could not create this shop. That phone number may already be registered — log in instead, or check your connection and try again.'
+        );
       }
     } else {
       const success = await loginWithPhoneAndPin(cleanPhone, cleanPin);
@@ -78,29 +76,12 @@ export const AuthScreen: React.FC = () => {
   const handleGoogleSignIn = async () => {
     setGoogleLoading(true);
     setErrorMessage('');
-    try {
-      // Use redirect for better mobile/preview compatibility
-      const { signInWithRedirect, GoogleAuthProvider } = await import('firebase/auth');
-      const { auth } = await import('../firebase/config');
-      const provider = new GoogleAuthProvider();
-      provider.addScope('email');
-      provider.addScope('profile');
-      await signInWithRedirect(auth, provider);
-      // Note: After redirect, the page reloads and onAuthStateChanged handles the rest
-    } catch (err) {
-      console.error('Google Sign-In error:', err);
-      // Fallback to popup if redirect fails
-      try {
-        const { signInWithPopup, GoogleAuthProvider } = await import('firebase/auth');
-        const { auth } = await import('../firebase/config');
-        const provider = new GoogleAuthProvider();
-        await signInWithPopup(auth, provider);
-      } catch (popupErr) {
-        console.error('Google Sign-In popup error:', popupErr);
-        setErrorMessage('Google Sign-In unavailable. Please use phone + PIN instead.');
-      }
-    } finally {
-      setGoogleLoading(false);
+    // Shared with the context so there is exactly one sign-in implementation
+    // (redirect first, popup fallback, shop lookup/creation afterwards).
+    const success = await loginWithGoogle();
+    setGoogleLoading(false);
+    if (!success) {
+      setErrorMessage('Google Sign-In unavailable. Please use phone + PIN instead.');
     }
   };
 
@@ -295,36 +276,6 @@ export const AuthScreen: React.FC = () => {
             </svg>
             <span>{googleLoading ? 'Redirecting...' : 'Continue with Google'}</span>
           </button>
-
-          {/* Demo Shops */}
-          <div className="mt-4 pt-4 border-t border-slate-200">
-            <div className="flex items-center space-x-1.5 mb-2">
-              <Sparkles className="w-4 h-4 text-emerald-700" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                {t.demoShops}
-              </h3>
-            </div>
-            <p className="text-[11px] text-slate-500 mb-3">{t.demoHint}</p>
-
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { id: 'kiosk', name: 'Bwino Kiosk', location: 'Lusaka', icon: Store },
-                { id: 'stall', name: 'Soweto Stall', location: 'Market', icon: Building2 },
-                { id: 'minimart', name: 'Chilenje Shop', location: 'Grocer', icon: ShoppingBag },
-              ].map((demo) => (
-                <button
-                  key={demo.id}
-                  onClick={() => void loadDemoShop(demo.id as 'kiosk' | 'stall' | 'minimart')}
-                  disabled={isLoading}
-                  className="bg-slate-50 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-slate-800 hover:text-emerald-950 rounded-xl p-2.5 text-center active:scale-95 transition-all disabled:opacity-50"
-                >
-                  <demo.icon className="w-4 h-4 mx-auto mb-1 text-emerald-700" />
-                  <span className="block text-xs font-bold leading-tight">{demo.name}</span>
-                  <span className="text-[10px] text-slate-500">{demo.location}</span>
-                </button>
-              ))}
-            </div>
-          </div>
 
           {/* Trust badges */}
           <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-center space-x-4 text-[10px] text-slate-400">

@@ -15,9 +15,16 @@ runs fully **offline** on a phone, and syncs to the cloud when a connection retu
 - **Stock Book** — add/edit items with buying & selling prices, low-stock warnings, one-tap restock.
 - **Credit Book** — customer ledger, balance tracking, and polite **WhatsApp** reminders in 3 languages.
 - **Reports** — daily / weekly / monthly sales, net profit, cash vs. MoMo, top sellers, expenses. CSV export + shareable summary.
-- **Subscriptions** — 30-day free trial with Mobile Money (Lipila) top-ups via Airtel, MTN, and Zamtel.
+- **Subscriptions** — 30-day free trial, then monthly / 3-month / 6-month plans paid by
+  Mobile Money (Airtel, MTN, Zamtel) through the contact channels in the Plan screen.
 - **Offline-first** — every action is saved locally and queued for background sync.
 - **Localized** — full UI in English, Ichibemba, and Chinyanja.
+- **Platform admin** — the owner account can see every shop, extend plans, and suspend
+  a shop. A suspended shop keeps its records (viewable and exportable) but cannot record
+  new sales.
+
+Every new shop starts with an **empty** stock book: the owner enters their own items.
+There is no sample data, demo shop, or pre-filled inventory anywhere in the app.
 
 ---
 
@@ -41,7 +48,7 @@ runs fully **offline** on a phone, and syncs to the cloud when a connection retu
 
 ### Prerequisites
 - **Node.js** 22+ (the Firebase SDK targets Node 24; warnings on 22 are non-blocking)
-- A package manager (`npm`, `pnpm`, or `bun`)
+- npm (this repo ships `package-lock.json`; use `npm ci` in CI)
 
 ### Install
 ```bash
@@ -83,6 +90,12 @@ The app needs no API keys. `VITE_BASE_PATH` is the one value that matters for
 deployment — it is read by both `vite.config.ts` and `server.ts` through
 `base-path.ts`, so the built asset URLs and the server's mount point can never drift
 apart. Set it to `/` when hosting a custom domain from the site root.
+
+### Support & payment contacts
+`src/config/support.ts` is the single source of truth for the WhatsApp number, phone
+number, payment email, and the platform-owner account used by the Plan screen, the
+admin console, and `firestore.rules`. Change it there — never inline — and keep
+`PLATFORM_ADMIN_EMAIL` identical to the address in `firestore.rules`.
 
 ### Firebase
 `firebase-applet-config.json` holds the web app credentials. Security rules live in
@@ -149,7 +162,7 @@ CountUp/
     ├── main.tsx
     ├── index.css           # Tailwind + custom animations
     ├── components/         # Screen + shared UI components (LegalPages included)
-    ├── config/             # Pricing & payment config
+    ├── config/             # Pricing (plans.ts), support contacts & admin (support.ts)
     ├── context/            # ShopProvider (state, auth, sync)
     ├── firebase/           # Firebase init + helpers
     ├── i18n/               # EN / BEM / NYA translations
@@ -157,6 +170,36 @@ CountUp/
 ```
 
 ---
+
+## Before you launch
+
+Things a deploy does **not** do for you:
+
+1. **Publish the Firestore rules.** `firestore.rules` is the only thing enforcing
+   per-shop data isolation — rules must be live before real shops register:
+   `firebase deploy --only firestore:rules --project <project-id>`.
+2. **Authorize the origin.** Firebase console → Authentication → Settings →
+   Authorized domains must list `arabninja-hub.github.io` (and any custom domain),
+   otherwise Google sign-in fails silently.
+3. **Enable sign-in methods.** Phone/PIN shops use Anonymous auth under the hood, so
+   *Anonymous* and *Google* must both be enabled in the Firebase console.
+4. **Confirm the contact details** in `src/config/support.ts` (WhatsApp, phone, payment
+   email). These are the channels customers are told to pay through.
+5. **Match the admin account** in `PLATFORM_ADMIN_EMAIL` and `firestore.rules`; only
+   that Google account can open the admin console.
+6. **Plan activation is manual.** Payment happens off-app (WhatsApp / call / email), and
+   the owner activates the shop with the admin console's “+30 / +90 days” action. There
+   is no automated Mobile Money callback in the static build.
+
+### Known limitations of the client-only auth model
+
+- A shop's 4-digit PIN is verified against the shop document, so **phone + PIN login
+  works on the device that created the shop** (the local cache) and anywhere the
+  Firestore rules let the signed-in user read that shop document. Cross-device PIN
+  login would need a backend (Cloud Function) that verifies the PIN out-of-band; the
+  Google sign-in path is the supported way to use a shop on a second device today.
+- Data isolation relies entirely on `firestore.rules`; there is no server between the
+  browser and Firestore.
 
 ## License
 

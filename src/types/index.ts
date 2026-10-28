@@ -10,7 +10,7 @@ export interface Shop {
   ownerPhone: string;
   ownerEmail?: string;
   ownerUid: string;
-  pin: string; // 4-digit numeric PIN
+  pin?: string; // 4-digit numeric PIN; absent for Google-only accounts (they sign in with Google)
   planStatus: PlanStatus;
   planType: PlanBillingCycle | 'trial';
   createdAt: string; // ISO string

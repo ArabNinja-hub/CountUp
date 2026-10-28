@@ -43,8 +43,8 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         content: [
           'Provide the Service: Enable offline-first sales recording, stock management, credit tracking, and reports.',
           'Sync & Backup: Securely sync your data to Firebase when online so you never lose records.',
-          'Subscription Management: Track trial/plan status, send renewal reminders via in-app notifications.',
-          'Improve the App: Anonymous usage analytics to fix bugs and prioritize features for Zambian kiosks.',
+          'Subscription Management: Track your trial/plan status and show in-app renewal reminders.',
+          
           'Legal Compliance: Respond to valid legal requests from Zambian authorities.',
         ],
       },
@@ -52,10 +52,10 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         title: 'Data Storage & Security',
         content: [
           'Local-First: All data lives on your phone first (IndexedDB/localStorage). Works fully offline.',
-          'Cloud Sync (Optional): When online, data syncs to Google Firebase (servers in Europe/US). Firebase is SOC 2, ISO 27001 certified.',
+          'Cloud Sync: When online, your records sync to Google Firebase (Google Cloud infrastructure). Firebase is SOC 2 and ISO 27001 certified.',
           'Encryption: Data in transit uses TLS 1.3. Data at rest encrypted by Firebase.',
-          'Authentication: 4-digit PIN + phone number. Optional Google Sign-In links your account.',
-          'No Access: We (Countup team) cannot see your sales, stock, or customer data. It is scoped to your shop ID.',
+          'Authentication: 4-digit PIN + phone number, or Google Sign-In. Your PIN is stored with your shop record so you can log in; it is never displayed after you set it.',
+          'Access Control: Every shop\'s records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. The single platform-owner account can access shop records only for support, billing, or legal compliance.',
         ],
       },
       {
@@ -63,17 +63,16 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         content: [
           'Access: Request a copy of all your data anytime via the app\'s Export feature.',
           'Correction: Edit any item, sale, customer, or expense directly in the app.',
-          'Deletion: Delete your shop account from Settings → this removes all data from our servers within 30 days.',
+          'Deletion: Settings → Delete Shop & Data permanently removes your shop, stock, sales, credit and expense records. It is immediate and cannot be undone.',
           'Portability: Export your sales, stock, and customer data as CSV/JSON anytime.',
-          'Objection: Opt out of analytics in Settings (does not affect core features).',
+          
         ],
       },
       {
         title: 'Data Retention',
         content: [
           'Active Shops: Data retained while your subscription is active.',
-          'Expired/Cancelled: Data kept for 90 days after expiry for grace period recovery, then permanently deleted.',
-          'Demo Shops: Auto-deleted after 7 days of inactivity.',
+          'Expired/Cancelled: Records are kept read-only after a plan expires so you can renew and keep trading; nothing is auto-deleted. You can delete everything yourself at any time (Settings → Delete Shop & Data).',
           'Backups: Firebase retains deleted data for up to 30 days in backup systems.',
         ],
       },
@@ -161,7 +160,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Termination',
         content: [
-          'By You: Delete your account anytime in Settings. Data deleted per retention policy.',
+          'By You: Settings → Delete Shop & Data removes your shop immediately and permanently.',
           'By Us: We may suspend/terminate for: non-payment after grace period, illegal activity, abuse of platform, extended inactivity (180+ days).',
           'Effect: On termination, sales recording stops. Data export remains available for 90 days.',
         ],
@@ -191,11 +190,11 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Security Measures',
         content: [
-          { icon: Lock, text: 'End-to-End Encryption: All data transmitted via TLS 1.3. Firebase encrypts data at rest with AES-256.' },
+          { icon: Lock, text: 'Encryption: Data is encrypted in transit (TLS 1.3) and at rest by Google Cloud. This is transport and storage encryption, not end-to-end encryption of your device.' },
           { icon: Shield, text: 'Authentication: 4-digit PIN + phone number. Optional Google OAuth 2.0 for account linking.' },
           { icon: User, text: 'Data Isolation: Each shop\'s data is scoped to a unique shop ID. Shops cannot access each other\'s data.' },
           { icon: CheckCircle, text: 'Offline-First Architecture: Your data never leaves your device until you\'re online and choose to sync.' },
-          { icon: AlertCircle, text: 'No Plaintext Secrets: PINs are never sent to servers. Mobile Money PINs entered directly on operator\'s USSD prompt.' },
+          { icon: AlertCircle, text: 'PIN Handling: Your 4-digit PIN is stored with your shop record and readable only by your account and the platform-owner account. Mobile Money PINs are never entered in Countup — they go straight into your operator\'s own prompt.' },
           { icon: Globe, text: 'Firebase Security Rules: Firestore rules enforce shop-level data isolation at the database level.' },
         ],
       },
@@ -208,17 +207,18 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'shops/{shopId}/customers/{customerId}: Read/Write only if request.auth.uid == shop.ownerUid',
           'shops/{shopId}/credit_payments/{paymentId}: Read/Write only if request.auth.uid == shop.ownerUid',
           'shops/{shopId}/expenses/{expenseId}: Read/Write only if request.auth.uid == shop.ownerUid',
-          'Admin functions (platform owner only): Restricted to specific UID (ronisherbwalya@gmail.com)',
+          'Platform owner: Can read shop records for support, billing, and plan administration, and can extend or suspend a shop',
+          'Shop deletion: Only the shop owner (or the platform owner) can permanently delete a shop',
         ],
       },
       {
         title: 'What We Protect Against',
         content: [
-          'Unauthorized Access: PIN + phone required. Rate-limited login attempts.',
-          'Data Tampering: Firestore validates all writes. Soft-deletes preserve audit trail.',
-          'Man-in-the-Middle: TLS 1.3 on all connections. Certificate pinning via Firebase SDK.',
-          'Cross-Site Scripting: React auto-escapes. Content Security Policy headers on hosting.',
-          'Data Loss: Local-first + cloud sync + Firebase automated backups (point-in-time recovery).',
+          'Unauthorized Access: Each shop requires its own PIN or Google account, and Firestore rules reject reads or writes from any other account.',
+          'Data Tampering: Firestore validates every write against the security rules, and removed stock items are soft-deleted so they cannot silently reappear.',
+          'Man-in-the-Middle: All traffic to Firebase uses TLS. Always open Countup from its official address (arabninja-hub.github.io/CountUp).',
+          'Cross-Site Scripting: React escapes all rendered values; the app never injects raw HTML.',
+          'Data Loss: Local-first storage plus cloud sync. Export a JSON backup monthly from Settings → Export My Data.',
         ],
       },
       {
@@ -228,7 +228,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'Do not share your PIN. Countup staff will NEVER ask for it.',
           'Enable phone screen lock (fingerprint/face/PIN).',
           'Log out if sharing your phone: Menu → Log Out.',
-          'Verify subscription payments only via official Lipila prompt (Airtel/MTN/Zamtel branded).',
+          'Pay subscriptions only through the contact channels listed in the Plan screen, and confirm the shop ID before paying.',
           'Export your data monthly as backup: Reports → Export.',
         ],
       },
@@ -237,7 +237,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         content: [
           'If you suspect unauthorized access: Change PIN immediately, log out all sessions, contact support@countup.app.',
           'We notify affected users within 72 hours of any confirmed data breach per Zambia Data Protection Act.',
-          'Firebase provides audit logs for all data access. We review monthly.',
+          'Access to the platform-owner admin console is limited to the owner account, and Google Cloud keeps API-level audit logs.',
         ],
       },
       {

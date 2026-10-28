@@ -56,6 +56,10 @@ service cloud.firestore {
         request.resource.data.ownerUid == resource.data.ownerUid
       );
 
+      // Delete: the shop owner can permanently delete their own shop and records
+      // (backs the deletion right promised in the Privacy Policy).
+      allow delete: if isShopOwner(shopId) || isPlatformAdmin();
+
       // Subcollections
       match /items/{itemId} {
         allow read, write: if isShopOwner(shopId) || isPlatformAdmin();

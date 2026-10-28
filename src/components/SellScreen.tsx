@@ -39,6 +39,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     recordSale,
     t,
     subscription,
+    isShopDeactivated,
     shop,
   } = useShop();
 
@@ -356,8 +357,22 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
   return (
     <div className="w-full">
+      {/* Top Warning Banner if the shop is suspended by the platform owner */}
+      {isShopDeactivated && (
+        <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-950 flex items-start space-x-2.5 shadow-xs">
+          <Lock className="w-5 h-5 text-rose-600 shrink-0" />
+          <div className="text-xs">
+            <p className="font-bold">This shop has been deactivated</p>
+            <p className="text-rose-700">
+              New sales are locked. Your records are safe and can still be viewed and exported.
+              Contact support to reactivate your shop.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Top Warning Banner if subscription expired */}
-      {!subscription.canRecordSales && (
+      {!isShopDeactivated && !subscription.canRecordSales && (
         <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-950 flex items-center justify-between shadow-xs">
           <div className="flex items-center space-x-2.5">
             <Lock className="w-5 h-5 text-rose-600 shrink-0" />

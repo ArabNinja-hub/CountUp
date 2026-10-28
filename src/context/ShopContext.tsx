@@ -8,11 +8,11 @@ import {
   Expense,
   Language,
   ActiveTab,
-  PlanBillingCycle,
 } from '../types';
 import { translations, Translations } from '../i18n/translations';
-import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
-import { auth, db, handleFirestoreError, OperationType, testConnection } from '../firebase/config';
+import { getSubscriptionInfo } from '../config/plans';
+import { PLATFORM_ADMIN_EMAIL } from '../config/support';
+import { auth, db, testConnection } from '../firebase/config';
 import {
   signInAnonymously,
   signInWithPopup,
@@ -26,6 +26,7 @@ import {
   doc,
   setDoc,
   getDoc,
+  deleteDoc,
   collection,
   onSnapshot,
   query,
@@ -49,9 +50,11 @@ interface ShopContextType {
   loginWithPhoneAndPin: (phone: string, pin: string) => Promise<boolean>;
   loginWithGoogle: () => Promise<boolean>;
   registerNewShop: (name: string, phone: string, pin: string) => Promise<boolean>;
-  loadDemoShop: (demoType: 'kiosk' | 'stall' | 'minimart') => Promise<void>;
   logout: () => Promise<void>;
-  toggleAdminMode: () => void;
+  /** Permanently deletes this shop and every record that belongs to it. */
+  deleteShopAccount: () => Promise<boolean>;
+  /** Verifies the current PIN and replaces it with a new 4-digit PIN. */
+  changePin: (currentPin: string, newPin: string) => Promise<boolean>;
 
   // Language & Tab
   language: Language;
@@ -80,7 +83,8 @@ interface ShopContextType {
 
   // Subscription
   subscription: ReturnType<typeof getSubscriptionInfo>;
-  upgradePlan: (planId: PlanBillingCycle, momoPhone: string, operator: string) => Promise<boolean>;
+  /** True when the platform owner has suspended this shop. Sales are locked. */
+  isShopDeactivated: boolean;
 
   // Offline & Sync
   isOnline: boolean;
@@ -97,20 +101,6 @@ interface ShopContextType {
 }
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
-
-// Initial sample inventory for Zambian kiosks
-const DEFAULT_ZAMBIAN_ITEMS = [
-  { name: 'Sugar 1kg (Illovo)', buyingPrice: 28, sellingPrice: 34, quantity: 24, lowStockThreshold: 5 },
-  { name: 'Mealie Meal 25kg (Breakfast)', buyingPrice: 280, sellingPrice: 320, quantity: 15, lowStockThreshold: 4 },
-  { name: 'Cooking Oil 750ml', buyingPrice: 38, sellingPrice: 46, quantity: 18, lowStockThreshold: 5 },
-  { name: 'Boom Washing Paste 400g', buyingPrice: 19, sellingPrice: 25, quantity: 30, lowStockThreshold: 6 },
-  { name: 'Eggs (Tray of 30)', buyingPrice: 75, sellingPrice: 90, quantity: 8, lowStockThreshold: 3 },
-  { name: 'Matches (Box)', buyingPrice: 10, sellingPrice: 15, quantity: 45, lowStockThreshold: 10 },
-  { name: 'Candles (6 Pack)', buyingPrice: 20, sellingPrice: 26, quantity: 12, lowStockThreshold: 4 },
-  { name: 'Coca-Cola 300ml', buyingPrice: 8, sellingPrice: 12, quantity: 28, lowStockThreshold: 6 },
-  { name: 'Panado Pain Tablets', buyingPrice: 15, sellingPrice: 22, quantity: 35, lowStockThreshold: 8 },
-  { name: 'Salt 500g', buyingPrice: 7, sellingPrice: 10, quantity: 20, lowStockThreshold: 5 },
-];
 
 export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -253,7 +243,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (!mounted) return;
       setUser(currentUser);
-      if (currentUser?.email === 'ronisherbwalya@gmail.com') {
+      if (currentUser?.email === PLATFORM_ADMIN_EMAIL) {
         setIsAdmin(true);
       }
       
@@ -465,7 +455,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Handle Google user after authentication (used by both redirect and popup)
   const handleGoogleUser = async (googleUser: User) => {
-    if (googleUser.email === 'ronisherbwalya@gmail.com') {
+    if (googleUser.email === PLATFORM_ADMIN_EMAIL) {
       setIsAdmin(true);
     }
 
@@ -513,10 +503,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const autoShop: Shop = {
         id: newShopId,
         name: googleUser.displayName ? `${googleUser.displayName}'s Kiosk` : 'My Zambian Kiosk',
-        ownerPhone: googleUser.phoneNumber || '0977 123 456',
+        ownerPhone: googleUser.phoneNumber || '',
         ownerEmail: googleUser.email || undefined,
         ownerUid: googleUser.uid,
-        pin: '1234',
         planStatus: 'trial',
         planType: 'trial',
         createdAt: now.toISOString(),
@@ -525,25 +514,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isDeactivated: false,
         currency: 'ZMW',
       };
-      const seeded = DEFAULT_ZAMBIAN_ITEMS.map((item, idx) => ({
-        id: `item_${newShopId}_${idx}`,
-        shopId: newShopId,
-        name: item.name,
-        buyingPrice: item.buyingPrice,
-        sellingPrice: item.sellingPrice,
-        quantity: item.quantity,
-        lowStockThreshold: item.lowStockThreshold,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
+      // A brand-new shop starts empty — the owner adds their real stock.
       setShop(autoShop);
-      setItems(seeded);
+      setItems([]);
+      setSales([]);
+      setCustomers([]);
+      setCreditPayments([]);
+      setExpenses([]);
       if (navigator.onLine) {
         try {
           await setDoc(doc(db, 'shops', newShopId), autoShop);
-          for (const item of seeded) {
-            await setDoc(doc(db, 'shops', newShopId, 'items', item.id), item);
-          }
         } catch (e) {
           console.warn('Auto shop firestore creation note:', e);
         }
@@ -608,14 +588,29 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cleanPhone = phone.replace(/\D/g, '');
       const shopId = `shop_${cleanPhone}`;
 
-      let currentUser = await ensureFirebaseAuth();
+      const currentUser = await ensureFirebaseAuth();
+
+      // Refuse to overwrite a shop that already exists for this phone number.
+      // Without this check, re-registering a known number silently replaced the
+      // existing shop's records (or failed on a security rule with an obscure error).
+      if (navigator.onLine && currentUser) {
+        try {
+          const existing = await getDoc(doc(db, 'shops', shopId));
+          if (existing.exists()) {
+            setIsLoading(false);
+            return false;
+          }
+        } catch (e) {
+          console.warn('Shop availability check note:', e);
+        }
+      }
 
       const now = new Date();
       const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
       const newShop: Shop = {
         id: shopId,
-        name: name.trim() || 'My Zambian Kiosk',
+        name: name.trim(),
         ownerPhone: phone.trim(),
         ownerUid: currentUser?.uid || shopId,
         pin: pin.trim(),
@@ -628,43 +623,33 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currency: 'ZMW',
       };
 
-      // Seed initial default items
-      const seededItems: Item[] = DEFAULT_ZAMBIAN_ITEMS.map((item, index) => ({
-        id: `item_${Date.now()}_${index}`,
-        shopId,
-        name: item.name,
-        buyingPrice: item.buyingPrice,
-        sellingPrice: item.sellingPrice,
-        quantity: item.quantity,
-        lowStockThreshold: item.lowStockThreshold,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      // Set local state immediately for fast response
+      // A new shop starts with an empty stock book — the owner enters their own items.
       setShop(newShop);
-      setItems(seededItems);
+      setItems([]);
       setSales([]);
       setCustomers([]);
       setCreditPayments([]);
       setExpenses([]);
 
-      // Persist to Firestore or queue
+      // Persist to Firestore or queue for the next connection
       if (navigator.onLine && currentUser) {
         try {
           await setDoc(doc(db, 'shops', shopId), newShop);
-          for (const item of seededItems) {
-            await setDoc(doc(db, 'shops', shopId, 'items', item.id), item);
-          }
         } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `shops/${shopId}`);
+          const code = (e as { code?: string })?.code;
+          if (code === 'permission-denied') {
+            // The number is already registered to another account. Don't leave the
+            // user in a shop that only exists on this phone.
+            setShop(null);
+            localStorage.removeItem('countup_active_shop');
+            setIsLoading(false);
+            return false;
+          }
+          console.warn('Shop creation sync note, queued for retry:', e);
           queueAction('item', `shops/${shopId}`, newShop);
         }
       } else {
         queueAction('item', `shops/${shopId}`, newShop);
-        seededItems.forEach((item) => {
-          queueAction('item', `shops/${shopId}/items/${item.id}`, item);
-        });
       }
 
       setIsLoading(false);
@@ -673,169 +658,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error('Registration error:', error);
       setIsLoading(false);
       return false;
-    }
-  };
-
-  // Demo shop loader for instant 1-tap testing
-  const loadDemoShop = async (demoType: 'kiosk' | 'stall' | 'minimart') => {
-    setIsLoading(true);
-    let currentUser = await ensureFirebaseAuth();
-
-    const demoNames = {
-      kiosk: 'Bwino General Kiosk (Lusaka)',
-      stall: 'Soweto Market Stall #42',
-      minimart: 'Chilenje Grocer & Provisions',
-    };
-
-    const demoPhones = {
-      kiosk: '0977 123 456',
-      stall: '0966 987 654',
-      minimart: '0955 555 111',
-    };
-
-    const cleanPhone = demoPhones[demoType].replace(/\D/g, '');
-    const shopId = `shop_demo_${demoType}`;
-    const now = new Date();
-    const trialEnds = new Date(now.getTime() + 27 * 24 * 60 * 60 * 1000); // 27 days left in trial
-
-    const demoShop: Shop = {
-      id: shopId,
-      name: demoNames[demoType],
-      ownerPhone: demoPhones[demoType],
-      ownerUid: currentUser?.uid || shopId,
-      pin: '1234',
-      planStatus: 'trial',
-      planType: 'trial',
-      createdAt: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-      trialEndsAt: trialEnds.toISOString(),
-      planExpiryDate: trialEnds.toISOString(),
-      isDeactivated: false,
-      currency: 'ZMW',
-    };
-
-    const seededItems: Item[] = DEFAULT_ZAMBIAN_ITEMS.map((item, idx) => ({
-      id: `item_${shopId}_${idx}`,
-      shopId,
-      name: item.name,
-      buyingPrice: item.buyingPrice,
-      sellingPrice: item.sellingPrice,
-      quantity: idx === 1 ? 2 : idx === 4 ? 3 : item.quantity, // Make a couple items low stock for preview!
-      lowStockThreshold: item.lowStockThreshold,
-      lastSoldAt: idx < 4 ? new Date(now.getTime() - idx * 3600000).toISOString() : undefined,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    }));
-
-    // Demo customers with debt
-    const demoCustomers: Customer[] = [
-      {
-        id: `cust_${shopId}_1`,
-        shopId,
-        name: 'Ba Mwila (Teacher)',
-        phone: '0977 888 999',
-        totalOwed: 145,
-        createdAt: new Date(now.getTime() - 4 * 86400000).toISOString(),
-        updatedAt: new Date(now.getTime() - 1 * 86400000).toISOString(),
-      },
-      {
-        id: `cust_${shopId}_2`,
-        shopId,
-        name: 'Mama Bwalya',
-        phone: '0966 222 333',
-        totalOwed: 85,
-        createdAt: new Date(now.getTime() - 7 * 86400000).toISOString(),
-        updatedAt: new Date(now.getTime() - 2 * 86400000).toISOString(),
-      },
-      {
-        id: `cust_${shopId}_3`,
-        shopId,
-        name: 'Uncle James (Mechanic)',
-        phone: '0955 444 777',
-        totalOwed: 210,
-        createdAt: new Date(now.getTime() - 10 * 86400000).toISOString(),
-        updatedAt: new Date(now.getTime() - 3 * 86400000).toISOString(),
-      },
-    ];
-
-    // Demo sales
-    const demoSales: Sale[] = [
-      {
-        id: `sale_${shopId}_1`,
-        shopId,
-        items: [{ itemId: seededItems[0].id, name: seededItems[0].name, quantity: 2, buyingPrice: 28, sellingPrice: 34 }],
-        itemsCount: 2,
-        totalAmount: 68,
-        totalCost: 56,
-        profit: 12,
-        paymentType: 'cash',
-        createdAt: new Date(now.getTime() - 2 * 3600000).toISOString(),
-      },
-      {
-        id: `sale_${shopId}_2`,
-        shopId,
-        items: [{ itemId: seededItems[1].id, name: seededItems[1].name, quantity: 1, buyingPrice: 280, sellingPrice: 320 }],
-        itemsCount: 1,
-        totalAmount: 320,
-        totalCost: 280,
-        profit: 40,
-        paymentType: 'credit',
-        customerId: demoCustomers[0].id,
-        customerName: demoCustomers[0].name,
-        customerPhone: demoCustomers[0].phone,
-        createdAt: new Date(now.getTime() - 5 * 3600000).toISOString(),
-      },
-      {
-        id: `sale_${shopId}_3`,
-        shopId,
-        items: [
-          { itemId: seededItems[3].id, name: seededItems[3].name, quantity: 1, buyingPrice: 19, sellingPrice: 25 },
-          { itemId: seededItems[7].id, name: seededItems[7].name, quantity: 2, buyingPrice: 8, sellingPrice: 12 },
-        ],
-        itemsCount: 3,
-        totalAmount: 49,
-        totalCost: 35,
-        profit: 14,
-        paymentType: 'momo',
-        momoOperator: 'airtel',
-        createdAt: new Date(now.getTime() - 12 * 3600000).toISOString(),
-      },
-    ];
-
-    // Demo expenses
-    const demoExpenses: Expense[] = [
-      {
-        id: `exp_${shopId}_1`,
-        shopId,
-        category: 'council_fee',
-        amount: 15,
-        note: 'Daily market levy Lusaka City Council',
-        createdAt: new Date(now.getTime() - 8 * 3600000).toISOString(),
-      },
-      {
-        id: `exp_${shopId}_2`,
-        shopId,
-        category: 'transport',
-        amount: 40,
-        note: 'Canter delivery from Soweto market',
-        createdAt: new Date(now.getTime() - 24 * 3600000).toISOString(),
-      },
-    ];
-
-    setShop(demoShop);
-    setItems(seededItems);
-    setCustomers(demoCustomers);
-    setSales(demoSales);
-    setExpenses(demoExpenses);
-    setCreditPayments([]);
-    setIsLoading(false);
-
-    // Save demo shop to Firestore if online
-    if (navigator.onLine && currentUser) {
-      try {
-        await setDoc(doc(db, 'shops', shopId), demoShop);
-      } catch (e) {
-        console.warn('Demo shop Firestore sync note:', e);
-      }
     }
   };
 
@@ -849,12 +671,75 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setExpenses([]);
   };
 
-  const toggleAdminMode = () => {
-    setIsAdmin((prev) => !prev);
+  // Change the shop PIN (verifies the current one first)
+  const changePin = async (currentPin: string, newPin: string): Promise<boolean> => {
+    if (!shop || !shop.pin) return false;
+    if (!/^\d{4}$/.test(newPin)) return false;
+    if (shop.pin !== currentPin.trim()) return false;
+
+    const updatedShop: Shop = { ...shop, pin: newPin };
+    setShop(updatedShop);
+
+    if (navigator.onLine && auth.currentUser) {
+      try {
+        await setDoc(doc(db, 'shops', shop.id), { pin: newPin }, { merge: true });
+      } catch (e) {
+        queueAction('item', `shops/${shop.id}`, { pin: newPin });
+      }
+    } else {
+      queueAction('item', `shops/${shop.id}`, { pin: newPin });
+    }
+    return true;
+  };
+
+  // Permanently delete the shop document and all of its records.
+  // Backs the deletion right promised in the Privacy Policy.
+  const deleteShopAccount = async (): Promise<boolean> => {
+    if (!shop) return false;
+    const activeShop = shop;
+    setIsLoading(true);
+
+    if (navigator.onLine && auth.currentUser) {
+      const subcollections = ['items', 'sales', 'customers', 'credit_payments', 'expenses'];
+      try {
+        for (const name of subcollections) {
+          const snap = await getDocs(collection(db, 'shops', activeShop.id, name));
+          await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+        }
+        await deleteDoc(doc(db, 'shops', activeShop.id));
+      } catch (e) {
+        // Keep the owner signed in so they can retry once a connection returns.
+        console.error('Shop deletion failed:', e);
+        setIsLoading(false);
+        return false;
+      }
+    }
+
+    // Clear every local trace on this device, whatever happened in the cloud.
+    for (const key of [
+      'countup_active_shop',
+      'countup_items',
+      'countup_sales',
+      'countup_customers',
+      'countup_payments',
+      'countup_expenses',
+      'countup_pending_queue',
+    ]) {
+      localStorage.removeItem(key);
+    }
+    setShop(null);
+    setItems([]);
+    setSales([]);
+    setCustomers([]);
+    setCreditPayments([]);
+    setExpenses([]);
+    setPendingQueue([]);
+    setIsLoading(false);
+    return true;
   };
 
   // Subscription info
-  const subscription = shop
+  const planSubscription = shop
     ? getSubscriptionInfo(shop.createdAt, shop.planExpiryDate, shop.planStatus)
     : {
         daysRemaining: 30,
@@ -865,11 +750,20 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         canRecordSales: true,
       };
 
+  // A shop suspended by the platform owner is read-only: records stay viewable and
+  // exportable, but new sales are locked. Without this the admin "Deactivate"
+  // action had no effect on the shop it was applied to.
+  const isShopDeactivated = Boolean(shop?.isDeactivated);
+  const subscription = isShopDeactivated
+    ? { ...planSubscription, canRecordSales: false }
+    : planSubscription;
+
   // Record a sale (under 15-second flow)
   const recordSale = async (
     saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>
   ): Promise<string> => {
     if (!shop) throw new Error('No active shop');
+    if (shop.isDeactivated) throw new Error('This shop has been deactivated');
     const saleId = `sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const nowIso = new Date().toISOString();
 
@@ -1150,45 +1044,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
   };
 
-  // Upgrade / Renew Plan via Mobile Money
-  const upgradePlan = async (
-    planId: PlanBillingCycle,
-    momoPhone: string,
-    operator: string
-  ): Promise<boolean> => {
-    if (!shop) return false;
-    const selectedPlan = SUBSCRIPTION_PLANS[planId];
-    if (!selectedPlan) return false;
-
-    // Calculate new expiry date based on existing expiry or now
-    const now = new Date();
-    const currentExpiry = shop.planExpiryDate ? new Date(shop.planExpiryDate) : now;
-    const baseDate = currentExpiry.getTime() > now.getTime() ? currentExpiry : now;
-    const additionalMs = selectedPlan.months * 30 * 24 * 60 * 60 * 1000;
-    const newExpiry = new Date(baseDate.getTime() + additionalMs);
-
-    const updatedShop: Shop = {
-      ...shop,
-      planStatus: 'active',
-      planType: planId,
-      planExpiryDate: newExpiry.toISOString(),
-    };
-
-    setShop(updatedShop);
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, 'shops', shop.id), updatedShop, { merge: true });
-      } catch (e) {
-        queueAction('item', `shops/${shop.id}`, updatedShop);
-      }
-    } else {
-      queueAction('item', `shops/${shop.id}`, updatedShop);
-    }
-
-    return true;
-  };
-
   // Admin Controls
   const adminExtendShop = async (shopId: string, days: number) => {
     const targetShop = allShops.find((s) => s.id === shopId) || (shop?.id === shopId ? shop : null);
@@ -1246,9 +1101,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginWithPhoneAndPin,
         loginWithGoogle,
         registerNewShop,
-        loadDemoShop,
         logout,
-        toggleAdminMode,
+        deleteShopAccount,
+        changePin,
         language,
         setLanguage,
         t,
@@ -1269,7 +1124,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         addExpense,
         deleteExpense,
         subscription,
-        upgradePlan,
+        isShopDeactivated,
         isOnline,
         pendingSyncCount: pendingQueue.length,
         isSyncing,

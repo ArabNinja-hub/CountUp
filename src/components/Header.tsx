@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useShop } from '../context/ShopContext';
 import {
   Wifi,
@@ -15,8 +16,13 @@ import {
   Lock,
   Shield,
   FileText,
+  ShieldCheck,
+  Trash2,
+  KeyRound,
 } from 'lucide-react';
 import { Language } from '../types';
+import { DeleteShopModal } from './DeleteShopModal';
+import { ChangePinModal } from './ChangePinModal';
 import icon from '/brand/icon.png';
 
 interface HeaderProps {
@@ -36,10 +42,13 @@ export const Header: React.FC<HeaderProps> = () => {
     logout,
     items,
     customers,
+    isAdmin,
   } = useShop();
 
   const [showLangMenu, setShowLangMenu] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showPinModal, setShowPinModal] = useState(false);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
 
@@ -80,7 +89,7 @@ export const Header: React.FC<HeaderProps> = () => {
               {shop?.name || 'Countup'}
             </h1>
             <p className="text-[11px] text-emerald-200/90 truncate flex items-center space-x-1.5">
-              <span>{shop?.ownerPhone}</span>
+              <span>{shop?.ownerPhone || shop?.ownerEmail || '—'}</span>
               <span className="text-emerald-500">·</span>
               <span className="text-emerald-300 font-medium">ZMW (K)</span>
             </p>
@@ -172,7 +181,7 @@ export const Header: React.FC<HeaderProps> = () => {
               <div className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 text-slate-900 z-50">
                 <div className="px-3.5 py-2.5 border-b border-slate-100 bg-slate-50/60 rounded-t-xl">
                   <p className="text-xs font-bold text-slate-900 truncate">{shop?.name}</p>
-                  <p className="text-[11px] text-slate-500 font-mono">{shop?.ownerPhone}</p>
+                  <p className="text-[11px] text-slate-500 font-mono">{shop?.ownerPhone || shop?.ownerEmail}</p>
                 </div>
 
                 <div className="py-1">
@@ -213,6 +222,28 @@ export const Header: React.FC<HeaderProps> = () => {
                     <span>Security</span>
                   </button>
 
+                  {isAdmin && (
+                    <button
+                      onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('open-admin')); }}
+                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                      <div className="flex-1">
+                        <p className="font-semibold">Platform Admin</p>
+                        <p className="text-[10px] text-slate-400">Shops, plans & deactivation</p>
+                      </div>
+                    </button>
+                  )}
+
+                  {/* Change PIN */}
+                  <button
+                    onClick={() => { setShowSettingsMenu(false); setShowPinModal(true); }}
+                    className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
+                  >
+                    <KeyRound className="w-4 h-4 text-slate-500" />
+                    <span>Change PIN</span>
+                  </button>
+
                   {/* Export Data */}
                   <button
                     onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('export-data')); }}
@@ -224,6 +255,17 @@ export const Header: React.FC<HeaderProps> = () => {
                 </div>
 
                 <div className="my-1 border-t border-slate-100" />
+
+                <button
+                  onClick={() => {
+                    setShowSettingsMenu(false);
+                    setShowDeleteModal(true);
+                  }}
+                  className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 text-slate-700 hover:bg-rose-50 hover:text-rose-700 transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Delete Shop &amp; Data</span>
+                </button>
 
                 <button
                   onClick={() => {
@@ -260,6 +302,9 @@ export const Header: React.FC<HeaderProps> = () => {
           </div>
         </div>
       )}
+
+      {showPinModal && <ChangePinModal onClose={() => setShowPinModal(false)} />}
+      {showDeleteModal && <DeleteShopModal onClose={() => setShowDeleteModal(false)} />}
     </header>
   );
 };
