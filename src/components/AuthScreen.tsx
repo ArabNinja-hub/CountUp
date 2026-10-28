@@ -67,25 +67,10 @@ export const AuthScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100/70 flex flex-col justify-between py-8 px-4 sm:px-6">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex flex-col justify-between py-8 px-4 sm:px-6">
       <div className="max-w-md w-full mx-auto space-y-4">
-        {/* Brand Header & Language Switch */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-2xl bg-emerald-900 border border-emerald-800 text-white flex items-center justify-center shadow-xs">
-              <Store className="w-5 h-5 text-emerald-300" />
-            </div>
-            <div>
-              <h1 className="text-xl font-black text-slate-900 tracking-tight leading-tight">
-                Countup
-              </h1>
-              <p className="text-[11px] text-emerald-800 font-semibold tracking-wide">
-                Zambian Kiosk Sales &amp; Stock Book
-              </p>
-            </div>
-          </div>
-
-          {/* Language Switch */}
+        {/* Top bar: language switch */}
+        <div className="flex items-center justify-end">
           <div className="flex items-center space-x-1 bg-white border border-slate-200/90 rounded-xl p-1 shadow-xs">
             {(['en', 'bem', 'nya'] as Language[]).map((lang) => (
               <button
@@ -101,6 +86,20 @@ export const AuthScreen: React.FC = () => {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Brand hero */}
+        <div className="flex flex-col items-center text-center pt-1">
+          <div className="h-14 flex items-center justify-center">
+            <img
+              src="/brand/logo.png"
+              alt="Countup"
+              className="h-12 w-auto object-contain select-none"
+            />
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500 font-medium tracking-wide">
+            Zambian Kiosk Sales &amp; Stock Book
+          </p>
         </div>
 
         {/* Main Card */}

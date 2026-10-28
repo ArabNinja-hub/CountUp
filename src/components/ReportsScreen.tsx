@@ -16,12 +16,14 @@ import {
   Smartphone,
   CreditCard,
   Copy,
+  Activity,
 } from 'lucide-react';
 import { ExpensesModal } from './ExpensesModal';
+import { TrendChart, TrendPoint } from './TrendChart';
 import { Expense } from '../types';
 
 export const ReportsScreen: React.FC = () => {
-  const { sales, creditPayments, expenses, deleteExpense, t, shop } = useShop();
+  const { sales, creditPayments, expenses, deleteExpense, t, shop, items } = useShop();
 
   const [timeView, setTimeView] = useState<'day' | 'week' | 'month'>('day');
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
@@ -35,10 +37,13 @@ export const ReportsScreen: React.FC = () => {
     if (timeView === 'day') {
       startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     } else if (timeView === 'week') {
-      const day = now.getDay();
-      const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Start on Monday
-      startDate = new Date(now.setDate(diff));
-      startDate.setHours(0, 0, 0, 0);
+      // Start on Monday without mutating `now` (preserves the month view below)
+      const day = now.getDay(); // 0 = Sunday
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      monday.setDate(monday.getDate() + mondayOffset);
+      monday.setHours(0, 0, 0, 0);
+      startDate = monday;
     } else {
       // Month
       startDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -97,6 +102,101 @@ export const ReportsScreen: React.FC = () => {
   const creditSalesGiven = filteredSales
     .filter((s) => s.paymentType === 'credit')
     .reduce((sum, s) => sum + s.totalAmount, 0);
+
+  // Compact currency formatting for axis/legends
+  const formatK = (v: number) =>
+    v >= 1000 ? `K ${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : Math.round(v).toString();
+
+  // ---- Business Health score -------------------------------------------------
+  const health = useMemo(() => {
+    const count = filteredSales.length;
+    const target = timeView === 'day' ? 10 : timeView === 'week' ? 60 : 250;
+    const salesScore = count === 0 ? 0 : Math.min(100, Math.round((count / target) * 100));
+
+    const margin = totalSalesAmount > 0 ? grossProfit / totalSalesAmount : 0;
+    const profitScore = totalSalesAmount === 0 ? 0 : Math.max(0, Math.min(100, Math.round((margin / 0.35) * 100)));
+
+    const creditRatio = totalSalesAmount > 0 ? creditSalesGiven / totalSalesAmount : 0;
+    const cashScore = totalSalesAmount === 0 ? 100 : Math.max(0, Math.min(100, Math.round((1 - creditRatio) * 100)));
+
+    const totalItems = items.length;
+    const lowItems = items.filter((i) => i.quantity <= i.lowStockThreshold).length;
+    const stockScore = totalItems === 0 ? 70 : Math.round(((totalItems - lowItems) / totalItems) * 100);
+
+    const overall = Math.round(salesScore * 0.3 + profitScore * 0.25 + cashScore * 0.25 + stockScore * 0.2);
+    return {
+      salesScore,
+      profitScore,
+      cashScore,
+      stockScore,
+      overall,
+      marginPct: Math.round(margin * 100),
+    };
+  }, [filteredSales, timeView, totalSalesAmount, grossProfit, creditSalesGiven, items]);
+
+  // ---- Trend series (sales & profit over the selected window) ----------------
+  const trendData: TrendPoint[] = useMemo(() => {
+    if (filteredSales.length === 0) return [];
+    const now = new Date();
+
+    if (timeView === 'day') {
+      const arr = Array.from({ length: 24 }, (_, h) => ({ label: `${h}`, sales: 0, profit: 0 }));
+      filteredSales.forEach((s) => {
+        const h = new Date(s.createdAt).getHours();
+        arr[h].sales += s.totalAmount;
+        arr[h].profit += s.profit;
+      });
+      return arr.map((p) => ({ ...p, label: `${p.label}:00` }));
+    }
+
+    if (timeView === 'week') {
+      const day = now.getDay();
+      const mondayOffset = day === 0 ? -6 : 1 - day;
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      monday.setDate(monday.getDate() + mondayOffset);
+      const base = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate()).getTime();
+      const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const arr = labels.map((label) => ({ label, sales: 0, profit: 0 }));
+      filteredSales.forEach((s) => {
+        const d = new Date(s.createdAt);
+        const idx = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - base) / 86400000);
+        if (idx >= 0 && idx < 7) {
+          arr[idx].sales += s.totalAmount;
+          arr[idx].profit += s.profit;
+        }
+      });
+      return arr;
+    }
+
+    // Month
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const arr = Array.from({ length: days }, (_, i) => ({ label: `${i + 1}`, sales: 0, profit: 0 }));
+    filteredSales.forEach((s) => {
+      const d = new Date(s.createdAt);
+      if (d.getMonth() === month && d.getFullYear() === year) {
+        arr[d.getDate() - 1].sales += s.totalAmount;
+        arr[d.getDate() - 1].profit += s.profit;
+      }
+    });
+    return arr;
+  }, [filteredSales, timeView]);
+
+  // Health rating label + colour
+  const healthMeta =
+    health.overall >= 70
+      ? { label: 'Healthy', color: 'emerald', ring: '#059669', text: 'text-emerald-700', bg: 'bg-emerald-50', bar: 'bg-emerald-500' }
+      : health.overall >= 40
+      ? { label: 'Needs Attention', color: 'amber', ring: '#d97706', text: 'text-amber-700', bg: 'bg-amber-50', bar: 'bg-amber-500' }
+      : { label: 'At Risk', color: 'rose', ring: '#e11d48', text: 'text-rose-700', bg: 'bg-rose-50', bar: 'bg-rose-500' };
+
+  const healthBars = [
+    { key: 'sales', label: 'Sales Activity', value: health.salesScore },
+    { key: 'profit', label: `Profit Margin (${health.marginPct}%)`, value: health.profitScore },
+    { key: 'cash', label: 'Cash Collection', value: health.cashScore },
+    { key: 'stock', label: 'Stock Health', value: health.stockScore },
+  ];
 
   // Top Selling Items
   const topSellingItems = useMemo(() => {
@@ -241,6 +341,85 @@ _Recorded with Countup Zambia_`;
             <Download className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">CSV</span>
           </button>
+        </div>
+      </div>
+
+      {/* Business Health + Trend */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+        {/* Health score card */}
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4 flex flex-col">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center space-x-1.5">
+              <Activity className="w-4 h-4 text-emerald-700" />
+              <h3 className="font-bold text-sm text-slate-900">Business Health</h3>
+            </div>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${healthMeta.bg} ${healthMeta.text}`}>
+              {healthMeta.label}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {/* Score ring */}
+            <div className="relative shrink-0">
+              <svg viewBox="0 0 80 80" className="w-24 h-24 -rotate-90">
+                <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="8" />
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="34"
+                  fill="none"
+                  stroke={healthMeta.ring}
+                  strokeWidth="8"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 34}
+                  strokeDashoffset={2 * Math.PI * 34 * (1 - health.overall / 100)}
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">{health.overall}</span>
+                <span className="text-[10px] text-slate-400 font-semibold">/ 100</span>
+              </div>
+            </div>
+
+            {/* Breakdown bars */}
+            <div className="flex-1 space-y-2 min-w-0">
+              {healthBars.map((b) => (
+                <div key={b.key}>
+                  <div className="flex items-center justify-between text-[11px] mb-0.5">
+                    <span className="text-slate-600 font-medium truncate">{b.label}</span>
+                    <span className="text-slate-400 tabular-nums ml-2">{b.value}</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${
+                        b.value >= 70 ? 'bg-emerald-500' : b.value >= 40 ? 'bg-amber-500' : 'bg-rose-500'
+                      }`}
+                      style={{ width: `${b.value}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Trend chart card */}
+        <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="font-bold text-sm text-slate-900 flex items-center space-x-1.5">
+              <TrendingUp className="w-4 h-4 text-emerald-700" />
+              <span>Sales &amp; Profit Trend</span>
+            </h3>
+            <div className="flex items-center space-x-3 text-[11px] text-slate-500">
+              <span className="flex items-center space-x-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" /> Sales
+              </span>
+              <span className="flex items-center space-x-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Profit
+              </span>
+            </div>
+          </div>
+          <TrendChart data={trendData} height={200} />
         </div>
       </div>
 

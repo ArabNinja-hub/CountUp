@@ -80,13 +80,13 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
   ];
 
   return (
-    <header className="sticky top-0 z-40 bg-emerald-900 border-b border-emerald-800 text-white shadow-sm">
+    <header className="sticky top-0 z-40 bg-gradient-to-r from-emerald-950 via-emerald-900 to-emerald-800 border-b border-emerald-800/80 text-white shadow-sm">
       {/* Main Bar */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
         {/* Left: Brand & Shop Info */}
         <div className="flex items-center space-x-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-emerald-800 border border-emerald-700/80 flex items-center justify-center shrink-0 shadow-xs">
-            <Store className="w-5 h-5 text-emerald-300" />
+          <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0 shadow-xs overflow-hidden backdrop-blur-sm">
+            <img src="/brand/icon.png" alt="Countup" className="w-7 h-7 object-contain" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center space-x-2">
@@ -105,8 +105,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
           </div>
         </div>
 
-        {/* Center: Desktop Navigation Tabs (Visible on md+ viewports) */}
-        <nav className="hidden md:flex items-center space-x-1 bg-emerald-950/60 p-1 rounded-xl border border-emerald-800/60">
+        {/* Center: Navigation now lives in the desktop Sidebar (md+) */}
+        <nav className="hidden items-center space-x-1 bg-emerald-950/60 p-1 rounded-xl border border-emerald-800/60">
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             const Icon = item.icon;
@@ -123,7 +123,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
                 <Icon className="w-4 h-4" />
                 <span>{item.label}</span>
                 {item.badge !== undefined && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 leading-tight">
+                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 leading-tight">
                     {item.badge}
                   </span>
                 )}

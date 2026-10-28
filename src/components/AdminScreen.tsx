@@ -198,7 +198,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
                         {s.name}
                       </h3>
                       {s.isDeactivated && (
-                        <span className="text-[10px] font-bold bg-rose-600 text-white px-1.5 py-0.2 rounded-md">
+                        <span className="text-[10px] font-bold bg-rose-600 text-white px-1.5 py-0.5 rounded-md">
                           Deactivated
                         </span>
                       )}
