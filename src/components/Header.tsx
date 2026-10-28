@@ -105,8 +105,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
           </div>
         </div>
 
-        {/* Center: Desktop Navigation Tabs (Visible on md+ viewports) */}
-        <nav className="hidden md:flex items-center space-x-1 bg-emerald-950/60 p-1 rounded-xl border border-emerald-800/60">
+        {/* Center: Navigation now lives in the desktop Sidebar (md+) */}
+        <nav className="hidden items-center space-x-1 bg-emerald-950/60 p-1 rounded-xl border border-emerald-800/60">
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             const Icon = item.icon;
