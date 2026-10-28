@@ -10,170 +10,36 @@ import {
   Lock,
   AlertTriangle,
   ExternalLink,
-  RefreshCw,
-  XCircle,
-  HelpCircle,
   ArrowLeft,
   X,
+  HelpCircle,
+  MessageSquare,
+  Phone,
+  Mail,
 } from 'lucide-react';
 import { SUBSCRIPTION_PLANS, GRACE_PERIOD_DAYS } from '../config/plans';
-import {
-  ZAMBIAN_OPERATORS,
-  detectZambianOperator,
-  formatZambianPhone,
-} from '../config/paymentConfig';
 import { PlanBillingCycle } from '../types';
 
 interface PlanScreenProps {
   onClose: () => void;
 }
 
-interface LipilaServerConfig {
-  isConfigured: boolean;
-  environment: string;
-  baseUrl: string;
-  walletIdConfigured: boolean;
-  apiKeyConfigured: boolean;
-  missingVariables: string[];
-  documentationUrl: string;
-}
-
 export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
   const { shop, subscription, upgradePlan, t } = useShop();
 
   const [selectedPlanId, setSelectedPlanId] = useState<PlanBillingCycle>('monthly');
-  const [momoPhone, setMomoPhone] = useState(shop?.ownerPhone || '');
-  const [operator, setOperator] = useState<'airtel' | 'mtn' | 'zamtel'>(() => {
-    return detectZambianOperator(shop?.ownerPhone || '');
-  });
-
-  // Server Lipila config status
-  const [lipilaConfig, setLipilaConfig] = useState<LipilaServerConfig | null>(null);
-  const [isCheckingConfig, setIsCheckingConfig] = useState(true);
-
-  // Payment flow state
-  const [isInitiating, setIsInitiating] = useState(false);
-  const [activeReferenceId, setActiveReferenceId] = useState<string | null>(null);
-  const [pollingStatus, setPollingStatus] = useState<'Pending' | 'Completed' | 'Failed' | null>(null);
-  const [pollingMessage, setPollingMessage] = useState<string>('');
-  const [paymentSuccess, setPaymentSuccess] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [showConfigModal, setShowConfigModal] = useState(false);
-
-  // Fetch backend Lipila config status on mount
-  useEffect(() => {
-    const checkConfig = async () => {
-      try {
-        const res = await fetch('/api/lipila/config');
-        if (res.ok) {
-          const data = await res.json();
-          setLipilaConfig(data);
-        }
-      } catch (e) {
-        console.warn('Could not fetch Lipila config from server:', e);
-      } finally {
-        setIsCheckingConfig(false);
-      }
-    };
-    void checkConfig();
-  }, []);
-
-  // Poll for payment verification when referenceId is active
-  useEffect(() => {
-    if (!activeReferenceId || pollingStatus === 'Completed' || pollingStatus === 'Failed') {
-      return;
-    }
-
-    let intervalId: any;
-    let pollCount = 0;
-    const maxPolls = 20; // 60 seconds (every 3 seconds)
-
-    intervalId = setInterval(async () => {
-      pollCount++;
-      try {
-        const res = await fetch(`/api/lipila/verify/${encodeURIComponent(activeReferenceId)}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.verified && data.status === 'Completed') {
-            clearInterval(intervalId);
-            setPollingStatus('Completed');
-            setPollingMessage('Payment verified successfully with Lipila!');
-            await upgradePlan(selectedPlanId, momoPhone, operator);
-            setPaymentSuccess(true);
-            return;
-          } else if (data.status === 'Failed') {
-            clearInterval(intervalId);
-            setPollingStatus('Failed');
-            setErrorMessage('Transaction was cancelled or declined on your mobile device.');
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn('Verification poll error:', err);
-      }
-
-      if (pollCount >= maxPolls) {
-        clearInterval(intervalId);
-        setPollingStatus('Failed');
-        setErrorMessage('Verification timed out. If money was deducted, the webhook will update your shop automatically.');
-      }
-    }, 3000);
-
-    return () => clearInterval(intervalId);
-  }, [activeReferenceId, pollingStatus, selectedPlanId, momoPhone, operator, upgradePlan]);
-
-  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setMomoPhone(val);
-    setOperator(detectZambianOperator(val));
-  };
+  const [showContactModal, setShowContactModal] = useState(false);
+  const [contactMethod, setContactMethod] = useState<'whatsapp' | 'phone' | 'email'>('whatsapp');
 
   const selectedPlan = SUBSCRIPTION_PLANS[selectedPlanId];
-  const activeOperatorObj = ZAMBIAN_OPERATORS.find((o) => o.id === operator) || ZAMBIAN_OPERATORS[0];
 
-  // Initiate real server-side payment through Lipila API
-  const handleInitiatePayment = async () => {
-    if (!momoPhone.trim()) {
-      alert('Please enter your Zambian Mobile Money phone number');
-      return;
-    }
-
-    setErrorMessage(null);
-    setIsInitiating(true);
-
-    try {
-      const response = await fetch('/api/lipila/initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shopId: shop?.id || 'demo_shop',
-          planId: selectedPlanId,
-          phone: momoPhone,
-          operator,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        setIsInitiating(false);
-        if (data.error === 'CONFIGURATION_REQUIRED') {
-          setShowConfigModal(true);
-        } else {
-          setErrorMessage(data.message || 'Could not initiate collection with Lipila.');
-        }
-        return;
-      }
-
-      // Successful initiation from backend
-      setActiveReferenceId(data.referenceId);
-      setPollingStatus('Pending');
-      setPollingMessage(data.message || 'USSD prompt dispatched. Please check your phone.');
-      setIsInitiating(false);
-    } catch (e) {
-      setIsInitiating(false);
-      setErrorMessage(e instanceof Error ? e.message : 'Network error initiating Lipila payment');
-    }
+  // Simulate upgrade for demo purposes (in real app, this would call a backend)
+  const handleUpgrade = async () => {
+    if (!shop) return;
+    
+    // For demo: just activate the plan locally
+    // In production, this would call a payment backend
+    setShowContactModal(true);
   };
 
   return (
@@ -193,7 +59,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
               <span>{t.planTitle}</span>
             </h2>
             <p className="text-xs text-slate-500">
-              Countup subscription &amp; Zambian Mobile Money billing
+              Countup subscription plans for Zambian kiosks
             </p>
           </div>
         </div>
@@ -205,34 +71,6 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           {t.close}
         </button>
       </div>
-
-      {/* Lipila Sandbox Credentials Status Banner */}
-      {!isCheckingConfig && lipilaConfig && !lipilaConfig.isConfigured && (
-        <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-950 shadow-xs">
-          <div className="flex items-start justify-between">
-            <div className="flex items-start space-x-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold text-amber-950">
-                  Lipila Sandbox Credentials (Ready to configure)
-                </p>
-                <p className="text-[11px] text-amber-800 mt-0.5">
-                  Environment: <span className="font-bold font-mono">Sandbox (api.lipila.dev)</span>
-                </p>
-                <p className="text-[10px] text-amber-700 mt-0.5">
-                  Add <span className="font-mono font-bold">{lipilaConfig.missingVariables.join(', ')}</span> to .env when ready.
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={() => setShowConfigModal(true)}
-              className="text-xs text-amber-900 font-bold underline shrink-0 ml-2"
-            >
-              Setup Guide
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Current Subscription Status Card */}
       <div
@@ -305,250 +143,170 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
         </div>
       </div>
 
-      {/* Error Message Notice */}
-      {errorMessage && (
-        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 flex items-start space-x-2">
-          <XCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="font-bold">Payment Status</p>
-            <p className="text-[11px] text-rose-800 mt-0.5">{errorMessage}</p>
-          </div>
-          <button
-            onClick={() => setErrorMessage(null)}
-            className="text-slate-400 hover:text-slate-600"
-          >
-            ×
-          </button>
-        </div>
-      )}
+      {/* Plan Selection Cards */}
+      <div>
+        <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">
+          {t.selectPlan}
+        </span>
 
-      {/* Payment Success View (Only shown after verified by Lipila backend) */}
-      {paymentSuccess ? (
-        <div className="bg-white border-2 border-emerald-500 rounded-3xl p-8 text-center shadow-md my-4 animate-in zoom-in-95 max-w-md mx-auto">
-          <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto mb-3">
-            <CheckCircle2 className="w-10 h-10" />
-          </div>
-          <h3 className="text-xl font-black text-slate-900">{t.testPaymentSuccess}</h3>
-          <p className="text-xs text-slate-500 mt-1 mb-2">
-            Payment verified with Lipila. Your {selectedPlan.name} plan is now active.
-          </p>
-          <p className="text-xs text-emerald-900 font-mono mb-4">
-            Ref: {activeReferenceId}
-          </p>
-          <button
-            onClick={() => {
-              setPaymentSuccess(false);
-              setActiveReferenceId(null);
-              setPollingStatus(null);
-              onClose();
-            }}
-            className="w-full bg-emerald-800 text-white font-bold text-sm py-3 px-4 rounded-xl shadow-xs cursor-pointer"
-          >
-            Back to Sales
-          </button>
-        </div>
-      ) : activeReferenceId && pollingStatus === 'Pending' ? (
-        /* Real-time Awaiting Authorization Dialog */
-        <div className="bg-white border-2 border-sky-500 rounded-3xl p-8 text-center shadow-md my-4 animate-in zoom-in-95 max-w-md mx-auto">
-          <div className="w-14 h-14 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center mx-auto mb-3 animate-spin">
-            <RefreshCw className="w-7 h-7" />
-          </div>
-          <h3 className="font-black text-base text-slate-900">
-            Awaiting Mobile Money Authorization
-          </h3>
-          <p className="text-xs text-slate-600 mt-1">
-            Prompt sent to <strong className="text-slate-900 font-mono">{momoPhone}</strong> ({activeOperatorObj.name}).
-          </p>
-          <div className="my-3 p-3 bg-slate-50 rounded-xl text-left text-xs font-mono space-y-1 text-slate-700 border border-slate-200">
-            <p className="font-bold text-slate-900">Transaction Status: PENDING</p>
-            <p>Reference: {activeReferenceId}</p>
-            <p>Amount: K {selectedPlan.priceKwacha}</p>
-            <p className="text-emerald-800 font-bold">
-              Dial {activeOperatorObj.ussdPromptCode} if prompt did not appear automatically.
-            </p>
-          </div>
-          <p className="text-[11px] text-slate-400 italic mb-4">
-            Checking status with Lipila server...
-          </p>
-          <button
-            onClick={() => {
-              setActiveReferenceId(null);
-              setPollingStatus(null);
-            }}
-            className="text-xs text-slate-500 hover:text-slate-800 underline"
-          >
-            Cancel / Try Again
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {/* Plan Selection Cards */}
-          <div>
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">
-              {t.selectPlan}
-            </span>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {(Object.keys(SUBSCRIPTION_PLANS) as PlanBillingCycle[]).map((key) => {
+            const plan = SUBSCRIPTION_PLANS[key];
+            const isSelected = selectedPlanId === key;
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {(Object.keys(SUBSCRIPTION_PLANS) as PlanBillingCycle[]).map((key) => {
-                const plan = SUBSCRIPTION_PLANS[key];
-                const isSelected = selectedPlanId === key;
-
-                return (
-                  <div
-                    key={key}
-                    onClick={() => setSelectedPlanId(key)}
-                    className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
-                      isSelected
-                        ? 'border-emerald-800 bg-emerald-50/60 shadow-xs ring-1 ring-emerald-800'
-                        : 'border-slate-200 bg-white hover:border-slate-300'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-black text-sm text-slate-900">
-                          {plan.name}
-                        </span>
-                        {plan.discountBadge && (
-                          <span className="text-[10px] font-bold bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md">
-                            {plan.discountBadge}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-500 leading-snug">{plan.description}</p>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-baseline justify-between">
-                      <span className="text-2xl font-black text-emerald-900 tracking-tight tabular-nums">
-                        K {plan.priceKwacha}
-                      </span>
-                      {plan.months > 1 && (
-                        <span className="text-[11px] text-slate-400 font-medium">
-                          ~K {Math.round(plan.monthlyRateKwacha)}/mo
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Zambian Mobile Money Checkout Step */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs">
-            <h4 className="font-bold text-xs text-slate-800 uppercase tracking-wider mb-3 flex items-center space-x-1.5">
-              <Smartphone className="w-4 h-4 text-emerald-800" />
-              <span>Zambian Mobile Money (Lipila API Integration)</span>
-            </h4>
-
-            {/* Operator Selector (Airtel, MTN, Zamtel) */}
-            <div className="grid grid-cols-3 gap-2.5 mb-3.5">
-              {ZAMBIAN_OPERATORS.map((op) => {
-                const isSelected = operator === op.id;
-                return (
-                  <button
-                    key={op.id}
-                    type="button"
-                    onClick={() => setOperator(op.id)}
-                    className={`min-h-[48px] py-2 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center ${
-                      isSelected
-                        ? 'border-emerald-800 bg-emerald-50 text-emerald-950 ring-1 ring-emerald-800 shadow-xs'
-                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    <span className="text-xs font-bold">{op.name}</span>
-                    <span className="text-[10px] text-slate-500 font-mono mt-0.5">
-                      {op.ussdPromptCode}
+            return (
+              <div
+                key={key}
+                onClick={() => setSelectedPlanId(key)}
+                className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
+                  isSelected
+                    ? 'border-emerald-800 bg-emerald-50/60 shadow-xs ring-1 ring-emerald-800'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-black text-sm text-slate-900">
+                      {plan.name}
                     </span>
-                  </button>
-                );
-              })}
-            </div>
+                    {plan.discountBadge && (
+                      <span className="text-[10px] font-bold bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md">
+                        {plan.discountBadge}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 leading-snug">{plan.description}</p>
+                </div>
 
-            {/* Phone input */}
-            <div className="mb-4">
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                {t.enterMomoNumber} ({activeOperatorObj.name}) *
-              </label>
-              <input
-                type="tel"
-                value={momoPhone}
-                onChange={handlePhoneChange}
-                placeholder="e.g. 0977 123 456"
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Prompt will be dispatched to your phone (or dial{' '}
-                <span className="font-bold text-emerald-800">{activeOperatorObj.ussdPromptCode}</span>).
-              </p>
-            </div>
-
-            {/* Pay Now Button */}
-            <button
-              onClick={handleInitiatePayment}
-              disabled={isInitiating}
-              className="w-full min-h-[48px] bg-emerald-800 hover:bg-emerald-900 active:scale-[0.99] text-white py-3 px-4 rounded-xl font-bold text-sm flex items-center justify-between shadow-xs cursor-pointer disabled:opacity-50 transition-all"
-            >
-              <span>{isInitiating ? 'Calling Lipila API...' : t.payNow}</span>
-              <div className="flex items-center space-x-1.5 bg-emerald-900/80 px-2.5 py-1 rounded-lg">
-                <span className="text-emerald-200 text-xs font-normal">Total:</span>
-                <span className="text-base font-black tabular-nums">K {selectedPlan.priceKwacha}</span>
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-baseline justify-between">
+                  <span className="text-2xl font-black text-emerald-900 tracking-tight tabular-nums">
+                    K {plan.priceKwacha}
+                  </span>
+                  {plan.months > 1 && (
+                    <span className="text-[11px] text-slate-400 font-medium">
+                      ~K {Math.round(plan.monthlyRateKwacha)}/mo
+                    </span>
+                  )}
+                </div>
               </div>
-            </button>
-          </div>
-
-          {/* Configuration Requirements Guide */}
-          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-600 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-1.5 font-bold text-slate-800">
-                <Info className="w-4 h-4 text-emerald-800" />
-                <span>Lipila Integration Architecture</span>
-              </div>
-              <button
-                onClick={() => setShowConfigModal(true)}
-                className="text-xs text-emerald-800 font-bold underline"
-              >
-                View Setup
-              </button>
-            </div>
-            <p className="text-[11px] leading-relaxed">
-              Lipila API collections are handled via server-side endpoints with verification polling and webhook callbacks. Subscriptions are activated only after backend verification.
-            </p>
-            <div className="flex items-center space-x-2 text-[10px]">
-              <span className="px-2 py-0.5 rounded-md bg-slate-200 font-mono text-slate-700 font-semibold">
-                Mode: {lipilaConfig?.environment || 'sandbox'}
-              </span>
-              <a
-                href="https://docs.lipila.io"
-                target="_blank"
-                rel="noreferrer"
-                className="text-emerald-800 font-bold flex items-center space-x-0.5 hover:underline"
-              >
-                <span>docs.lipila.io</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
+            );
+          })}
         </div>
-      )}
+      </div>
 
-      {/* Configuration Required Modal Dialog */}
-      {showConfigModal && (
+      {/* Contact for Payment - Since we're on static hosting, show contact options */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs">
+        <h4 className="font-bold text-xs text-slate-800 uppercase tracking-wider mb-3 flex items-center space-x-1.5">
+          <Smartphone className="w-4 h-4 text-emerald-800" />
+          <span>Subscribe Now</span>
+        </h4>
+
+        <p className="text-xs text-slate-600 mb-4">
+          To activate your {selectedPlan.name} plan (K {selectedPlan.priceKwacha}), please contact us via one of the methods below. 
+          We'll send you a Mobile Money prompt (Airtel/MTN/Zamtel) or provide bank details.
+        </p>
+
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <button
+            onClick={() => { setContactMethod('whatsapp'); setShowContactModal(true); }}
+            className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-green-50 border-green-200 text-green-800 hover:bg-green-100"
+          >
+            <MessageSquare className="w-5 h-5 mb-1" />
+            <span className="font-bold">WhatsApp</span>
+            <span className="text-[10px] font-mono">+260 97 712 3456</span>
+          </button>
+
+          <button
+            onClick={() => { setContactMethod('phone'); setShowContactModal(true); }}
+            className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100"
+          >
+            <Phone className="w-5 h-5 mb-1" />
+            <span className="font-bold">Call / SMS</span>
+            <span className="text-[10px] font-mono">+260 97 712 3456</span>
+          </button>
+
+          <button
+            onClick={() => { setContactMethod('email'); setShowContactModal(true); }}
+            className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-purple-50 border-purple-200 text-purple-800 hover:bg-purple-100"
+          >
+            <Mail className="w-5 h-5 mb-1" />
+            <span className="font-bold">Email</span>
+            <span className="text-[10px] font-mono">payments@countup.app</span>
+          </button>
+        </div>
+
+        {/* Alternative: Show USSD codes for manual payment */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-2">
+          <p className="font-bold text-slate-800">Or pay manually via Mobile Money USSD:</p>
+          <div className="grid grid-cols-3 gap-2 text-[10px]">
+            <div className="bg-white p-2 rounded border border-slate-200">
+              <p className="font-bold text-red-700">Airtel Money</p>
+              <p className="font-mono text-slate-700">*115#</p>
+              <p className="text-slate-500">Select: Payments → Enter Amount</p>
+            </div>
+            <div className="bg-white p-2 rounded border border-slate-200">
+              <p className="font-bold text-yellow-700">MTN MoMo</p>
+              <p className="font-mono text-slate-700">*303#</p>
+              <p className="text-slate-500">Select: Pay Bill → Enter Amount</p>
+            </div>
+            <div className="bg-white p-2 rounded border border-slate-200">
+              <p className="font-bold text-green-700">Zamtel Kwacha</p>
+              <p className="font-mono text-slate-700">*778#</p>
+              <p className="text-slate-500">Select: Send Money → Enter Amount</p>
+            </div>
+          </div>
+          <p className="text-[10px] text-slate-500 italic">
+            After paying, contact us with your shop name & phone to activate. Reference: <code className="font-mono bg-slate-200 px-1 rounded">{shop?.id || 'your-shop-id'}</code>
+          </p>
+        </div>
+      </div>
+
+      {/* What's Included */}
+      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-xs text-emerald-900 space-y-2">
+        <div className="flex items-center space-x-1.5 font-bold">
+          <ShieldCheck className="w-4 h-4" />
+          <span>What's included in every plan:</span>
+        </div>
+        <ul className="list-disc pl-4 space-y-1 text-[11px] leading-relaxed">
+          <li>Unlimited sales recording (offline-first)</li>
+          <li>Stock management with profit tracking</li>
+          <li>Credit book (Mangawa/Amakongole) with WhatsApp reminders</li>
+          <li>Expense tracking & profit reports</li>
+          <li>Data export (CSV/JSON) anytime</li>
+          <li>Multi-language: English, Bemba, Nyanja</li>
+          <li>Auto-sync when online, works fully offline</li>
+          <li>No hidden fees, cancel anytime</li>
+        </ul>
+      </div>
+
+      {/* Contact Modal */}
+      {showContactModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
-                  <HelpCircle className="w-4 h-4" />
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                  contactMethod === 'whatsapp' ? 'bg-green-100 text-green-800' :
+                  contactMethod === 'phone' ? 'bg-blue-100 text-blue-800' :
+                  'bg-purple-100 text-purple-800'
+                }`}>
+                  {contactMethod === 'whatsapp' && <MessageSquare className="w-4 h-4" />}
+                  {contactMethod === 'phone' && <Phone className="w-4 h-4" />}
+                  {contactMethod === 'email' && <Mail className="w-4 h-4" />}
                 </div>
                 <div>
                   <h3 className="font-extrabold text-sm text-slate-900">
-                    Lipila Sandbox Setup
+                    {contactMethod === 'whatsapp' ? 'WhatsApp Us' : contactMethod === 'phone' ? 'Call / SMS' : 'Email Us'}
                   </h3>
-                  <p className="text-[10px] text-slate-500">Configure Sandbox Credentials</p>
+                  <p className="text-[10px] text-slate-500">
+                    {contactMethod === 'whatsapp' && '+260 97 712 3456'}
+                    {contactMethod === 'phone' && '+260 97 712 3456'}
+                    {contactMethod === 'email' && 'payments@countup.app'}
+                  </p>
                 </div>
               </div>
               <button
-                onClick={() => setShowConfigModal(false)}
+                onClick={() => setShowContactModal(false)}
                 className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
               >
                 <X className="w-4 h-4" />
@@ -557,37 +315,55 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
 
             <div className="mt-3 text-xs text-slate-700 space-y-3">
               <p className="text-slate-600 leading-relaxed">
-                Before real or sandbox payments can be dispatched, add your credentials from the{' '}
-                <a
-                  href="https://docs.lipila.io"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-emerald-800 font-bold underline"
-                >
-                  Lipila Developer Portal
-                </a>{' '}
-                to your environment variables:
+                Ready to subscribe to <strong className="text-emerald-800">{selectedPlan.name}</strong> (K {selectedPlan.priceKwacha})?
+                Contact us and we'll send a Mobile Money prompt or provide payment details.
               </p>
 
-              <div className="bg-slate-900 text-slate-100 p-3.5 rounded-xl font-mono text-[10px] space-y-1">
-                <p className="text-emerald-400"># In your .env file:</p>
-                <p>LIPILA_ENVIRONMENT="sandbox"</p>
-                <p>LIPILA_API_KEY="lsk_YOUR_SANDBOX_KEY"</p>
-                <p>LIPILA_WALLET_ID="YOUR_MERCHANT_WALLET_ID"</p>
-              </div>
-
-              <div className="space-y-1.5 text-[11px] text-slate-600">
-                <p className="font-bold text-slate-800">Verified backend endpoints:</p>
-                <ul className="list-disc pl-4 space-y-1">
-                  <li><code className="text-slate-800 font-mono">POST /api/lipila/initiate</code> (Server-side collection)</li>
-                  <li><code className="text-slate-800 font-mono">GET /api/lipila/verify/:ref</code> (Status verification)</li>
-                  <li><code className="text-slate-800 font-mono">POST /api/lipila/webhook</code> (Lipila webhook listener)</li>
+              <div className="bg-slate-50 p-3 rounded-xl space-y-2">
+                <p className="font-bold text-slate-800 text-[11px]">Tell us:</p>
+                <ul className="list-disc pl-4 space-y-1 text-[11px] text-slate-600">
+                  <li>Your shop name</li>
+                  <li>Your phone number (for Mobile Money prompt)</li>
+                  <li>Preferred operator: Airtel / MTN / Zamtel</li>
+                  <li>Reference: <code className="font-mono bg-white px-1 rounded">{shop?.id}</code></li>
                 </ul>
               </div>
 
+              {contactMethod === 'whatsapp' && (
+                <a
+                  href={`https://wa.me/260977123456?text=${encodeURIComponent(`Hi Countup, I want to subscribe my shop "${shop?.name}" (${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}. My phone is ${shop?.ownerPhone}. Please send Mobile Money prompt.`)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 rounded-xl text-xs"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span>Open WhatsApp with Pre-filled Message</span>
+                </a>
+              )}
+
+              {contactMethod === 'phone' && (
+                <a
+                  href="tel:+260977123456"
+                  className="w-full flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl text-xs"
+                >
+                  <Phone className="w-4 h-4" />
+                  <span>Call Now</span>
+                </a>
+              )}
+
+              {contactMethod === 'email' && (
+                <a
+                  href={`mailto:payments@countup.app?subject=${encodeURIComponent(`Subscription: ${shop?.name} - ${selectedPlan.name}`)}&body=${encodeURIComponent(`Hi Countup Team,\n\nI want to subscribe my shop "${shop?.name}" (ID: ${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}.\n\nMy phone: ${shop?.ownerPhone}\nPreferred operator: Airtel/MTN/Zamtel\n\nPlease send Mobile Money prompt or provide payment details.\n\nThanks!`)}`}
+                  className="w-full flex items-center justify-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 rounded-xl text-xs"
+                >
+                  <Mail className="w-4 h-4" />
+                  <span>Open Email with Pre-filled Details</span>
+                </a>
+              )}
+
               <button
-                onClick={() => setShowConfigModal(false)}
-                className="w-full mt-2 bg-slate-900 hover:bg-slate-950 text-white font-bold py-2.5 rounded-xl text-xs"
+                onClick={() => setShowContactModal(false)}
+                className="w-full mt-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs"
               >
                 Close
               </button>

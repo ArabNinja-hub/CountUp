@@ -7,15 +7,17 @@ import {
   BarChart3,
   Wifi,
   WifiOff,
-  CreditCard,
+  AlertTriangle,
+  BookUser as BookUserIcon,
 } from 'lucide-react';
 import { ActiveTab } from '../types';
+import icon from '/brand/icon.png';
 
 interface SidebarProps {
-  onOpenPlan: () => void;
+  // No more onOpenPlan - it's in Settings menu now
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ onOpenPlan }) => {
+export const Sidebar: React.FC<SidebarProps> = () => {
   const {
     t,
     activeTab,
@@ -55,7 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenPlan }) => {
       {/* Brand */}
       <div className="h-16 flex items-center gap-3 px-5 border-b border-slate-100">
         <div className="w-10 h-10 rounded-xl bg-emerald-900 flex items-center justify-center overflow-hidden shrink-0 shadow-sm">
-          <img src="/brand/icon.png" alt="Countup" className="w-7 h-7 object-contain" />
+          <img src={icon} alt="Countup" className="w-7 h-7 object-contain" />
         </div>
         <div className="min-w-0">
           <p className="font-black text-slate-900 text-[15px] leading-tight truncate">
@@ -102,8 +104,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenPlan }) => {
         })}
       </nav>
 
-      {/* Footer: sync status + plan */}
-      <div className="p-3 border-t border-slate-100 space-y-2">
+      {/* Footer: sync status only */}
+      <div className="p-3 border-t border-slate-100">
         <div
           className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium ${
             isOnline ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
@@ -117,25 +119,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenPlan }) => {
           <span className="truncate">{syncLabel}</span>
         </div>
 
-        <button
-          onClick={onOpenPlan}
-          className={`w-full min-h-[40px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-colors ${
-            subscription.status === 'expired'
-              ? 'bg-rose-700 hover:bg-rose-800 text-white'
-              : subscription.status === 'grace'
-              ? 'bg-amber-600 hover:bg-amber-700 text-white'
-              : 'bg-emerald-800 hover:bg-emerald-900 text-white'
-          }`}
-        >
-          <CreditCard className="w-4 h-4" />
-          <span>
-            {subscription.status === 'trial'
-              ? `Renew · ${subscription.daysRemaining}d left`
-              : subscription.status === 'active'
-              ? 'Manage Plan'
-              : 'Renew Plan'}
-          </span>
-        </button>
+        {/* Subscription status indicator (compact) */}
+        <div className="mt-2 px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 text-slate-600">
+          <div className="flex items-center justify-between">
+            <span>Plan</span>
+            <span className={`font-semibold px-2 py-0.5 rounded text-[10px] ${
+              subscription.status === 'expired' ? 'bg-rose-100 text-rose-700' :
+              subscription.status === 'grace' ? 'bg-amber-100 text-amber-700' :
+              subscription.status === 'trial' ? 'bg-emerald-100 text-emerald-700' :
+              'bg-slate-100 text-slate-700'
+            }`}>
+              {subscription.status === 'trial' ? `${subscription.daysRemaining}d trial` :
+               subscription.status === 'active' ? 'Active' :
+               subscription.status === 'grace' ? `${subscription.graceDaysRemaining}d grace` :
+               'Expired'}
+            </span>
+          </div>
+        </div>
       </div>
     </aside>
   );
