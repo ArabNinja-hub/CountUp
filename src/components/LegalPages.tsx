@@ -7,7 +7,22 @@ interface LegalPageProps {
   onClose: () => void;
 }
 
-const legalContent = {
+type LegalDocType = 'privacy' | 'terms' | 'security';
+
+/** A section is either a plain paragraph or an icon-led bullet. */
+type LegalItem =
+  | string
+  | { icon: React.ComponentType<{ className?: string }>; text: string };
+
+interface LegalDoc {
+  title: string;
+  lastUpdated: string;
+  sections: { title: string; content: LegalItem[] }[];
+}
+
+// Typed so `content` is always an array: some sections were authored as a bare
+// string, and the renderer calls .map() on it unconditionally.
+const legalContent: Record<LegalDocType, LegalDoc> = {
   privacy: {
     title: 'Privacy Policy',
     lastUpdated: 'October 28, 2026',
@@ -72,7 +87,9 @@ const legalContent = {
       },
       {
         title: 'Children\'s Privacy',
-        content: 'Countup is for business use by adults (18+). We do not knowingly collect data from minors.',
+        content: [
+          'Countup is for business use by adults (18+). We do not knowingly collect data from minors.',
+        ],
       },
       {
         title: 'Contact',
@@ -234,8 +251,6 @@ const legalContent = {
     ],
   },
 };
-
-type LegalDocType = 'privacy' | 'terms' | 'security';
 
 export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
   const { t, language } = useShop();

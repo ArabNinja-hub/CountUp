@@ -1,12 +1,36 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import {copyFile} from 'node:fs/promises';
+import path from 'node:path';
+import type {Plugin} from 'vite';
 import {defineConfig} from 'vite';
+import {BASE_PATH} from './base-path';
+
+/**
+ * GitHub Pages has no SPA rewrite: any path it cannot resolve falls back to
+ * `404.html`. Emitting a copy of the app shell there means a deep link or a stale
+ * bookmark still boots the app instead of dead-ending on GitHub's 404 page.
+ */
+function spaFallback(): Plugin {
+  let outDir = '';
+  return {
+    name: 'countup:spa-fallback',
+    apply: 'build',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    async closeBundle() {
+      await copyFile(path.join(outDir, 'index.html'), path.join(outDir, '404.html'));
+    },
+  };
+}
 
 export default defineConfig(() => {
   return {
     // GitHub Pages deployment - repository is at https://github.com/ArabNinja-hub/CountUp
-    base: '/CountUp/',
-    plugins: [react(), tailwindcss()],
+    // Kept in sync with the Express server via base-path.ts (see notes there).
+    base: BASE_PATH,
+    plugins: [react(), tailwindcss(), spaFallback()],
     resolve: {
       alias: {
         '@': import.meta.dirname,
