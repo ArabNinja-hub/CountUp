@@ -26,6 +26,11 @@ const MainAppContent: React.FC = () => {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="text-center">
+          <img
+            src="/brand/icon.png"
+            alt="Countup"
+            className="w-12 h-12 object-contain mx-auto mb-4 select-none"
+          />
           <div className="w-10 h-10 border-4 border-emerald-700 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
           <h2 className="font-bold text-slate-900 text-sm tracking-tight">Countup Zambia</h2>
           <p className="text-xs text-slate-500 mt-1">Connecting to your kiosk...</p>
