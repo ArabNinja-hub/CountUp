@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { BASE_PATH } from './base-path';
 
 dotenv.config();
 
@@ -27,14 +28,38 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
+    const distDir = path.resolve(__dirname, 'dist');
+    const indexFile = path.join(distDir, 'index.html');
+
+    // Serve the build under the same subpath Vite baked into the asset URLs.
+    // Mounting at '/' while `base` is '/CountUp/' makes every /CountUp/assets/*
+    // request miss dist/, fall through to the SPA catch-all, and come back as
+    // index.html — the browser then rejects the "module" and shows a blank page.
+    const mountPath = BASE_PATH.replace(/\/+$/, '');
+    const serveStatic = express.static(distDir, { index: false });
+
+    if (mountPath) {
+      app.use(mountPath, serveStatic);
+      // Deep links (and the bare mount path without a trailing slash) boot the SPA.
+      app.get([mountPath, `${mountPath}/*`], (_req: Request, res: Response) => {
+        res.sendFile(indexFile);
+      });
+      // The server root always reaches the app, whatever base path was built with.
+      app.get('/', (_req: Request, res: Response) => {
+        res.redirect(302, `${mountPath}/`);
+      });
+    } else {
+      app.use(serveStatic);
+      app.get('*', (_req: Request, res: Response) => {
+        res.sendFile(indexFile);
+      });
+    }
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Countup Server] Running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `[Countup Server] Running on http://0.0.0.0:${PORT}${isProduction ? ` (serving ${BASE_PATH})` : ''}`,
+    );
   });
 }
 

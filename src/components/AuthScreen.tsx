@@ -12,6 +12,9 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  AlertCircle,
+  Building2,
+  ShoppingBag,
 } from 'lucide-react';
 import { Language } from '../types';
 import logo from '/brand/logo.png';
@@ -88,7 +91,7 @@ export const AuthScreen: React.FC = () => {
       console.error('Google Sign-In error:', err);
       // Fallback to popup if redirect fails
       try {
-        const { signInWithPopup } = await import('firebase/auth');
+        const { signInWithPopup, GoogleAuthProvider } = await import('firebase/auth');
         const { auth } = await import('../firebase/config');
         const provider = new GoogleAuthProvider();
         await signInWithPopup(auth, provider);

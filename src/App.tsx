@@ -130,7 +130,7 @@ const MainAppContent: React.FC = () => {
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900 font-sans">
       {/* Desktop sidebar + content shell */}
       <div className="md:flex md:min-h-screen">
-        <Sidebar onOpenPlan={() => setIsPlanOpen(true)} />
+        <Sidebar />
 
         <div className="flex-1 min-w-0 flex flex-col">
           {/* Top Header */}
