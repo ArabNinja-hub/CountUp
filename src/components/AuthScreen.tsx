@@ -296,9 +296,34 @@ export const AuthScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="max-w-md w-full mx-auto text-center text-[11px] text-slate-400 mt-6">
-        <p>Countup Zambia · Works Offline &amp; Syncs Automatically</p>
+      {/* Footer & Support Contact */}
+      <div className="max-w-md w-full mx-auto text-center text-xs mt-6 space-y-2">
+        <div className="bg-white/80 backdrop-blur-xs border border-slate-200/90 rounded-2xl p-3.5 text-slate-700 shadow-xs">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Need Help Setting Up Your Kiosk?
+          </p>
+          <p className="text-xs font-semibold text-slate-900 mt-0.5">
+            Ronisher Bwalya · Developer & Support
+          </p>
+          <div className="flex items-center justify-center space-x-3 text-xs font-bold text-emerald-800 mt-2">
+            <a
+              href="https://wa.me/260962838581?text=Hello%20Ronisher,%20I%20need%20help%20setting%20up%20CountUp%20Smart%20POS"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:underline flex items-center space-x-1"
+            >
+              <span>WhatsApp / Calls: +260 96 283 8581</span>
+            </a>
+            <span className="text-slate-300">·</span>
+            <a
+              href="mailto:ronisherbwalya@gmail.com?subject=CountUp%20POS%20Help"
+              className="hover:underline text-slate-600"
+            >
+              <span>Email</span>
+            </a>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400">Countup Zambia · Works Offline &amp; Syncs Automatically</p>
       </div>
     </div>
   );

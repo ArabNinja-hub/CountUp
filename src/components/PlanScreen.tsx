@@ -155,6 +155,48 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           </div>
         </div>
 
+        {/* Developer & Support Contact Banner */}
+        <div className="p-6 sm:p-8 bg-emerald-50/60 border-t border-slate-200">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div>
+              <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">
+                Direct Developer & POS Support
+              </span>
+              <h4 className="text-sm font-extrabold text-slate-900 mt-0.5">
+                Ronisher Bwalya
+              </h4>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Available for kiosk onboarding, feature requests, or POS questions across Zambia.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href="https://wa.me/260962838581?text=Hello%20Ronisher,%20I%20need%20assistance%20with%20CountUp%20POS"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center space-x-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold px-3 py-2 rounded-xl shadow-xs transition-colors"
+              >
+                <span>WhatsApp (+260 96 283 8581)</span>
+              </a>
+
+              <a
+                href="tel:+260962838581"
+                className="inline-flex items-center space-x-1.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold px-3 py-2 rounded-xl shadow-xs transition-colors"
+              >
+                <span>Call</span>
+              </a>
+
+              <a
+                href="mailto:ronisherbwalya@gmail.com?subject=CountUp%20Smart%20POS%20Support"
+                className="inline-flex items-center space-x-1.5 bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold px-3 py-2 rounded-xl shadow-xs transition-colors"
+              >
+                <span>Email</span>
+              </a>
+            </div>
+          </div>
+        </div>
+
         {/* Footer Actions */}
         <div className="p-6 sm:p-8 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center space-x-2 text-xs text-slate-600">

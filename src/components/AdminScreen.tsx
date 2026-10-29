@@ -105,7 +105,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
               <span>Platform Owner Administration</span>
             </h2>
             <p className="text-xs text-slate-500">
-              Admin: <strong className="text-slate-800 font-mono">ronisherbwalya@gmail.com</strong>
+              Admin: <strong className="text-slate-800">Ronisher Bwalya</strong> · <span className="font-mono">ronisherbwalya@gmail.com</span> · <span className="font-mono">+260 96 283 8581</span>
             </p>
           </div>
         </div>

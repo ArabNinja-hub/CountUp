@@ -18,7 +18,9 @@ import {
   Sparkles,
   Clock,
   CheckCircle2,
+  HelpCircle,
 } from 'lucide-react';
+import { SupportModal } from './SupportModal';
 import { Language, ActiveTab } from '../types';
 
 interface HeaderProps {
@@ -47,6 +49,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
 
   const [showLangMenu, setShowLangMenu] = useState(false);
   const [showShopMenu, setShowShopMenu] = useState(false);
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const shopMenuRef = useRef<HTMLDivElement>(null);
 
@@ -170,6 +173,16 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
             </span>
           </button>
 
+          {/* Developer & Support Contact Button */}
+          <button
+            onClick={() => setIsSupportOpen(true)}
+            title="Need help? Contact Ronisher Bwalya (+260 96 283 8581)"
+            className="flex items-center space-x-1.5 bg-emerald-800/60 hover:bg-emerald-800 border border-emerald-700/60 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-emerald-100 transition-colors"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-emerald-300" />
+            <span className="hidden sm:inline text-[11px]">Support</span>
+          </button>
+
           {/* Language Switcher Dropdown */}
           <div className="relative" ref={langMenuRef}>
             <button
@@ -249,6 +262,22 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
                     </div>
                   </button>
 
+                  <button
+                    onClick={() => {
+                      setShowShopMenu(false);
+                      setIsSupportOpen(true);
+                    }}
+                    className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
+                  >
+                    <HelpCircle className="w-4 h-4 text-emerald-600" />
+                    <div className="flex-1">
+                      <p className="font-semibold">Support & Developer</p>
+                      <p className="text-[10px] text-slate-400">
+                        Ronisher · +260 96 283 8581
+                      </p>
+                    </div>
+                  </button>
+
                   {isAdmin && (
                     <button
                       onClick={() => {
@@ -281,6 +310,11 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
         </div>
       </div>
 
+      {/* Developer & Support Contact Modal */}
+      <SupportModal
+        isOpen={isSupportOpen}
+        onClose={() => setIsSupportOpen(false)}
+      />
     </header>
   );
 };
