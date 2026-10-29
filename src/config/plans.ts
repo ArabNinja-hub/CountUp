@@ -43,50 +43,15 @@ export const SUBSCRIPTION_PLANS: Record<string, PlanConfig> = {
 
 /**
  * Helper to calculate subscription status and days remaining
+ * Currently configured for free / unlocked full access ("for now remove the paying thing")
  */
 export function getSubscriptionInfo(createdAt: string, expiryDate?: string, currentStatus?: string) {
-  const now = new Date();
-  
-  // Use explicit expiryDate or default to 30 days from creation
-  const effectiveExpiry = expiryDate 
-    ? new Date(expiryDate) 
-    : new Date(new Date(createdAt).getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
-
-  const diffMs = effectiveExpiry.getTime() - now.getTime();
-  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-
-  const graceMs = effectiveExpiry.getTime() + (GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000) - now.getTime();
-  const graceDaysRemaining = Math.ceil(graceMs / (1000 * 60 * 60 * 24));
-
-  let status: 'trial' | 'active' | 'grace' | 'expired' = 'active';
-
-  if (currentStatus === 'trial' || (!currentStatus && !expiryDate)) {
-    if (diffDays > 0) {
-      status = 'trial';
-    } else if (graceDaysRemaining > 0) {
-      status = 'grace';
-    } else {
-      status = 'expired';
-    }
-  } else {
-    if (diffDays > 0) {
-      status = 'active';
-    } else if (graceDaysRemaining > 0) {
-      status = 'grace';
-    } else {
-      status = 'expired';
-    }
-  }
-
-  const isWarningPeriod = diffDays > 0 && diffDays <= EXPIRY_WARNING_DAYS;
-  const canRecordSales = status === 'trial' || status === 'active' || status === 'grace';
-
   return {
-    daysRemaining: diffDays,
-    graceDaysRemaining,
-    effectiveExpiry,
-    status,
-    isWarningPeriod,
-    canRecordSales, // Existing data is always viewable and exportable, recording sales requires active/trial/grace
+    daysRemaining: 365,
+    graceDaysRemaining: 0,
+    effectiveExpiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+    status: 'active' as const,
+    isWarningPeriod: false,
+    canRecordSales: true, // Always allow recording sales with full access
   };
 }

@@ -96,6 +96,20 @@ export interface Translations {
   };
   exportSummary: string;
   copiedToClipboard: string;
+  // Company Hold-Up & Capital Graph
+  holdUpTitle: string;
+  holdUpSubtitle: string;
+  totalHeldUp: string;
+  stockHoldUp: string;
+  creditHoldUp: string;
+  liquidCapital: string;
+  totalCapital: string;
+  holdUpRatio: string;
+  topStockHoldingUp: string;
+  topDebtorsHoldingUp: string;
+  unlockCapitalTips: string;
+  viewHoldUpTab: string;
+  viewSalesTab: string;
   // Subscription
   planTitle: string;
   trialBadge: string;
@@ -228,6 +242,20 @@ export const translations: Record<Language, Translations> = {
     },
     exportSummary: 'Share / Export Summary',
     copiedToClipboard: 'Copied to clipboard!',
+    // Company Hold-Up & Capital Graph
+    holdUpTitle: 'Company Capital Hold-Up',
+    holdUpSubtitle: 'Track your trapped capital in stock & customer credit debt',
+    totalHeldUp: 'Total Capital Held Up',
+    stockHoldUp: 'Stock Inventory Hold-Up',
+    creditHoldUp: 'Customer Credit (Kaloba)',
+    liquidCapital: 'Liquid Cash & MoMo',
+    totalCapital: 'Total Working Capital',
+    holdUpRatio: 'Capital Hold-Up Ratio',
+    topStockHoldingUp: 'Top Stock Items Holding Up Cash',
+    topDebtorsHoldingUp: 'Customers Holding Up Your Money',
+    unlockCapitalTips: 'How to Unlock Your Cash Flow',
+    viewHoldUpTab: 'Capital Hold-Up Graph',
+    viewSalesTab: 'Sales & Profit',
     planTitle: 'Your Subscription Plan',
     trialBadge: '30-Day Free Trial',
     daysRemaining: 'days remaining',
@@ -355,6 +383,20 @@ export const translations: Record<Language, Translations> = {
     },
     exportSummary: 'Tumeni Amalyashi',
     copiedToClipboard: 'Kwakopolwa bwino!',
+    // Company Hold-Up & Capital Graph
+    holdUpTitle: 'Indalama Shasungwa mu Shopu',
+    holdUpSubtitle: 'Moneni indalama shili mu fipe ne makongole ya bantu',
+    totalHeldUp: 'Indalama Shonse Ishisungilwe',
+    stockHoldUp: 'Indalama Shili mu Fipe (Stock)',
+    creditHoldUp: 'Indalama Sha Makongole (Kaloba)',
+    liquidCapital: 'Indalama Sha mu Minwe & MoMo',
+    totalCapital: 'Ndalama Shonse Sha mu Shopu',
+    holdUpRatio: 'Pelesenti ya Ndalama Shasungilwe',
+    topStockHoldingUp: 'Ifipe Ifikwete Ndalama Shinono',
+    topDebtorsHoldingUp: 'Abakwete Ndalama Shenu',
+    unlockCapitalTips: 'Ifyakucita Pakufumya Indalama',
+    viewHoldUpTab: 'Girafe ya Ndalama Shasungwa',
+    viewSalesTab: 'Malonda na Bunonshi',
     planTitle: 'Pulani ya Shopu Yenu',
     trialBadge: 'Inshiku 30 Sha Mahala',
     daysRemaining: 'inshiku shasheelepo',
@@ -482,6 +524,20 @@ export const translations: Record<Language, Translations> = {
     },
     exportSummary: 'Gawani / Tumizani Lipoti',
     copiedToClipboard: 'Zatengedwa bwino!',
+    // Company Hold-Up & Capital Graph
+    holdUpTitle: 'Ndalama Zili m’Shopu (Capital Hold-Up)',
+    holdUpSubtitle: 'Onani ndalama zanu zomwe zili mu katundu ndi ngongole za anthu',
+    totalHeldUp: 'Ndalama Zonse Zomangika',
+    stockHoldUp: 'Ndalama Zili mu Katundu',
+    creditHoldUp: 'Ndalama za Ngongole (Kaloba)',
+    liquidCapital: 'Ndalama Zili mmanja & MoMo',
+    totalCapital: 'Ndalama Zonse za Bizinesi',
+    holdUpRatio: 'Chiwerengero cha Ndalama Zomangika',
+    topStockHoldingUp: 'Katundu Womwe Wagwira Ndalama Zambiri',
+    topDebtorsHoldingUp: 'Anthu Omwe Ali ndi Ndalama Zanu',
+    unlockCapitalTips: 'Mmene Mungamasulire Ndalama Zanu',
+    viewHoldUpTab: 'Galamu ya Ndalama Zomangika',
+    viewSalesTab: 'Malonda ndi Phindu',
     planTitle: 'Dongosolo Lanu la Shopu',
     trialBadge: 'Masiku 30 a Zaulere',
     daysRemaining: 'masiku otsala',

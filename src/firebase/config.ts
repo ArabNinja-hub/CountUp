@@ -27,6 +27,9 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
+// Call test connection on startup
+void testConnection();
+
 // Error handling helper conforming to the Firebase skill specification
 export enum OperationType {
   CREATE = 'create',
