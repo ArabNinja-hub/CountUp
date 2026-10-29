@@ -233,6 +233,17 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
+  // Auto-detect Admin status for Ronisher Bwalya (via email or phone)
+  useEffect(() => {
+    if (
+      user?.email === 'ronisherbwalya@gmail.com' ||
+      shop?.ownerEmail === 'ronisherbwalya@gmail.com' ||
+      (shop?.ownerPhone && shop.ownerPhone.replace(/\D/g, '').endsWith('962838581'))
+    ) {
+      setIsAdmin(true);
+    }
+  }, [user, shop]);
+
   // Listen to Firestore real-time updates when shop is loaded and online
   useEffect(() => {
     if (!shop?.id || !user) return;

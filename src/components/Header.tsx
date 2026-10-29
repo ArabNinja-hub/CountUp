@@ -278,18 +278,19 @@ export const Header: React.FC<HeaderProps> = ({ onOpenPlan, onOpenAdmin }) => {
                     </div>
                   </button>
 
-                  {isAdmin && (
-                    <button
-                      onClick={() => {
-                        setShowShopMenu(false);
-                        onOpenAdmin();
-                      }}
-                      className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-amber-50 text-amber-900 transition-colors font-medium"
-                    >
-                      <UserCheck className="w-4 h-4 text-amber-600" />
-                      <span>{t.adminTitle}</span>
-                    </button>
-                  )}
+                  <button
+                    onClick={() => {
+                      setShowShopMenu(false);
+                      onOpenAdmin();
+                    }}
+                    className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-amber-50 text-amber-900 transition-colors font-semibold"
+                  >
+                    <UserCheck className="w-4 h-4 text-amber-600" />
+                    <div className="flex-1">
+                      <p>{t.adminTitle}</p>
+                      <p className="text-[10px] text-amber-700/70 font-normal">Platform Owner Console</p>
+                    </div>
+                  </button>
                 </div>
 
                 <div className="my-1 border-t border-slate-100" />
