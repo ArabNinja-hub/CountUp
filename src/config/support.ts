@@ -22,5 +22,18 @@ export const SUPPORT_CONTACT = {
   legalEmail: 'legal@countup.app',
 } as const;
 
-/** Platform owner account allowed into the admin console. Must match firestore.rules. */
-export const PLATFORM_ADMIN_EMAIL = 'ronisherbwalya@gmail.com';
+/*
+ * Platform-owner access is NOT configured here on purpose.
+ *
+ * Countup signs users in with a phone number + PIN only (backed by an anonymous
+ * Firebase session), so there is no email address to key ownership on. The
+ * platform owner is whoever has a document in the `admins` collection:
+ *
+ *   1. Sign in to Countup (or the Firebase console) as the owner account.
+ *   2. Copy that account's UID from Firebase console -> Authentication -> Users.
+ *   3. Create the document `admins/<uid>` in Firestore.
+ *
+ * `firestore.rules` gates every admin read/write on that document, and the app
+ * shows the admin console when it can read `admins/<own uid>`. Remove the
+ * document to revoke access.
+ */

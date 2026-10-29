@@ -93,18 +93,24 @@ apart. Set it to `/` when hosting a custom domain from the site root.
 
 ### Support & payment contacts
 `src/config/support.ts` is the single source of truth for the WhatsApp number, phone
-number, payment email, and the platform-owner account used by the Plan screen, the
-admin console, and `firestore.rules`. Change it there — never inline — and keep
-`PLATFORM_ADMIN_EMAIL` identical to the address in `firestore.rules`.
+number, and email addresses used by the Plan screen and the legal pages. Change them
+there — never inline.
 
 ### Firebase
 `firebase-applet-config.json` holds the web app credentials. Security rules live in
-`firestore.rules`. Anonymous + Google sign-in should be enabled in the Firebase
-console for cloud sync.
+`firestore.rules`.
 
-**When you change the hosting origin**, add it to Firebase console → Authentication →
-**Settings → Authorized domains** (e.g. `arabninja-hub.github.io`). Google sign-in
-fails silently on any origin that is not listed there.
+**Sign-in is a phone number + 4-digit PIN — nothing else.** There is no Google button,
+no email login, and no password. Each device holds a Firebase *anonymous* session
+(a random uid with no personal details) so Firestore can scope records to it, which
+means the only sign-in method that must be enabled in the Firebase console is
+**Anonymous**.
+
+### Platform owner access
+Owner access is granted by data, not by an email in the source: create the Firestore
+document `admins/<uid>` for the owner's account. `firestore.rules` gates every admin
+read and write on that document, and the app reveals the admin console only when it
+can read `admins/<own uid>`. Delete the document to revoke access.
 
 ---
 
@@ -178,26 +184,28 @@ Things a deploy does **not** do for you:
 1. **Publish the Firestore rules.** `firestore.rules` is the only thing enforcing
    per-shop data isolation — rules must be live before real shops register:
    `firebase deploy --only firestore:rules --project <project-id>`.
-2. **Authorize the origin.** Firebase console → Authentication → Settings →
-   Authorized domains must list `arabninja-hub.github.io` (and any custom domain),
-   otherwise Google sign-in fails silently.
-3. **Enable sign-in methods.** Phone/PIN shops use Anonymous auth under the hood, so
-   *Anonymous* and *Google* must both be enabled in the Firebase console.
+2. **Enable Anonymous sign-in.** Authentication → Sign-in method → *Anonymous* must be
+   on; it is the only method the app uses. (Leave Google, email and phone-provider
+   sign-in switched off — nothing in the app calls them.)
+3. **Grant yourself admin.** After your first sign-in, copy your UID from
+   Authentication → Users and create the document `admins/<uid>` in Firestore.
 4. **Confirm the contact details** in `src/config/support.ts` (WhatsApp, phone, payment
    email). These are the channels customers are told to pay through.
-5. **Match the admin account** in `PLATFORM_ADMIN_EMAIL` and `firestore.rules`; only
-   that Google account can open the admin console.
-6. **Plan activation is manual.** Payment happens off-app (WhatsApp / call / email), and
+5. **Plan activation is manual.** Payment happens off-app (WhatsApp / call / email), and
    the owner activates the shop with the admin console's “+30 / +90 days” action. There
    is no automated Mobile Money callback in the static build.
 
-### Known limitations of the client-only auth model
+### Known limitations of the phone-only auth model
 
-- A shop's 4-digit PIN is verified against the shop document, so **phone + PIN login
-  works on the device that created the shop** (the local cache) and anywhere the
-  Firestore rules let the signed-in user read that shop document. Cross-device PIN
-  login would need a backend (Cloud Function) that verifies the PIN out-of-band; the
-  Google sign-in path is the supported way to use a shop on a second device today.
+- **A shop is bound to the device that created it.** The PIN is verified against the
+  shop document, which only that device's anonymous session is allowed to read. On a
+  different phone the app cannot see the shop document, so it cannot verify the PIN.
+  Opening one shop on several devices/phones therefore needs a backend (a Cloud
+  Function that verifies the PIN and mints a session) — it cannot be done safely from
+  the browser alone, because letting any anonymous session read a shop document would
+  expose every shop's records to anyone who guesses a phone number.
+- **Clearing browser data signs the shop out for good** (the anonymous session and the
+  local cache both go). Export a JSON backup from Settings → Export My Data.
 - Data isolation relies entirely on `firestore.rules`; there is no server between the
   browser and Firestore.
 

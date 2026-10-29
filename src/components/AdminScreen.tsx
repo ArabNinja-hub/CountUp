@@ -9,7 +9,6 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
-import { PLATFORM_ADMIN_EMAIL } from '../config/support';
 import { Shop } from '../types';
 
 interface AdminScreenProps {
@@ -17,7 +16,7 @@ interface AdminScreenProps {
 }
 
 export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
-  const { allShops, shop, adminExtendShop, adminToggleDeactivate } = useShop();
+  const { allShops, shop, adminExtendShop, adminToggleDeactivate, user } = useShop();
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState<string | null>(null);
 
@@ -100,7 +99,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
               <span>Platform Owner Administration</span>
             </h2>
             <p className="text-xs text-slate-500">
-              Admin: <strong className="text-slate-800 font-mono">{PLATFORM_ADMIN_EMAIL}</strong>
+              Admin: <strong className="text-slate-800 font-mono">{user?.uid || 'not signed in'}</strong>
             </p>
           </div>
         </div>

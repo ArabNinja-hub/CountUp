@@ -54,7 +54,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'Local-First: All data lives on your phone first (IndexedDB/localStorage). Works fully offline.',
           'Cloud Sync: When online, your records sync to Google Firebase (Google Cloud infrastructure). Firebase is SOC 2 and ISO 27001 certified.',
           'Encryption: Data in transit uses TLS 1.3. Data at rest encrypted by Firebase.',
-          'Authentication: 4-digit PIN + phone number, or Google Sign-In. Your PIN is stored with your shop record so you can log in; it is never displayed after you set it.',
+          'Authentication: phone number + 4-digit PIN, and nothing else — Countup never asks for an email address, a Google account, or a password. Your PIN is stored with your shop record so you can log in; it is never displayed again after you set it.',
           'Access Control: Every shop\'s records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. The single platform-owner account can access shop records only for support, billing, or legal compliance.',
         ],
       },
@@ -79,7 +79,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Third-Party Services',
         content: [
-          'Firebase (Google): Hosting, authentication, database. Privacy Policy: policies.google.com/privacy',
+          'Firebase (Google): Hosting and database. Privacy Policy: policies.google.com/privacy',
           'Lipila (Mobile Money): Only used when you initiate a subscription payment. We do not store your Mobile Money PIN.',
           'WhatsApp: Only opens when you tap "Send Reminder" - we do not access your WhatsApp data.',
         ],
@@ -191,7 +191,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         title: 'Security Measures',
         content: [
           { icon: Lock, text: 'Encryption: Data is encrypted in transit (TLS 1.3) and at rest by Google Cloud. This is transport and storage encryption, not end-to-end encryption of your device.' },
-          { icon: Shield, text: 'Authentication: 4-digit PIN + phone number. Optional Google OAuth 2.0 for account linking.' },
+          { icon: Shield, text: 'Authentication: phone number + 4-digit PIN only. Behind the scenes the device holds an anonymous Firebase session (a random ID, no name or email) so your records can be scoped to your shop.' },
           { icon: User, text: 'Data Isolation: Each shop\'s data is scoped to a unique shop ID. Shops cannot access each other\'s data.' },
           { icon: CheckCircle, text: 'Offline-First Architecture: Your data never leaves your device until you\'re online and choose to sync.' },
           { icon: AlertCircle, text: 'PIN Handling: Your 4-digit PIN is stored with your shop record and readable only by your account and the platform-owner account. Mobile Money PINs are never entered in Countup — they go straight into your operator\'s own prompt.' },
@@ -214,7 +214,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'What We Protect Against',
         content: [
-          'Unauthorized Access: Each shop requires its own PIN or Google account, and Firestore rules reject reads or writes from any other account.',
+          'Unauthorized Access: Each shop requires its phone number and PIN, and Firestore rules reject reads or writes from any other session.',
           'Data Tampering: Firestore validates every write against the security rules, and removed stock items are soft-deleted so they cannot silently reappear.',
           'Man-in-the-Middle: All traffic to Firebase uses TLS. Always open Countup from its official address (arabninja-hub.github.io/CountUp).',
           'Cross-Site Scripting: React escapes all rendered values; the app never injects raw HTML.',

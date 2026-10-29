@@ -8,15 +8,12 @@ interface ChangePinModalProps {
 
 /** Lets a shop owner replace their 4-digit login PIN. */
 export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
-  const { shop, changePin } = useShop();
+  const { changePin } = useShop();
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
-
-  // Google-only shops never set a PIN, so they cannot log in with one either.
-  const hasPin = Boolean(shop?.pin);
 
   const handleSave = async () => {
     setError('');
@@ -76,91 +73,84 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
           </button>
         </div>
 
-        {!hasPin ? (
-          <p className="mt-4 text-xs text-slate-600 leading-relaxed">
-            This shop signs in with Google, so it has no PIN. Keep using the same Google account to
-            open your shop on any device.
-          </p>
-        ) : (
-          <div className="mt-4 space-y-3">
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="current-pin">
-                Current PIN
-              </label>
-              <input
-                id="current-pin"
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                autoComplete="off"
-                value={currentPin}
-                onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, ''))}
-                disabled={isSaving}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="new-pin">
-                New PIN
-              </label>
-              <input
-                id="new-pin"
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                autoComplete="off"
-                value={newPin}
-                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
-                disabled={isSaving}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="confirm-pin">
-                Repeat new PIN
-              </label>
-              <input
-                id="confirm-pin"
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                autoComplete="off"
-                value={confirmPin}
-                onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, ''))}
-                disabled={isSaving}
-                className={inputClass}
-              />
-            </div>
-
-            {error && (
-              <p className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-2.5 text-[11px]">
-                {error}
-              </p>
-            )}
-
-            <p className="text-[10px] text-slate-500">
-              Avoid 1234, 0000, or your birth year. Countup staff will never ask for your PIN.
-            </p>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={onClose}
-                disabled={isSaving}
-                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => void handleSave()}
-                disabled={isSaving || currentPin.length !== 4 || newPin.length !== 4}
-                className="flex-1 bg-emerald-800 hover:bg-emerald-900 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-                <span>{isSaving ? 'Saving…' : 'Save PIN'}</span>
-              </button>
-            </div>
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="current-pin">
+              Current PIN
+            </label>
+            <input
+              id="current-pin"
+              type="password"
+              inputMode="numeric"
+              maxLength={4}
+              autoComplete="off"
+              value={currentPin}
+              onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, ''))}
+              disabled={isSaving}
+              className={inputClass}
+            />
           </div>
-        )}
+          <div>
+            <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="new-pin">
+              New PIN
+            </label>
+            <input
+              id="new-pin"
+              type="password"
+              inputMode="numeric"
+              maxLength={4}
+              autoComplete="off"
+              value={newPin}
+              onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
+              disabled={isSaving}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="confirm-pin">
+              Repeat new PIN
+            </label>
+            <input
+              id="confirm-pin"
+              type="password"
+              inputMode="numeric"
+              maxLength={4}
+              autoComplete="off"
+              value={confirmPin}
+              onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, ''))}
+              disabled={isSaving}
+              className={inputClass}
+            />
+          </div>
+
+          {error && (
+            <p className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-2.5 text-[11px]">
+              {error}
+            </p>
+          )}
+
+          <p className="text-[10px] text-slate-500">
+            Avoid 1234, 0000, or your birth year. Countup staff will never ask for your PIN.
+          </p>
+
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={onClose}
+              disabled={isSaving}
+              className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => void handleSave()}
+              disabled={isSaving || currentPin.length !== 4 || newPin.length !== 4}
+              className="flex-1 bg-emerald-800 hover:bg-emerald-900 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+              <span>{isSaving ? 'Saving…' : 'Save PIN'}</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

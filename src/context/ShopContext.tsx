@@ -11,17 +11,8 @@ import {
 } from '../types';
 import { translations, Translations } from '../i18n/translations';
 import { getSubscriptionInfo } from '../config/plans';
-import { PLATFORM_ADMIN_EMAIL } from '../config/support';
 import { auth, db, testConnection } from '../firebase/config';
-import {
-  signInAnonymously,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  User,
-} from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import {
   doc,
   setDoc,
@@ -48,7 +39,6 @@ interface ShopContextType {
   isLoading: boolean;
   isAdmin: boolean;
   loginWithPhoneAndPin: (phone: string, pin: string) => Promise<boolean>;
-  loginWithGoogle: () => Promise<boolean>;
   registerNewShop: (name: string, phone: string, pin: string) => Promise<boolean>;
   logout: () => Promise<void>;
   /** Permanently deletes this shop and every record that belongs to it. */
@@ -110,11 +100,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
   
-  // Refs for useEffect to avoid stale closures
-  const shopRef = React.useRef(shop);
-  shopRef.current = shop;
-  const isLoadingRef = React.useRef(isLoading);
-  isLoadingRef.current = isLoading;
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [language, setLanguageState] = useState<Language>(() => {
     const saved = localStorage.getItem('countup_language') as Language;
@@ -220,47 +205,49 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('countup_pending_queue', JSON.stringify(pendingQueue));
   }, [pendingQueue]);
 
-  // Auth state listener + handle Google redirect result
+  // Auth state listener.
+  //
+  // Sign-in to Countup is phone + PIN only. Behind the scenes each device holds a
+  // Firebase *anonymous* session (created on register/login) so that Firestore can
+  // scope shop records to this device's uid — it carries no name, email or phone.
   useEffect(() => {
     let mounted = true;
 
-    // Check for redirect result on initial load
-    const checkRedirectResult = async () => {
-      try {
-        const result = await getRedirectResult(auth);
-        if (result?.user) {
-          // Redirect completed successfully, user is now signed in
-          console.log('Google redirect result:', result.user.email);
-          // The onAuthStateChanged will fire next, but we can also handle here
-        }
-      } catch (e) {
-        console.warn('Redirect result check:', e);
-      }
-    };
-
-    void checkRedirectResult();
-
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!mounted) return;
       setUser(currentUser);
-      if (currentUser?.email === PLATFORM_ADMIN_EMAIL) {
-        setIsAdmin(true);
-      }
-      
-      // Handle Google sign-in user if they just signed in via redirect/popup
-      // and don't have a shop yet
-      if (currentUser && !shopRef.current && !isLoadingRef.current) {
-        // Check if this is a Google user (has provider data)
-        const isGoogleUser = currentUser.providerData.some(p => p.providerId === 'google.com');
-        if (isGoogleUser) {
-          await handleGoogleUser(currentUser);
-        }
-      }
-      
       setIsLoading(false);
     });
-    return () => { mounted = false; unsubscribe(); };
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
   }, []);
+
+  // Platform-owner detection: the `admins` collection is the only source of truth
+  // (see firestore.rules). Grant access by creating admins/<uid> in the Firebase
+  // console — never by a hardcoded email or phone number in the client.
+  useEffect(() => {
+    let cancelled = false;
+    const uid = user?.uid;
+    if (!uid || !navigator.onLine) {
+      setIsAdmin(false);
+      return;
+    }
+    setIsAdmin(false);
+    void (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'admins', uid));
+        if (!cancelled) setIsAdmin(snap.exists());
+      } catch {
+        if (!cancelled) setIsAdmin(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   // Listen to Firestore real-time updates when shop is loaded and online
   useEffect(() => {
@@ -416,118 +403,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Anonymous authentication can be enabled in Firebase console under Auth > Sign-in method
       console.warn('Anonymous auth note (can be enabled in Firebase console):', err?.message);
       return null;
-    }
-  };
-
-  // Google Sign-In - uses redirect for better mobile/preview compatibility
-  const loginWithGoogle = async (): Promise<boolean> => {
-    setIsLoading(true);
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.addScope('email');
-      provider.addScope('profile');
-      
-      // Use redirect for better compatibility (especially in preview/iframe environments)
-      await signInWithRedirect(auth, provider);
-      // Note: After redirect, the page reloads and onAuthStateChanged handles the rest
-      // This function won't return until after redirect completes (page reload)
-      return true;
-    } catch (err: any) {
-      console.error('Google Sign-In redirect error:', err);
-      // Fallback to popup if redirect fails
-      try {
-        const provider = new GoogleAuthProvider();
-        provider.addScope('email');
-        provider.addScope('profile');
-        const cred = await signInWithPopup(auth, provider);
-        const googleUser = cred.user;
-        setUser(googleUser);
-        await handleGoogleUser(googleUser);
-        setIsLoading(false);
-        return true;
-      } catch (popupErr) {
-        console.error('Google Sign-In popup error:', popupErr);
-        setIsLoading(false);
-        return false;
-      }
-    }
-  };
-
-  // Handle Google user after authentication (used by both redirect and popup)
-  const handleGoogleUser = async (googleUser: User) => {
-    if (googleUser.email === PLATFORM_ADMIN_EMAIL) {
-      setIsAdmin(true);
-    }
-
-    // Check if user already has an existing shop in Firestore
-    if (navigator.onLine) {
-      try {
-        const q = query(collection(db, 'shops'));
-        const snap = await getDocs(q);
-        let foundShop: Shop | null = null;
-        snap.forEach((d) => {
-          const data = d.data() as Shop;
-          if (data.ownerUid === googleUser.uid || (data.ownerEmail && data.ownerEmail === googleUser.email)) {
-            foundShop = data;
-          }
-        });
-        if (foundShop) {
-          setShop(foundShop);
-          return;
-        }
-      } catch (e) {
-        console.warn('Google user shop lookup note:', e);
-      }
-    }
-
-    // If user already had a local shop, link it
-    if (shop) {
-      const linkedShop: Shop = {
-        ...shop,
-        ownerUid: googleUser.uid,
-        ownerEmail: googleUser.email || undefined,
-      };
-      setShop(linkedShop);
-      if (navigator.onLine) {
-        try {
-          await setDoc(doc(db, 'shops', shop.id), linkedShop, { merge: true });
-        } catch (e) {
-          console.warn('Link shop firestore note:', e);
-        }
-      }
-    } else {
-      // Create new shop for Google user
-      const newShopId = `shop_${googleUser.uid.substring(0, 15)}`;
-      const now = new Date();
-      const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-      const autoShop: Shop = {
-        id: newShopId,
-        name: googleUser.displayName ? `${googleUser.displayName}'s Kiosk` : 'My Zambian Kiosk',
-        ownerPhone: googleUser.phoneNumber || '',
-        ownerEmail: googleUser.email || undefined,
-        ownerUid: googleUser.uid,
-        planStatus: 'trial',
-        planType: 'trial',
-        createdAt: now.toISOString(),
-        trialEndsAt: trialEnds.toISOString(),
-        planExpiryDate: trialEnds.toISOString(),
-        isDeactivated: false,
-        currency: 'ZMW',
-      };
-      // A brand-new shop starts empty — the owner adds their real stock.
-      setShop(autoShop);
-      setItems([]);
-      setSales([]);
-      setCustomers([]);
-      setCreditPayments([]);
-      setExpenses([]);
-      if (navigator.onLine) {
-        try {
-          await setDoc(doc(db, 'shops', newShopId), autoShop);
-        } catch (e) {
-          console.warn('Auto shop firestore creation note:', e);
-        }
-      }
     }
   };
 
@@ -1099,7 +974,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         isAdmin,
         loginWithPhoneAndPin,
-        loginWithGoogle,
         registerNewShop,
         logout,
         deleteShopAccount,
