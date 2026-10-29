@@ -121,8 +121,6 @@ export interface Translations {
   registerBtn: string;
   switchRegister: string;
   switchLogin: string;
-  demoShops: string;
-  demoHint: string;
   logout: string;
   // Offline
   onlineSynced: string;
@@ -253,8 +251,6 @@ export const translations: Record<Language, Translations> = {
     registerBtn: 'Create New Shop',
     switchRegister: 'New shop? Start 30-day free trial',
     switchLogin: 'Already have a shop? Log in here',
-    demoShops: 'Try a Demo Shop (Instant 1-Tap)',
-    demoHint: 'Test with sample Zambian kiosk data immediately',
     logout: 'Log Out',
     onlineSynced: 'Online & Synced',
     offlineSaved: 'Saved to phone (Offline)',
@@ -382,8 +378,6 @@ export const translations: Record<Language, Translations> = {
     registerBtn: 'Isuleni Shopu Ipya',
     switchRegister: 'Shopu ipya? Tampeni inshiku 30 sha mahala',
     switchLogin: 'Mwalikwata kale shopu? Ingileni pano',
-    demoShops: 'Piminiko Shopu ya Bwangu (Demo)',
-    demoHint: 'Moneni ifyo ciba mukayafye kamo',
     logout: 'Fumeni',
     onlineSynced: 'Pa Intaneti kabili Fyabikwa',
     offlineSaved: 'Fyasungwa pa foni (Tapali Neti)',
@@ -511,8 +505,6 @@ export const translations: Record<Language, Translations> = {
     registerBtn: 'Pangani Shopu Yatsopano',
     switchRegister: 'Shopu yatsopano? Yambani masiku 30 a zaulere',
     switchLogin: 'Muli nayo kale? Lowani pano',
-    demoShops: 'Yesani Shopu ya Chitsanzo (Demo)',
-    demoHint: 'Onani mwachangu ndi zinthu za msika waku Zambia',
     logout: 'Tulukani',
     onlineSynced: 'Pa Intaneti & Zasungidwa',
     offlineSaved: 'Zasungidwa pa foni (Palibe Net)',

@@ -15,9 +15,35 @@ runs fully **offline** on a phone, and syncs to the cloud when a connection retu
 - **Stock Book** — add/edit items with buying & selling prices, low-stock warnings, one-tap restock.
 - **Credit Book** — customer ledger, balance tracking, and polite **WhatsApp** reminders in 3 languages.
 - **Reports** — daily / weekly / monthly sales, net profit, cash vs. MoMo, top sellers, expenses. CSV export + shareable summary.
-- **Subscriptions** — 30-day free trial with Mobile Money (Lipila) top-ups via Airtel, MTN, and Zamtel.
+- **Subscriptions** — 30-day free trial, then monthly / 3-month / 6-month plans paid by
+  Mobile Money (Airtel, MTN, Zamtel) through the contact channels in the Plan screen.
 - **Offline-first** — every action is saved locally and queued for background sync.
 - **Localized** — full UI in English, Ichibemba, and Chinyanja.
+- **Platform admin** — the owner account can see every shop, extend plans, and suspend
+  a shop. A suspended shop keeps its records (viewable and exportable) but cannot record
+  new sales.
+
+Every new shop starts with an **empty** stock book: the owner enters their own items.
+There is no sample data, demo shop, or pre-filled inventory anywhere in the app.
+
+### What happens the moment you tap something
+
+- **Real-time everywhere.** Sales, stock, credit balances, expenses, the plan expiry
+  and the admin shop list are all backed by live Firestore listeners. A sale shows up
+  in Today's totals, Reports and the credit book immediately, with no reload.
+- **One write, one truth.** A sale is committed as a single atomic batch with its
+  stock changes and credit balance, so a dropped connection can never leave a sale
+  recorded against stock that never went down.
+- **Offline is normal, not an error.** Every action is saved locally and queued; the
+  header shows how many entries are waiting, and the queued entries stay on screen
+  while they sync.
+- **Nothing can be entered by accident.** Quantities cannot exceed the stock on hand,
+  a credit sale cannot be saved without naming the customer, a credit payment cannot
+  exceed the balance, prices accept digits only, and "no search results" is never
+  confused with "no items".
+- **Everything is reversible.** Undo a sale recorded today from Reports (stock and
+  credit are restored), undo a deleted item or expense from the toast that follows,
+  and confirm before anything destructive happens. No `alert()` or `confirm()` boxes.
 
 ---
 
@@ -41,7 +67,7 @@ runs fully **offline** on a phone, and syncs to the cloud when a connection retu
 
 ### Prerequisites
 - **Node.js** 22+ (the Firebase SDK targets Node 24; warnings on 22 are non-blocking)
-- A package manager (`npm`, `pnpm`, or `bun`)
+- npm (this repo ships `package-lock.json`; use `npm ci` in CI)
 
 ### Install
 ```bash
@@ -84,14 +110,26 @@ deployment — it is read by both `vite.config.ts` and `server.ts` through
 `base-path.ts`, so the built asset URLs and the server's mount point can never drift
 apart. Set it to `/` when hosting a custom domain from the site root.
 
+### Support & payment contacts
+`src/config/support.ts` is the single source of truth for the WhatsApp number, phone
+number, and email addresses used by the Plan screen and the legal pages. Change them
+there — never inline.
+
 ### Firebase
 `firebase-applet-config.json` holds the web app credentials. Security rules live in
-`firestore.rules`. Anonymous + Google sign-in should be enabled in the Firebase
-console for cloud sync.
+`firestore.rules`.
 
-**When you change the hosting origin**, add it to Firebase console → Authentication →
-**Settings → Authorized domains** (e.g. `arabninja-hub.github.io`). Google sign-in
-fails silently on any origin that is not listed there.
+**Sign-in is a phone number + 4-digit PIN — nothing else.** There is no Google button,
+no email login, and no password. Each device holds a Firebase *anonymous* session
+(a random uid with no personal details) so Firestore can scope records to it, which
+means the only sign-in method that must be enabled in the Firebase console is
+**Anonymous**.
+
+### Platform owner access
+Owner access is granted by data, not by an email in the source: create the Firestore
+document `admins/<uid>` for the owner's account. `firestore.rules` gates every admin
+read and write on that document, and the app reveals the admin console only when it
+can read `admins/<own uid>`. Delete the document to revoke access.
 
 ---
 
@@ -149,7 +187,7 @@ CountUp/
     ├── main.tsx
     ├── index.css           # Tailwind + custom animations
     ├── components/         # Screen + shared UI components (LegalPages included)
-    ├── config/             # Pricing & payment config
+    ├── config/             # Pricing (plans.ts), support contacts & admin (support.ts)
     ├── context/            # ShopProvider (state, auth, sync)
     ├── firebase/           # Firebase init + helpers
     ├── i18n/               # EN / BEM / NYA translations
@@ -157,6 +195,38 @@ CountUp/
 ```
 
 ---
+
+## Before you launch
+
+Things a deploy does **not** do for you:
+
+1. **Publish the Firestore rules.** `firestore.rules` is the only thing enforcing
+   per-shop data isolation — rules must be live before real shops register:
+   `firebase deploy --only firestore:rules --project <project-id>`.
+2. **Enable Anonymous sign-in.** Authentication → Sign-in method → *Anonymous* must be
+   on; it is the only method the app uses. (Leave Google, email and phone-provider
+   sign-in switched off — nothing in the app calls them.)
+3. **Grant yourself admin.** After your first sign-in, copy your UID from
+   Authentication → Users and create the document `admins/<uid>` in Firestore.
+4. **Confirm the contact details** in `src/config/support.ts` (WhatsApp, phone, payment
+   email). These are the channels customers are told to pay through.
+5. **Plan activation is manual.** Payment happens off-app (WhatsApp / call / email), and
+   the owner activates the shop with the admin console's “+30 / +90 days” action. There
+   is no automated Mobile Money callback in the static build.
+
+### Known limitations of the phone-only auth model
+
+- **A shop is bound to the device that created it.** The PIN is verified against the
+  shop document, which only that device's anonymous session is allowed to read. On a
+  different phone the app cannot see the shop document, so it cannot verify the PIN.
+  Opening one shop on several devices/phones therefore needs a backend (a Cloud
+  Function that verifies the PIN and mints a session) — it cannot be done safely from
+  the browser alone, because letting any anonymous session read a shop document would
+  expose every shop's records to anyone who guesses a phone number.
+- **Clearing browser data signs the shop out for good** (the anonymous session and the
+  local cache both go). Export a JSON backup from Settings → Export My Data.
+- Data isolation relies entirely on `firestore.rules`; there is no server between the
+  browser and Firestore.
 
 ## License
 

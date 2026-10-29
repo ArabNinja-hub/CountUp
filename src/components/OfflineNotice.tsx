@@ -25,12 +25,12 @@ export const OfflineNotice: React.FC = () => {
             <p className="font-bold text-slate-100 truncate">
               {!isOnline
                 ? 'Saved offline on phone'
-                : `${pendingSyncCount} ${pendingSyncCount === 1 ? 'sale' : 'sales'} pending sync`}
+                : `${pendingSyncCount} ${pendingSyncCount === 1 ? 'entry' : 'entries'} waiting to sync`}
             </p>
             <p className="text-[11px] text-slate-400 truncate">
               {!isOnline
-                ? 'Will sync to Firebase automatically once connected'
-                : 'Connected to internet. Syncing now.'}
+                ? 'Nothing is lost — everything syncs automatically once you are back online'
+                : 'You are online. Sending your saved entries now.'}
             </p>
           </div>
         </div>

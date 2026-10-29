@@ -2,19 +2,15 @@ import React, { useState, useMemo } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
   ShieldCheck,
-  Store,
-  Users,
-  CreditCard,
-  AlertTriangle,
-  TrendingUp,
   Search,
   CheckCircle,
   Ban,
   CalendarPlus,
   ArrowLeft,
-  RefreshCw,
 } from 'lucide-react';
 import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
+import { useToast } from './Toast';
+import { ConfirmDialog } from './ConfirmDialog';
 import { Shop } from '../types';
 
 interface AdminScreenProps {
@@ -23,8 +19,10 @@ interface AdminScreenProps {
 
 export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
   const { allShops, shop, adminExtendShop, adminToggleDeactivate, user } = useShop();
+  const { notify } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState<string | null>(null);
+  const [shopToToggle, setShopToToggle] = useState<Shop | null>(null);
 
   // If allShops is empty in single-user context, ensure current shop is included in view
   const shopList = useMemo(() => {
@@ -77,15 +75,45 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
   }, [shopList]);
 
   const handleExtend = async (shopId: string, days: number) => {
+    const target = shopList.find((s) => s.id === shopId);
     setIsUpdating(shopId);
-    await adminExtendShop(shopId, days);
-    setIsUpdating(null);
+    try {
+      await adminExtendShop(shopId, days);
+      notify(`+${days} days added to ${target?.name ?? 'shop'}`, {
+        kind: 'success',
+        detail: 'The shop sees the new expiry immediately.',
+      });
+    } catch (err) {
+      notify('Could not extend that plan', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsUpdating(null);
+    }
   };
 
   const handleToggleDeactivate = async (shopId: string) => {
+    const target = shopList.find((s) => s.id === shopId) ?? shopToToggle;
+    const willSuspend = !(target?.isDeactivated ?? false);
     setIsUpdating(shopId);
-    await adminToggleDeactivate(shopId);
-    setIsUpdating(null);
+    try {
+      await adminToggleDeactivate(shopId);
+      notify(willSuspend ? `${target?.name ?? 'Shop'} suspended` : `${target?.name ?? 'Shop'} reactivated`, {
+        kind: willSuspend ? 'info' : 'success',
+        detail: willSuspend
+          ? 'They can still view and export records, but cannot record new sales.'
+          : 'They can record sales again right away.',
+      });
+    } catch (err) {
+      notify('Could not change that shop', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsUpdating(null);
+      setShopToToggle(null);
+    }
   };
 
   return (
@@ -105,7 +133,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
               <span>Platform Owner Administration</span>
             </h2>
             <p className="text-xs text-slate-500">
-              Admin: <strong className="text-slate-800 font-mono">ronisherbwalya@gmail.com</strong>
+              Admin: <strong className="text-slate-800 font-mono">{user?.uid || 'not signed in'}</strong>
             </p>
           </div>
         </div>
@@ -256,7 +284,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
 
                   <button
                     disabled={isTargetUpdating}
-                    onClick={() => handleToggleDeactivate(s.id)}
+                    onClick={() => (s.isDeactivated ? handleToggleDeactivate(s.id) : setShopToToggle(s))}
                     className={`font-bold text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 border active:scale-95 transition-all ${
                       s.isDeactivated
                         ? 'bg-emerald-800 text-white border-emerald-800'
@@ -281,6 +309,24 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
           })
         )}
       </div>
+      {shopToToggle && (
+        <ConfirmDialog
+          title={`Suspend ${shopToToggle.name}?`}
+          description={
+            <>
+              <p>
+                The shop can still open Countup, read its records and export them, but new sales will
+                be locked until you reactivate it.
+              </p>
+              <p className="text-slate-500">Phone: {shopToToggle.ownerPhone}</p>
+            </>
+          }
+          confirmLabel="Suspend shop"
+          busy={isUpdating === shopToToggle.id}
+          onCancel={() => setShopToToggle(null)}
+          onConfirm={() => void handleToggleDeactivate(shopToToggle.id)}
+        />
+      )}
     </div>
   );
 };

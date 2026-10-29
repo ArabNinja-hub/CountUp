@@ -2,5 +2,5 @@
   "name": "Countup - Zambian Kiosk Sales & Stock Book",
   "description": "Mobile-first sales book, credit tracker, and stock manager in Zambian kwacha for kiosks, market stalls, and small shops.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

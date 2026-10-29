@@ -3,21 +3,18 @@ import { useShop } from '../context/ShopContext';
 import {
   CreditCard,
   ShieldCheck,
-  CheckCircle2,
   Smartphone,
   Info,
   Clock,
   Lock,
-  AlertTriangle,
-  ExternalLink,
   ArrowLeft,
   X,
-  HelpCircle,
   MessageSquare,
   Phone,
   Mail,
 } from 'lucide-react';
 import { SUBSCRIPTION_PLANS, GRACE_PERIOD_DAYS } from '../config/plans';
+import { SUPPORT_CONTACT } from '../config/support';
 import { PlanBillingCycle } from '../types';
 
 interface PlanScreenProps {
@@ -25,22 +22,13 @@ interface PlanScreenProps {
 }
 
 export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
-  const { shop, subscription, upgradePlan, t } = useShop();
+  const { shop, subscription, t } = useShop();
 
   const [selectedPlanId, setSelectedPlanId] = useState<PlanBillingCycle>('monthly');
   const [showContactModal, setShowContactModal] = useState(false);
   const [contactMethod, setContactMethod] = useState<'whatsapp' | 'phone' | 'email'>('whatsapp');
 
   const selectedPlan = SUBSCRIPTION_PLANS[selectedPlanId];
-
-  // Simulate upgrade for demo purposes (in real app, this would call a backend)
-  const handleUpgrade = async () => {
-    if (!shop) return;
-    
-    // For demo: just activate the plan locally
-    // In production, this would call a payment backend
-    setShowContactModal(true);
-  };
 
   return (
     <div className="w-full max-w-4xl mx-auto py-4 px-3 sm:px-6 space-y-4">
@@ -213,7 +201,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           >
             <MessageSquare className="w-5 h-5 mb-1" />
             <span className="font-bold">WhatsApp</span>
-            <span className="text-[10px] font-mono">+260 97 712 3456</span>
+            <span className="text-[10px] font-mono">{SUPPORT_CONTACT.phoneDisplay}</span>
           </button>
 
           <button
@@ -222,7 +210,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           >
             <Phone className="w-5 h-5 mb-1" />
             <span className="font-bold">Call / SMS</span>
-            <span className="text-[10px] font-mono">+260 97 712 3456</span>
+            <span className="text-[10px] font-mono">{SUPPORT_CONTACT.phoneDisplay}</span>
           </button>
 
           <button
@@ -231,32 +219,27 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           >
             <Mail className="w-5 h-5 mb-1" />
             <span className="font-bold">Email</span>
-            <span className="text-[10px] font-mono">payments@countup.app</span>
+            <span className="text-[10px] font-mono">{SUPPORT_CONTACT.paymentsEmail}</span>
           </button>
         </div>
 
-        {/* Alternative: Show USSD codes for manual payment */}
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-2">
-          <p className="font-bold text-slate-800">Or pay manually via Mobile Money USSD:</p>
-          <div className="grid grid-cols-3 gap-2 text-[10px]">
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <p className="font-bold text-red-700">Airtel Money</p>
-              <p className="font-mono text-slate-700">*115#</p>
-              <p className="text-slate-500">Select: Payments → Enter Amount</p>
-            </div>
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <p className="font-bold text-yellow-700">MTN MoMo</p>
-              <p className="font-mono text-slate-700">*303#</p>
-              <p className="text-slate-500">Select: Pay Bill → Enter Amount</p>
-            </div>
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <p className="font-bold text-green-700">Zamtel Kwacha</p>
-              <p className="font-mono text-slate-700">*778#</p>
-              <p className="text-slate-500">Select: Send Money → Enter Amount</p>
-            </div>
-          </div>
-          <p className="text-[10px] text-slate-500 italic">
-            After paying, contact us with your shop name & phone to activate. Reference: <code className="font-mono bg-slate-200 px-1 rounded">{shop?.id || 'your-shop-id'}</code>
+        {/* Payment happens out-of-band: no gateway is wired into the static build,
+            so the app must not print USSD codes it cannot verify. */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-1.5">
+          <p className="font-bold text-slate-800">How activation works</p>
+          <ol className="list-decimal pl-4 space-y-1 text-[11px] leading-relaxed">
+            <li>Contact us using one of the buttons above.</li>
+            <li>
+              We send you a Mobile Money request, or the payment details for Airtel, MTN or Zamtel.
+            </li>
+            <li>
+              Once the payment shows, we activate your plan — the days remaining at the top of this
+              screen update immediately.
+            </li>
+          </ol>
+          <p className="text-[10px] text-slate-500">
+            Quote this shop ID so we credit the right shop:{' '}
+            <code className="font-mono bg-slate-200 px-1 rounded">{shop?.id || 'your-shop-id'}</code>
           </p>
         </div>
       </div>
@@ -299,9 +282,9 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
                     {contactMethod === 'whatsapp' ? 'WhatsApp Us' : contactMethod === 'phone' ? 'Call / SMS' : 'Email Us'}
                   </h3>
                   <p className="text-[10px] text-slate-500">
-                    {contactMethod === 'whatsapp' && '+260 97 712 3456'}
-                    {contactMethod === 'phone' && '+260 97 712 3456'}
-                    {contactMethod === 'email' && 'payments@countup.app'}
+                    {contactMethod === 'whatsapp' && SUPPORT_CONTACT.phoneDisplay}
+                    {contactMethod === 'phone' && SUPPORT_CONTACT.phoneDisplay}
+                    {contactMethod === 'email' && SUPPORT_CONTACT.paymentsEmail}
                   </p>
                 </div>
               </div>
@@ -331,7 +314,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
 
               {contactMethod === 'whatsapp' && (
                 <a
-                  href={`https://wa.me/260977123456?text=${encodeURIComponent(`Hi Countup, I want to subscribe my shop "${shop?.name}" (${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}. My phone is ${shop?.ownerPhone}. Please send Mobile Money prompt.`)}`}
+                  href={`https://wa.me/${SUPPORT_CONTACT.whatsapp}?text=${encodeURIComponent(`Hi Countup, I want to subscribe my shop "${shop?.name}" (${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}. My phone is ${shop?.ownerPhone}. Please send Mobile Money prompt.`)}`}
                   target="_blank"
                   rel="noreferrer"
                   className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 rounded-xl text-xs"
@@ -343,7 +326,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
 
               {contactMethod === 'phone' && (
                 <a
-                  href="tel:+260977123456"
+                  href={`tel:${SUPPORT_CONTACT.phoneDial}`}
                   className="w-full flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl text-xs"
                 >
                   <Phone className="w-4 h-4" />
@@ -353,7 +336,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
 
               {contactMethod === 'email' && (
                 <a
-                  href={`mailto:payments@countup.app?subject=${encodeURIComponent(`Subscription: ${shop?.name} - ${selectedPlan.name}`)}&body=${encodeURIComponent(`Hi Countup Team,\n\nI want to subscribe my shop "${shop?.name}" (ID: ${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}.\n\nMy phone: ${shop?.ownerPhone}\nPreferred operator: Airtel/MTN/Zamtel\n\nPlease send Mobile Money prompt or provide payment details.\n\nThanks!`)}`}
+                  href={`mailto:${SUPPORT_CONTACT.paymentsEmail}?subject=${encodeURIComponent(`Subscription: ${shop?.name} - ${selectedPlan.name}`)}&body=${encodeURIComponent(`Hi Countup Team,\n\nI want to subscribe my shop "${shop?.name}" (ID: ${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}.\n\nMy phone: ${shop?.ownerPhone}\nPreferred operator: Airtel/MTN/Zamtel\n\nPlease send Mobile Money prompt or provide payment details.\n\nThanks!`)}`}
                   className="w-full flex items-center justify-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 rounded-xl text-xs"
                 >
                   <Mail className="w-4 h-4" />

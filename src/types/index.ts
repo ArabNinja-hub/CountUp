@@ -8,9 +8,8 @@ export interface Shop {
   id: string;
   name: string;
   ownerPhone: string;
-  ownerEmail?: string;
   ownerUid: string;
-  pin: string; // 4-digit numeric PIN
+  pin: string; // 4-digit numeric PIN — the only way into the shop
   planStatus: PlanStatus;
   planType: PlanBillingCycle | 'trial';
   createdAt: string; // ISO string

@@ -8,24 +8,18 @@ import {
   Expense,
   Language,
   ActiveTab,
-  PlanBillingCycle,
 } from '../types';
 import { translations, Translations } from '../i18n/translations';
-import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
-import { auth, db, handleFirestoreError, OperationType, testConnection } from '../firebase/config';
-import {
-  signInAnonymously,
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  User,
-} from 'firebase/auth';
+import { getSubscriptionInfo } from '../config/plans';
+import { auth, db, testConnection } from '../firebase/config';
+import { useToast } from '../components/Toast';
+import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import {
   doc,
   setDoc,
+  writeBatch,
   getDoc,
+  deleteDoc,
   collection,
   onSnapshot,
   query,
@@ -47,11 +41,12 @@ interface ShopContextType {
   isLoading: boolean;
   isAdmin: boolean;
   loginWithPhoneAndPin: (phone: string, pin: string) => Promise<boolean>;
-  loginWithGoogle: () => Promise<boolean>;
   registerNewShop: (name: string, phone: string, pin: string) => Promise<boolean>;
-  loadDemoShop: (demoType: 'kiosk' | 'stall' | 'minimart') => Promise<void>;
   logout: () => Promise<void>;
-  toggleAdminMode: () => void;
+  /** Permanently deletes this shop and every record that belongs to it. */
+  deleteShopAccount: () => Promise<boolean>;
+  /** Verifies the current PIN and replaces it with a new 4-digit PIN. */
+  changePin: (currentPin: string, newPin: string) => Promise<boolean>;
 
   // Language & Tab
   language: Language;
@@ -69,18 +64,27 @@ interface ShopContextType {
 
   // Actions
   recordSale: (saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>) => Promise<string>;
+  /** Undo a sale recorded today: restores stock and credit. Returns the voided sale. */
+  voidSale: (saleId: string) => Promise<Sale>;
   addItem: (itemData: Omit<Item, 'id' | 'shopId' | 'createdAt' | 'updatedAt'>) => Promise<string>;
   updateItem: (itemId: string, patch: Partial<Item>) => Promise<void>;
   quickRestock: (itemId: string, quantityToAdd: number) => Promise<void>;
   deleteItem: (itemId: string) => Promise<void>;
+  restoreItem: (item: Item) => Promise<void>;
   addCustomer: (name: string, phone?: string) => Promise<Customer>;
-  recordCreditPayment: (customerId: string, amount: number, note?: string) => Promise<void>;
+  recordCreditPayment: (
+    customerId: string,
+    amount: number,
+    note?: string
+  ) => Promise<{ applied: number; remaining: number }>;
   addExpense: (category: Expense['category'], amount: number, note?: string) => Promise<void>;
   deleteExpense: (expenseId: string) => Promise<void>;
+  restoreExpense: (expense: Expense) => Promise<void>;
 
   // Subscription
   subscription: ReturnType<typeof getSubscriptionInfo>;
-  upgradePlan: (planId: PlanBillingCycle, momoPhone: string, operator: string) => Promise<boolean>;
+  /** True when the platform owner has suspended this shop. Sales are locked. */
+  isShopDeactivated: boolean;
 
   // Offline & Sync
   isOnline: boolean;
@@ -98,21 +102,40 @@ interface ShopContextType {
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
 
-// Initial sample inventory for Zambian kiosks
-const DEFAULT_ZAMBIAN_ITEMS = [
-  { name: 'Sugar 1kg (Illovo)', buyingPrice: 28, sellingPrice: 34, quantity: 24, lowStockThreshold: 5 },
-  { name: 'Mealie Meal 25kg (Breakfast)', buyingPrice: 280, sellingPrice: 320, quantity: 15, lowStockThreshold: 4 },
-  { name: 'Cooking Oil 750ml', buyingPrice: 38, sellingPrice: 46, quantity: 18, lowStockThreshold: 5 },
-  { name: 'Boom Washing Paste 400g', buyingPrice: 19, sellingPrice: 25, quantity: 30, lowStockThreshold: 6 },
-  { name: 'Eggs (Tray of 30)', buyingPrice: 75, sellingPrice: 90, quantity: 8, lowStockThreshold: 3 },
-  { name: 'Matches (Box)', buyingPrice: 10, sellingPrice: 15, quantity: 45, lowStockThreshold: 10 },
-  { name: 'Candles (6 Pack)', buyingPrice: 20, sellingPrice: 26, quantity: 12, lowStockThreshold: 4 },
-  { name: 'Coca-Cola 300ml', buyingPrice: 8, sellingPrice: 12, quantity: 28, lowStockThreshold: 6 },
-  { name: 'Panado Pain Tablets', buyingPrice: 15, sellingPrice: 22, quantity: 35, lowStockThreshold: 8 },
-  { name: 'Salt 500g', buyingPrice: 7, sellingPrice: 10, quantity: 20, lowStockThreshold: 5 },
-];
+/** Is this timestamp on today's calendar day? (local, works offline) */
+function isTodayIso(iso: string): boolean {
+  const date = new Date(iso);
+  return !Number.isNaN(date.getTime()) && date.toDateString() === new Date().toDateString();
+}
+
+/**
+ * Merge a server snapshot with writes that are still waiting in the offline queue.
+ *
+ * Firestore only knows about documents that reached it. Anything queued while the
+ * phone was offline exists solely in local state, so a naive `setState(remote)`
+ * makes a just-recorded sale vanish from the screen until it syncs. Keep exactly
+ * those not-yet-pushed documents on top of the server truth; everything else comes
+ * from the server, so edits and deletions made elsewhere are reflected immediately.
+ */
+function reconcile<T extends { id: string }>(
+  remote: T[],
+  local: T[],
+  queue: PendingSyncAction[],
+  collectionPath: string
+): T[] {
+  const unsynced = new Set(
+    queue.filter((a) => a.path.startsWith(`${collectionPath}/`)).map((a) => a.path)
+  );
+  if (unsynced.size === 0) return remote;
+  const remoteIds = new Set(remote.map((r) => r.id));
+  const unsyncedLocal = local.filter(
+    (l) => !remoteIds.has(l.id) && unsynced.has(`${collectionPath}/${l.id}`)
+  );
+  return unsyncedLocal.length === 0 ? remote : [...remote, ...unsyncedLocal];
+}
 
 export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { notify } = useToast();
   const [user, setUser] = useState<User | null>(null);
   const [shop, setShop] = useState<Shop | null>(() => {
     const cached = localStorage.getItem('countup_active_shop');
@@ -120,11 +143,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
   
-  // Refs for useEffect to avoid stale closures
-  const shopRef = React.useRef(shop);
-  shopRef.current = shop;
-  const isLoadingRef = React.useRef(isLoading);
-  isLoadingRef.current = isLoading;
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [language, setLanguageState] = useState<Language>(() => {
     const saved = localStorage.getItem('countup_language') as Language;
@@ -230,122 +248,164 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('countup_pending_queue', JSON.stringify(pendingQueue));
   }, [pendingQueue]);
 
-  // Auth state listener + handle Google redirect result
+  // Auth state listener.
+  //
+  // Sign-in to Countup is phone + PIN only. Behind the scenes each device holds a
+  // Firebase *anonymous* session (created on register/login) so that Firestore can
+  // scope shop records to this device's uid — it carries no name, email or phone.
   useEffect(() => {
     let mounted = true;
 
-    // Check for redirect result on initial load
-    const checkRedirectResult = async () => {
-      try {
-        const result = await getRedirectResult(auth);
-        if (result?.user) {
-          // Redirect completed successfully, user is now signed in
-          console.log('Google redirect result:', result.user.email);
-          // The onAuthStateChanged will fire next, but we can also handle here
-        }
-      } catch (e) {
-        console.warn('Redirect result check:', e);
-      }
-    };
-
-    void checkRedirectResult();
-
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!mounted) return;
       setUser(currentUser);
-      if (currentUser?.email === 'ronisherbwalya@gmail.com') {
-        setIsAdmin(true);
-      }
-      
-      // Handle Google sign-in user if they just signed in via redirect/popup
-      // and don't have a shop yet
-      if (currentUser && !shopRef.current && !isLoadingRef.current) {
-        // Check if this is a Google user (has provider data)
-        const isGoogleUser = currentUser.providerData.some(p => p.providerId === 'google.com');
-        if (isGoogleUser) {
-          await handleGoogleUser(currentUser);
-        }
-      }
-      
       setIsLoading(false);
     });
-    return () => { mounted = false; unsubscribe(); };
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
   }, []);
 
-  // Listen to Firestore real-time updates when shop is loaded and online
+  // Platform-owner detection: the `admins` collection is the only source of truth
+  // (see firestore.rules). Grant access by creating admins/<uid> in the Firebase
+  // console — never by a hardcoded email or phone number in the client.
+  useEffect(() => {
+    let cancelled = false;
+    const uid = user?.uid;
+    if (!uid || !navigator.onLine) {
+      setIsAdmin(false);
+      return;
+    }
+    setIsAdmin(false);
+    void (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'admins', uid));
+        if (!cancelled) setIsAdmin(snap.exists());
+      } catch {
+        if (!cancelled) setIsAdmin(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // Keep the latest state reachable from long-lived listeners without making them
+  // re-subscribe on every change (a re-subscribe per sale drops real-time updates).
+  const itemsRef = React.useRef(items);
+  itemsRef.current = items;
+  const salesRef = React.useRef(sales);
+  salesRef.current = sales;
+  const customersRef = React.useRef(customers);
+  customersRef.current = customers;
+  const paymentsRef = React.useRef(creditPayments);
+  paymentsRef.current = creditPayments;
+  const expensesRef = React.useRef(expenses);
+  expensesRef.current = expenses;
+  const queueRef = React.useRef(pendingQueue);
+  queueRef.current = pendingQueue;
+
+  // ---------------------------------------------------------------
+  // REAL-TIME SYNC
+  //
+  // Every collection is mirrored live: a sale recorded on this phone appears in
+  // Reports/Credit instantly (optimistic state), and anything changed elsewhere
+  // (an admin extending a plan, a second device) lands without a page reload.
+  // Documents still sitting in the offline queue are kept on top of the server
+  // snapshot so a pending write never disappears from the screen mid-sync.
+  // ---------------------------------------------------------------
   useEffect(() => {
     if (!shop?.id || !user) return;
 
-    const shopRef = doc(db, 'shops', shop.id);
-    const unsubShop = onSnapshot(shopRef, (docSnap) => {
-      if (docSnap.exists()) {
+    const shopId = shop.id;
+    const warn = (label: string) => (err: unknown) => {
+      console.warn(`Real-time ${label} listener:`, err);
+    };
+
+    const unsubShop = onSnapshot(
+      doc(db, 'shops', shopId),
+      (docSnap) => {
+        if (!docSnap.exists()) return;
         const data = docSnap.data() as Shop;
-        setShop(data);
-      }
-    }, (err) => {
-      console.warn('Real-time shop listener error (offline or permission):', err);
-    });
+        // Never let the server drop the local PIN before it has been pushed.
+        setShop((prev) => ({ ...data, pin: data.pin || prev?.pin || '' }));
+      },
+      warn('shop')
+    );
 
-    const itemsCol = collection(db, 'shops', shop.id, 'items');
-    const unsubItems = onSnapshot(itemsCol, (snap) => {
-      const remoteItems: Item[] = [];
-      snap.forEach((d) => {
-        const data = d.data() as Item & { isDeleted?: boolean };
-        // Skip items that were soft-deleted so they don't reappear after a sync
-        if (!data.isDeleted) remoteItems.push(data);
-      });
-      if (remoteItems.length > 0) {
-        setItems(remoteItems);
-      }
-    }, (err) => {
-      console.warn('Real-time items listener error:', err);
-    });
+    const unsubItems = onSnapshot(
+      collection(db, 'shops', shopId, 'items'),
+      (snap) => {
+        const remote: Item[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Item & { isDeleted?: boolean };
+          if (!data.isDeleted) remote.push(data);
+        });
+        setItems(reconcile(remote, itemsRef.current, queueRef.current, `shops/${shopId}/items`));
+      },
+      warn('items')
+    );
 
-    const salesCol = collection(db, 'shops', shop.id, 'sales');
-    const unsubSales = onSnapshot(salesCol, (snap) => {
-      const remoteSales: Sale[] = [];
-      snap.forEach((d) => remoteSales.push(d.data() as Sale));
-      if (remoteSales.length > 0) {
-        // Sort most recent sales first
-        remoteSales.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        setSales(remoteSales);
-      }
-    }, (err) => {
-      console.warn('Real-time sales listener error:', err);
-    });
+    const unsubSales = onSnapshot(
+      collection(db, 'shops', shopId, 'sales'),
+      (snap) => {
+        const remote: Sale[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Sale & { isDeleted?: boolean };
+          if (!data.isDeleted) remote.push(data);
+        });
+        const merged = reconcile(remote, salesRef.current, queueRef.current, `shops/${shopId}/sales`);
+        merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setSales(merged);
+      },
+      warn('sales')
+    );
 
-    const customersCol = collection(db, 'shops', shop.id, 'customers');
-    const unsubCustomers = onSnapshot(customersCol, (snap) => {
-      const remoteCustomers: Customer[] = [];
-      snap.forEach((d) => remoteCustomers.push(d.data() as Customer));
-      if (remoteCustomers.length > 0) {
-        setCustomers(remoteCustomers);
-      }
-    }, (err) => {
-      console.warn('Real-time customers listener error:', err);
-    });
+    const unsubCustomers = onSnapshot(
+      collection(db, 'shops', shopId, 'customers'),
+      (snap) => {
+        const remote: Customer[] = [];
+        snap.forEach((d) => remote.push(d.data() as Customer));
+        setCustomers(
+          reconcile(remote, customersRef.current, queueRef.current, `shops/${shopId}/customers`)
+        );
+      },
+      warn('customers')
+    );
 
-    const paymentsCol = collection(db, 'shops', shop.id, 'credit_payments');
-    const unsubPayments = onSnapshot(paymentsCol, (snap) => {
-      const remotePayments: CreditPayment[] = [];
-      snap.forEach((d) => remotePayments.push(d.data() as CreditPayment));
-      if (remotePayments.length > 0) {
-        setCreditPayments(remotePayments);
-      }
-    }, (err) => {
-      console.warn('Real-time credit payments listener error:', err);
-    });
+    const unsubPayments = onSnapshot(
+      collection(db, 'shops', shopId, 'credit_payments'),
+      (snap) => {
+        const remote: CreditPayment[] = [];
+        snap.forEach((d) => remote.push(d.data() as CreditPayment));
+        setCreditPayments(
+          reconcile(
+            remote,
+            paymentsRef.current,
+            queueRef.current,
+            `shops/${shopId}/credit_payments`
+          )
+        );
+      },
+      warn('credit payments')
+    );
 
-    const expensesCol = collection(db, 'shops', shop.id, 'expenses');
-    const unsubExpenses = onSnapshot(expensesCol, (snap) => {
-      const remoteExpenses: Expense[] = [];
-      snap.forEach((d) => remoteExpenses.push(d.data() as Expense));
-      if (remoteExpenses.length > 0) {
-        setExpenses(remoteExpenses);
-      }
-    }, (err) => {
-      console.warn('Real-time expenses listener error:', err);
-    });
+    const unsubExpenses = onSnapshot(
+      collection(db, 'shops', shopId, 'expenses'),
+      (snap) => {
+        const remote: Expense[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Expense & { isDeleted?: boolean };
+          if (!data.isDeleted) remote.push(data);
+        });
+        setExpenses(
+          reconcile(remote, expensesRef.current, queueRef.current, `shops/${shopId}/expenses`)
+        );
+      },
+      warn('expenses')
+    );
 
     return () => {
       unsubShop();
@@ -357,64 +417,93 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [shop?.id, user]);
 
-  // Fetch all shops for platform owner admin view
+  // Live shop directory for the platform owner (was a one-off fetch, so plan
+  // extensions made on one screen never showed up on another without a reload).
   useEffect(() => {
-    if (isAdmin && user) {
-      const fetchAllShops = async () => {
-        try {
-          const q = query(collection(db, 'shops'));
-          const snap = await getDocs(q);
-          const shopsList: Shop[] = [];
-          snap.forEach((d) => shopsList.push(d.data() as Shop));
-          setAllShops(shopsList);
-        } catch (e) {
-          console.warn('Failed to load all shops for admin:', e);
-        }
-      };
-      void fetchAllShops();
+    if (!isAdmin || !user) {
+      setAllShops([]);
+      return;
     }
+    const unsub = onSnapshot(
+      query(collection(db, 'shops')),
+      (snap) => {
+        const shopsList: Shop[] = [];
+        snap.forEach((d) => shopsList.push(d.data() as Shop));
+        setAllShops(shopsList);
+      },
+      (err) => console.warn('Admin shops listener:', err)
+    );
+    return () => unsub();
   }, [isAdmin, user]);
 
-  // Drain offline pending queue to Firestore
+  // Drain the offline queue.
+  //
+  // Reads the queue from a ref and guards with a ref, not component state: the old
+  // version captured a stale (usually empty) queue in a timeout, so writes made
+  // offline could sit in localStorage forever and never reach Firestore.
+  const syncingRef = React.useRef(false);
   const syncNow = useCallback(async () => {
-    if (!navigator.onLine || pendingQueue.length === 0 || isSyncing) return;
+    if (!navigator.onLine || syncingRef.current) return;
+    const queued = queueRef.current;
+    if (queued.length === 0) return;
+
+    syncingRef.current = true;
     setIsSyncing(true);
 
-    const remainingQueue: PendingSyncAction[] = [];
+    const remaining: PendingSyncAction[] = [];
 
-    for (const item of pendingQueue) {
+    for (const action of queued) {
       try {
-        const targetDoc = doc(db, item.path);
-        await setDoc(targetDoc, item.data, { merge: true });
+        await setDoc(doc(db, action.path), action.data, { merge: true });
       } catch (err) {
-        console.warn('Sync failed for item, keeping in queue:', item.id, err);
-        remainingQueue.push(item);
+        console.warn('Sync failed for action, keeping in queue:', action.id, err);
+        remaining.push(action);
       }
     }
 
-    setPendingQueue(remainingQueue);
+    queueRef.current = remaining;
+    setPendingQueue(remaining);
+    syncingRef.current = false;
     setIsSyncing(false);
-    if (remainingQueue.length === 0) {
-      setLastOfflineNotice(null);
-    }
-  }, [pendingQueue, isSyncing]);
 
-  const queueAction = (type: PendingSyncAction['type'], path: string, data: any) => {
-    const action: PendingSyncAction = {
-      id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      type,
-      path,
-      data,
-      timestamp: Date.now(),
-    };
-    setPendingQueue((prev) => [...prev, action]);
-    if (!navigator.onLine) {
-      setLastOfflineNotice('Saved offline on this phone. Will sync when internet returns.');
-    } else {
-      // Attempt immediate background sync
-      setTimeout(() => void syncNow(), 50);
+    if (remaining.length === 0) {
+      setLastOfflineNotice(null);
+      notify(`All ${queued.length} saved ${queued.length === 1 ? 'entry' : 'entries'} synced to the cloud`, {
+        kind: 'success',
+      });
+    } else if (navigator.onLine) {
+      setLastOfflineNotice(
+        `${remaining.length} ${remaining.length === 1 ? 'entry' : 'entries'} could not sync yet. Tap Sync to retry.`
+      );
+      notify('Some entries are still waiting to sync', {
+        kind: 'error',
+        detail: 'They are safe on this phone. Tap the sync button in the header to retry.',
+      });
     }
-  };
+  }, [notify]);
+
+  const queueAction = useCallback(
+    (type: PendingSyncAction['type'], path: string, data: any) => {
+      const action: PendingSyncAction = {
+        id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        type,
+        path,
+        data,
+        timestamp: Date.now(),
+      };
+      const next = [...queueRef.current, action];
+      queueRef.current = next;
+      setPendingQueue(next);
+
+      if (!navigator.onLine) {
+        setLastOfflineNotice('Saved on this phone. Will sync when internet returns.');
+      } else {
+        // Push in the background; failures stay queued and are retried.
+        setTimeout(() => void syncNow(), 50);
+      }
+    },
+    [syncNow]
+  );
 
   // Safe helper to obtain a Firebase auth user if Anonymous is enabled or user logged in
   const ensureFirebaseAuth = async (): Promise<User | null> => {
@@ -426,128 +515,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Anonymous authentication can be enabled in Firebase console under Auth > Sign-in method
       console.warn('Anonymous auth note (can be enabled in Firebase console):', err?.message);
       return null;
-    }
-  };
-
-  // Google Sign-In - uses redirect for better mobile/preview compatibility
-  const loginWithGoogle = async (): Promise<boolean> => {
-    setIsLoading(true);
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.addScope('email');
-      provider.addScope('profile');
-      
-      // Use redirect for better compatibility (especially in preview/iframe environments)
-      await signInWithRedirect(auth, provider);
-      // Note: After redirect, the page reloads and onAuthStateChanged handles the rest
-      // This function won't return until after redirect completes (page reload)
-      return true;
-    } catch (err: any) {
-      console.error('Google Sign-In redirect error:', err);
-      // Fallback to popup if redirect fails
-      try {
-        const provider = new GoogleAuthProvider();
-        provider.addScope('email');
-        provider.addScope('profile');
-        const cred = await signInWithPopup(auth, provider);
-        const googleUser = cred.user;
-        setUser(googleUser);
-        await handleGoogleUser(googleUser);
-        setIsLoading(false);
-        return true;
-      } catch (popupErr) {
-        console.error('Google Sign-In popup error:', popupErr);
-        setIsLoading(false);
-        return false;
-      }
-    }
-  };
-
-  // Handle Google user after authentication (used by both redirect and popup)
-  const handleGoogleUser = async (googleUser: User) => {
-    if (googleUser.email === 'ronisherbwalya@gmail.com') {
-      setIsAdmin(true);
-    }
-
-    // Check if user already has an existing shop in Firestore
-    if (navigator.onLine) {
-      try {
-        const q = query(collection(db, 'shops'));
-        const snap = await getDocs(q);
-        let foundShop: Shop | null = null;
-        snap.forEach((d) => {
-          const data = d.data() as Shop;
-          if (data.ownerUid === googleUser.uid || (data.ownerEmail && data.ownerEmail === googleUser.email)) {
-            foundShop = data;
-          }
-        });
-        if (foundShop) {
-          setShop(foundShop);
-          return;
-        }
-      } catch (e) {
-        console.warn('Google user shop lookup note:', e);
-      }
-    }
-
-    // If user already had a local shop, link it
-    if (shop) {
-      const linkedShop: Shop = {
-        ...shop,
-        ownerUid: googleUser.uid,
-        ownerEmail: googleUser.email || undefined,
-      };
-      setShop(linkedShop);
-      if (navigator.onLine) {
-        try {
-          await setDoc(doc(db, 'shops', shop.id), linkedShop, { merge: true });
-        } catch (e) {
-          console.warn('Link shop firestore note:', e);
-        }
-      }
-    } else {
-      // Create new shop for Google user
-      const newShopId = `shop_${googleUser.uid.substring(0, 15)}`;
-      const now = new Date();
-      const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-      const autoShop: Shop = {
-        id: newShopId,
-        name: googleUser.displayName ? `${googleUser.displayName}'s Kiosk` : 'My Zambian Kiosk',
-        ownerPhone: googleUser.phoneNumber || '0977 123 456',
-        ownerEmail: googleUser.email || undefined,
-        ownerUid: googleUser.uid,
-        pin: '1234',
-        planStatus: 'trial',
-        planType: 'trial',
-        createdAt: now.toISOString(),
-        trialEndsAt: trialEnds.toISOString(),
-        planExpiryDate: trialEnds.toISOString(),
-        isDeactivated: false,
-        currency: 'ZMW',
-      };
-      const seeded = DEFAULT_ZAMBIAN_ITEMS.map((item, idx) => ({
-        id: `item_${newShopId}_${idx}`,
-        shopId: newShopId,
-        name: item.name,
-        buyingPrice: item.buyingPrice,
-        sellingPrice: item.sellingPrice,
-        quantity: item.quantity,
-        lowStockThreshold: item.lowStockThreshold,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-      setShop(autoShop);
-      setItems(seeded);
-      if (navigator.onLine) {
-        try {
-          await setDoc(doc(db, 'shops', newShopId), autoShop);
-          for (const item of seeded) {
-            await setDoc(doc(db, 'shops', newShopId, 'items', item.id), item);
-          }
-        } catch (e) {
-          console.warn('Auto shop firestore creation note:', e);
-        }
-      }
     }
   };
 
@@ -608,14 +575,29 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cleanPhone = phone.replace(/\D/g, '');
       const shopId = `shop_${cleanPhone}`;
 
-      let currentUser = await ensureFirebaseAuth();
+      const currentUser = await ensureFirebaseAuth();
+
+      // Refuse to overwrite a shop that already exists for this phone number.
+      // Without this check, re-registering a known number silently replaced the
+      // existing shop's records (or failed on a security rule with an obscure error).
+      if (navigator.onLine && currentUser) {
+        try {
+          const existing = await getDoc(doc(db, 'shops', shopId));
+          if (existing.exists()) {
+            setIsLoading(false);
+            return false;
+          }
+        } catch (e) {
+          console.warn('Shop availability check note:', e);
+        }
+      }
 
       const now = new Date();
       const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
       const newShop: Shop = {
         id: shopId,
-        name: name.trim() || 'My Zambian Kiosk',
+        name: name.trim(),
         ownerPhone: phone.trim(),
         ownerUid: currentUser?.uid || shopId,
         pin: pin.trim(),
@@ -628,43 +610,33 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currency: 'ZMW',
       };
 
-      // Seed initial default items
-      const seededItems: Item[] = DEFAULT_ZAMBIAN_ITEMS.map((item, index) => ({
-        id: `item_${Date.now()}_${index}`,
-        shopId,
-        name: item.name,
-        buyingPrice: item.buyingPrice,
-        sellingPrice: item.sellingPrice,
-        quantity: item.quantity,
-        lowStockThreshold: item.lowStockThreshold,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      }));
-
-      // Set local state immediately for fast response
+      // A new shop starts with an empty stock book — the owner enters their own items.
       setShop(newShop);
-      setItems(seededItems);
+      setItems([]);
       setSales([]);
       setCustomers([]);
       setCreditPayments([]);
       setExpenses([]);
 
-      // Persist to Firestore or queue
+      // Persist to Firestore or queue for the next connection
       if (navigator.onLine && currentUser) {
         try {
           await setDoc(doc(db, 'shops', shopId), newShop);
-          for (const item of seededItems) {
-            await setDoc(doc(db, 'shops', shopId, 'items', item.id), item);
-          }
         } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `shops/${shopId}`);
+          const code = (e as { code?: string })?.code;
+          if (code === 'permission-denied') {
+            // The number is already registered to another account. Don't leave the
+            // user in a shop that only exists on this phone.
+            setShop(null);
+            localStorage.removeItem('countup_active_shop');
+            setIsLoading(false);
+            return false;
+          }
+          console.warn('Shop creation sync note, queued for retry:', e);
           queueAction('item', `shops/${shopId}`, newShop);
         }
       } else {
         queueAction('item', `shops/${shopId}`, newShop);
-        seededItems.forEach((item) => {
-          queueAction('item', `shops/${shopId}/items/${item.id}`, item);
-        });
       }
 
       setIsLoading(false);
@@ -673,169 +645,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error('Registration error:', error);
       setIsLoading(false);
       return false;
-    }
-  };
-
-  // Demo shop loader for instant 1-tap testing
-  const loadDemoShop = async (demoType: 'kiosk' | 'stall' | 'minimart') => {
-    setIsLoading(true);
-    let currentUser = await ensureFirebaseAuth();
-
-    const demoNames = {
-      kiosk: 'Bwino General Kiosk (Lusaka)',
-      stall: 'Soweto Market Stall #42',
-      minimart: 'Chilenje Grocer & Provisions',
-    };
-
-    const demoPhones = {
-      kiosk: '0977 123 456',
-      stall: '0966 987 654',
-      minimart: '0955 555 111',
-    };
-
-    const cleanPhone = demoPhones[demoType].replace(/\D/g, '');
-    const shopId = `shop_demo_${demoType}`;
-    const now = new Date();
-    const trialEnds = new Date(now.getTime() + 27 * 24 * 60 * 60 * 1000); // 27 days left in trial
-
-    const demoShop: Shop = {
-      id: shopId,
-      name: demoNames[demoType],
-      ownerPhone: demoPhones[demoType],
-      ownerUid: currentUser?.uid || shopId,
-      pin: '1234',
-      planStatus: 'trial',
-      planType: 'trial',
-      createdAt: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-      trialEndsAt: trialEnds.toISOString(),
-      planExpiryDate: trialEnds.toISOString(),
-      isDeactivated: false,
-      currency: 'ZMW',
-    };
-
-    const seededItems: Item[] = DEFAULT_ZAMBIAN_ITEMS.map((item, idx) => ({
-      id: `item_${shopId}_${idx}`,
-      shopId,
-      name: item.name,
-      buyingPrice: item.buyingPrice,
-      sellingPrice: item.sellingPrice,
-      quantity: idx === 1 ? 2 : idx === 4 ? 3 : item.quantity, // Make a couple items low stock for preview!
-      lowStockThreshold: item.lowStockThreshold,
-      lastSoldAt: idx < 4 ? new Date(now.getTime() - idx * 3600000).toISOString() : undefined,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    }));
-
-    // Demo customers with debt
-    const demoCustomers: Customer[] = [
-      {
-        id: `cust_${shopId}_1`,
-        shopId,
-        name: 'Ba Mwila (Teacher)',
-        phone: '0977 888 999',
-        totalOwed: 145,
-        createdAt: new Date(now.getTime() - 4 * 86400000).toISOString(),
-        updatedAt: new Date(now.getTime() - 1 * 86400000).toISOString(),
-      },
-      {
-        id: `cust_${shopId}_2`,
-        shopId,
-        name: 'Mama Bwalya',
-        phone: '0966 222 333',
-        totalOwed: 85,
-        createdAt: new Date(now.getTime() - 7 * 86400000).toISOString(),
-        updatedAt: new Date(now.getTime() - 2 * 86400000).toISOString(),
-      },
-      {
-        id: `cust_${shopId}_3`,
-        shopId,
-        name: 'Uncle James (Mechanic)',
-        phone: '0955 444 777',
-        totalOwed: 210,
-        createdAt: new Date(now.getTime() - 10 * 86400000).toISOString(),
-        updatedAt: new Date(now.getTime() - 3 * 86400000).toISOString(),
-      },
-    ];
-
-    // Demo sales
-    const demoSales: Sale[] = [
-      {
-        id: `sale_${shopId}_1`,
-        shopId,
-        items: [{ itemId: seededItems[0].id, name: seededItems[0].name, quantity: 2, buyingPrice: 28, sellingPrice: 34 }],
-        itemsCount: 2,
-        totalAmount: 68,
-        totalCost: 56,
-        profit: 12,
-        paymentType: 'cash',
-        createdAt: new Date(now.getTime() - 2 * 3600000).toISOString(),
-      },
-      {
-        id: `sale_${shopId}_2`,
-        shopId,
-        items: [{ itemId: seededItems[1].id, name: seededItems[1].name, quantity: 1, buyingPrice: 280, sellingPrice: 320 }],
-        itemsCount: 1,
-        totalAmount: 320,
-        totalCost: 280,
-        profit: 40,
-        paymentType: 'credit',
-        customerId: demoCustomers[0].id,
-        customerName: demoCustomers[0].name,
-        customerPhone: demoCustomers[0].phone,
-        createdAt: new Date(now.getTime() - 5 * 3600000).toISOString(),
-      },
-      {
-        id: `sale_${shopId}_3`,
-        shopId,
-        items: [
-          { itemId: seededItems[3].id, name: seededItems[3].name, quantity: 1, buyingPrice: 19, sellingPrice: 25 },
-          { itemId: seededItems[7].id, name: seededItems[7].name, quantity: 2, buyingPrice: 8, sellingPrice: 12 },
-        ],
-        itemsCount: 3,
-        totalAmount: 49,
-        totalCost: 35,
-        profit: 14,
-        paymentType: 'momo',
-        momoOperator: 'airtel',
-        createdAt: new Date(now.getTime() - 12 * 3600000).toISOString(),
-      },
-    ];
-
-    // Demo expenses
-    const demoExpenses: Expense[] = [
-      {
-        id: `exp_${shopId}_1`,
-        shopId,
-        category: 'council_fee',
-        amount: 15,
-        note: 'Daily market levy Lusaka City Council',
-        createdAt: new Date(now.getTime() - 8 * 3600000).toISOString(),
-      },
-      {
-        id: `exp_${shopId}_2`,
-        shopId,
-        category: 'transport',
-        amount: 40,
-        note: 'Canter delivery from Soweto market',
-        createdAt: new Date(now.getTime() - 24 * 3600000).toISOString(),
-      },
-    ];
-
-    setShop(demoShop);
-    setItems(seededItems);
-    setCustomers(demoCustomers);
-    setSales(demoSales);
-    setExpenses(demoExpenses);
-    setCreditPayments([]);
-    setIsLoading(false);
-
-    // Save demo shop to Firestore if online
-    if (navigator.onLine && currentUser) {
-      try {
-        await setDoc(doc(db, 'shops', shopId), demoShop);
-      } catch (e) {
-        console.warn('Demo shop Firestore sync note:', e);
-      }
     }
   };
 
@@ -849,12 +658,75 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setExpenses([]);
   };
 
-  const toggleAdminMode = () => {
-    setIsAdmin((prev) => !prev);
+  // Change the shop PIN (verifies the current one first)
+  const changePin = async (currentPin: string, newPin: string): Promise<boolean> => {
+    if (!shop || !shop.pin) return false;
+    if (!/^\d{4}$/.test(newPin)) return false;
+    if (shop.pin !== currentPin.trim()) return false;
+
+    const updatedShop: Shop = { ...shop, pin: newPin };
+    setShop(updatedShop);
+
+    if (navigator.onLine && auth.currentUser) {
+      try {
+        await setDoc(doc(db, 'shops', shop.id), { pin: newPin }, { merge: true });
+      } catch (e) {
+        queueAction('item', `shops/${shop.id}`, { pin: newPin });
+      }
+    } else {
+      queueAction('item', `shops/${shop.id}`, { pin: newPin });
+    }
+    return true;
+  };
+
+  // Permanently delete the shop document and all of its records.
+  // Backs the deletion right promised in the Privacy Policy.
+  const deleteShopAccount = async (): Promise<boolean> => {
+    if (!shop) return false;
+    const activeShop = shop;
+    setIsLoading(true);
+
+    if (navigator.onLine && auth.currentUser) {
+      const subcollections = ['items', 'sales', 'customers', 'credit_payments', 'expenses'];
+      try {
+        for (const name of subcollections) {
+          const snap = await getDocs(collection(db, 'shops', activeShop.id, name));
+          await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+        }
+        await deleteDoc(doc(db, 'shops', activeShop.id));
+      } catch (e) {
+        // Keep the owner signed in so they can retry once a connection returns.
+        console.error('Shop deletion failed:', e);
+        setIsLoading(false);
+        return false;
+      }
+    }
+
+    // Clear every local trace on this device, whatever happened in the cloud.
+    for (const key of [
+      'countup_active_shop',
+      'countup_items',
+      'countup_sales',
+      'countup_customers',
+      'countup_payments',
+      'countup_expenses',
+      'countup_pending_queue',
+    ]) {
+      localStorage.removeItem(key);
+    }
+    setShop(null);
+    setItems([]);
+    setSales([]);
+    setCustomers([]);
+    setCreditPayments([]);
+    setExpenses([]);
+    setPendingQueue([]);
+    setIsLoading(false);
+    return true;
   };
 
   // Subscription info
-  const subscription = shop
+  const planSubscription = shop
     ? getSubscriptionInfo(shop.createdAt, shop.planExpiryDate, shop.planStatus)
     : {
         daysRemaining: 30,
@@ -865,11 +737,33 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         canRecordSales: true,
       };
 
+  // A shop suspended by the platform owner is read-only: records stay viewable and
+  // exportable, but new sales are locked. Without this the admin "Deactivate"
+  // action had no effect on the shop it was applied to.
+  const isShopDeactivated = Boolean(shop?.isDeactivated);
+  const subscription = isShopDeactivated
+    ? { ...planSubscription, canRecordSales: false }
+    : planSubscription;
+
   // Record a sale (under 15-second flow)
   const recordSale = async (
     saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>
   ): Promise<string> => {
     if (!shop) throw new Error('No active shop');
+    if (shop.isDeactivated) throw new Error('This shop has been deactivated');
+
+    // Guard rail: the cart must never contain more than the stock on hand, or the
+    // stock book silently drifts out of step with reality.
+    for (const sold of saleData.items) {
+      const stockItem = items.find((i) => i.id === sold.itemId);
+      if (!stockItem) throw new Error(`"${sold.name}" is no longer in your stock book.`);
+      if (sold.quantity > stockItem.quantity) {
+        throw new Error(
+          `Only ${stockItem.quantity} of "${stockItem.name}" left in stock — reduce the quantity to continue.`
+        );
+      }
+    }
+
     const saleId = `sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const nowIso = new Date().toISOString();
 
@@ -914,44 +808,150 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    // 3. Persist to Firestore or queue
+    // 3. Persist to Firestore or queue.
+    //
+    // One atomic batch: the sale, the new stock levels and the credit balance land
+    // together. Written one-by-one, a dropped connection halfway through left a sale
+    // recorded against stock that never went down, and the real-time listeners
+    // reflected that broken half-state on screen.
     const salePath = `shops/${shop.id}/sales/${saleId}`;
+    const stockUpdates = saleData.items
+      .map((sold) => updatedItems.find((i) => i.id === sold.itemId))
+      .filter((i): i is Item => Boolean(i));
+    const creditCustomer =
+      saleData.paymentType === 'credit' && saleData.customerId
+        ? customers.find((c) => c.id === saleData.customerId)
+        : undefined;
+
     if (navigator.onLine && auth.currentUser) {
       try {
-        await setDoc(doc(db, salePath), newSale);
-        // Sync item reductions
-        for (const sold of saleData.items) {
-          const matchedItem = updatedItems.find((i) => i.id === sold.itemId);
-          if (matchedItem) {
-            await setDoc(doc(db, `shops/${shop.id}/items/${matchedItem.id}`), matchedItem, { merge: true });
-          }
+        const batch = writeBatch(db);
+        batch.set(doc(db, salePath), newSale);
+        for (const item of stockUpdates) {
+          batch.set(doc(db, `shops/${shop.id}/items/${item.id}`), item, { merge: true });
         }
-        // Sync customer credit
-        if (saleData.paymentType === 'credit' && saleData.customerId) {
-          const updatedCust = customers.find((c) => c.id === saleData.customerId);
-          if (updatedCust) {
-            await setDoc(doc(db, `shops/${shop.id}/customers/${updatedCust.id}`), {
-              ...updatedCust,
-              totalOwed: updatedCust.totalOwed + saleData.totalAmount,
+        if (creditCustomer) {
+          batch.set(
+            doc(db, `shops/${shop.id}/customers/${creditCustomer.id}`),
+            {
+              totalOwed: creditCustomer.totalOwed + saleData.totalAmount,
               updatedAt: nowIso,
-            }, { merge: true });
-          }
+            },
+            { merge: true }
+          );
         }
+        await batch.commit();
       } catch (err) {
         console.warn('Sale sync error, queuing locally:', err);
         queueAction('sale', salePath, newSale);
+        for (const item of stockUpdates) {
+          queueAction('stock_update', `shops/${shop.id}/items/${item.id}`, item);
+        }
+        if (creditCustomer) {
+          queueAction('customer', `shops/${shop.id}/customers/${creditCustomer.id}`, {
+            totalOwed: creditCustomer.totalOwed + saleData.totalAmount,
+            updatedAt: nowIso,
+          });
+        }
       }
     } else {
       queueAction('sale', salePath, newSale);
-      for (const sold of saleData.items) {
-        const matchedItem = updatedItems.find((i) => i.id === sold.itemId);
-        if (matchedItem) {
-          queueAction('stock_update', `shops/${shop.id}/items/${matchedItem.id}`, matchedItem);
-        }
+      for (const item of stockUpdates) {
+        queueAction('stock_update', `shops/${shop.id}/items/${item.id}`, item);
+      }
+      if (creditCustomer) {
+        queueAction('customer', `shops/${shop.id}/customers/${creditCustomer.id}`, {
+          totalOwed: creditCustomer.totalOwed + saleData.totalAmount,
+          updatedAt: nowIso,
+        });
       }
     }
 
     return saleId;
+  };
+
+  // Void a sale recorded by mistake.
+  //
+  // Puts the stock back, takes the amount off the customer's credit balance if it
+  // was a credit sale, and hides the sale from reports — all in one atomic batch so
+  // the ledger and the stock book can never disagree afterwards. Limited to today's
+  // sales on purpose: a shopkeeper should not be able to rewrite last week's books.
+  const voidSale = async (saleId: string): Promise<Sale> => {
+    if (!shop) throw new Error('No active shop');
+    const sale = sales.find((s) => s.id === saleId);
+    if (!sale) throw new Error('That sale is no longer in your records.');
+    if (!isTodayIso(sale.createdAt)) {
+      throw new Error('Only sales recorded today can be undone. Older sales stay in your reports.');
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // Restore stock for every item in the sale (skip items since deleted).
+    const restoredItems: Item[] = [];
+    for (const sold of sale.items) {
+      const live = items.find((i) => i.id === sold.itemId);
+      if (!live) continue;
+      restoredItems.push({
+        ...live,
+        quantity: live.quantity + sold.quantity,
+        updatedAt: nowIso,
+      });
+    }
+
+    const creditCustomer =
+      sale.paymentType === 'credit' && sale.customerId
+        ? customers.find((c) => c.id === sale.customerId)
+        : undefined;
+    const restoredOwed = creditCustomer
+      ? Math.max(0, Number((creditCustomer.totalOwed - sale.totalAmount).toFixed(2)))
+      : undefined;
+
+    // Optimistic local state first — the shopkeeper sees the correction instantly.
+    setSales((prev) => prev.filter((s) => s.id !== saleId));
+    setItems((prev) =>
+      prev.map((i) => restoredItems.find((r) => r.id === i.id) ?? i)
+    );
+    if (creditCustomer && restoredOwed !== undefined) {
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === creditCustomer.id ? { ...c, totalOwed: restoredOwed, updatedAt: nowIso } : c
+        )
+      );
+    }
+
+    const salePath = `shops/${shop.id}/sales/${saleId}`;
+    if (navigator.onLine && auth.currentUser) {
+      try {
+        const batch = writeBatch(db);
+        batch.set(doc(db, salePath), { isDeleted: true }, { merge: true });
+        for (const item of restoredItems) {
+          batch.set(doc(db, `shops/${shop.id}/items/${item.id}`), item, { merge: true });
+        }
+        if (creditCustomer && restoredOwed !== undefined) {
+          batch.set(
+            doc(db, `shops/${shop.id}/customers/${creditCustomer.id}`),
+            { totalOwed: restoredOwed, updatedAt: nowIso },
+            { merge: true }
+          );
+        }
+        await batch.commit();
+        return sale;
+      } catch (e) {
+        console.warn('Void sale sync note, queued for retry:', e);
+      }
+    }
+
+    queueAction('sale', salePath, { isDeleted: true });
+    for (const item of restoredItems) {
+      queueAction('stock_update', `shops/${shop.id}/items/${item.id}`, item);
+    }
+    if (creditCustomer && restoredOwed !== undefined) {
+      queueAction('customer', `shops/${shop.id}/customers/${creditCustomer.id}`, {
+        totalOwed: restoredOwed,
+        updatedAt: nowIso,
+      });
+    }
+    return sale;
   };
 
   // Add Item to Stock
@@ -1018,19 +1018,40 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await updateItem(itemId, { quantity: newQty });
   };
 
-  // Delete Item
+  // Delete Item (soft delete: the document is flagged, never destroyed, so an
+  // accidental removal can be undone from the toast that follows)
   const deleteItem = async (itemId: string) => {
     if (!shop) return;
+    const path = `shops/${shop.id}/items/${itemId}`;
     setItems((prev) => prev.filter((i) => i.id !== itemId));
-    // Soft or hard delete in Firestore
+
     if (navigator.onLine && auth.currentUser) {
       try {
-        const itemRef = doc(db, `shops/${shop.id}/items/${itemId}`);
-        await setDoc(itemRef, { isDeleted: true }, { merge: true });
+        await setDoc(doc(db, path), { isDeleted: true }, { merge: true });
+        return;
       } catch (e) {
-        console.warn('Delete item sync note:', e);
+        console.warn('Delete item sync note, queued for retry:', e);
       }
     }
+    queueAction('item', path, { isDeleted: true });
+  };
+
+  // Put a deleted item back exactly as it was (undo)
+  const restoreItem = async (item: Item) => {
+    if (!shop) return;
+    const path = `shops/${shop.id}/items/${item.id}`;
+    const restored: Item = { ...item, updatedAt: new Date().toISOString() };
+    setItems((prev) => (prev.some((i) => i.id === item.id) ? prev : [restored, ...prev]));
+
+    if (navigator.onLine && auth.currentUser) {
+      try {
+        await setDoc(doc(db, path), { ...restored, isDeleted: false }, { merge: true });
+        return;
+      } catch (e) {
+        console.warn('Restore item sync note, queued for retry:', e);
+      }
+    }
+    queueAction('item', path, { ...restored, isDeleted: false });
   };
 
   // Add Customer to Credit Book
@@ -1066,16 +1087,29 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Record Credit Payment
+  //
+  // Returns what was actually applied. Over-paying used to be accepted, silently
+  // clamped to a zero balance and still stored the inflated amount — the ledger no
+  // longer adds up as soon as that happens, so it is refused here instead.
   const recordCreditPayment = async (
     customerId: string,
     amount: number,
     note?: string
-  ) => {
-    if (!shop) return;
+  ): Promise<{ applied: number; remaining: number }> => {
+    if (!shop) throw new Error('No active shop');
+    const customer = customers.find((c) => c.id === customerId);
+    if (!customer) throw new Error('That customer is no longer in your credit book.');
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Enter an amount greater than zero.');
+    }
+    if (amount > customer.totalOwed) {
+      throw new Error(
+        `${customer.name} only owes K ${customer.totalOwed.toFixed(2)} — enter that amount or less.`
+      );
+    }
+
     const paymentId = `pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const nowIso = new Date().toISOString();
-    const customer = customers.find((c) => c.id === customerId);
-    if (!customer) return;
 
     const newPayment: CreditPayment = {
       id: paymentId,
@@ -1090,7 +1124,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCreditPayments((prev) => [newPayment, ...prev]);
 
     // Update customer owed amount
-    const newTotalOwed = Math.max(0, customer.totalOwed - amount);
+    const newTotalOwed = Math.max(0, Number((customer.totalOwed - amount).toFixed(2)));
     setCustomers((prev) =>
       prev.map((c) =>
         c.id === customerId ? { ...c, totalOwed: newTotalOwed, updatedAt: nowIso } : c
@@ -1102,14 +1136,25 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (navigator.onLine && auth.currentUser) {
       try {
-        await setDoc(doc(db, paymentPath), newPayment);
-        await setDoc(doc(db, customerPath), { totalOwed: newTotalOwed, updatedAt: nowIso }, { merge: true });
+        // Atomic: a payment must never land without its matching balance change.
+        const batch = writeBatch(db);
+        batch.set(doc(db, paymentPath), newPayment);
+        batch.set(
+          doc(db, customerPath),
+          { totalOwed: newTotalOwed, updatedAt: nowIso },
+          { merge: true }
+        );
+        await batch.commit();
       } catch (e) {
         queueAction('payment', paymentPath, newPayment);
+        queueAction('customer', customerPath, { totalOwed: newTotalOwed, updatedAt: nowIso });
       }
     } else {
       queueAction('payment', paymentPath, newPayment);
+      queueAction('customer', customerPath, { totalOwed: newTotalOwed, updatedAt: nowIso });
     }
+
+    return { applied: amount, remaining: newTotalOwed };
   };
 
   // Add Expense
@@ -1145,48 +1190,38 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Expenses are soft-deleted like stock items: without a write the row simply
+  // reappeared on the next real-time snapshot, so the delete looked broken.
   const deleteExpense = async (expenseId: string) => {
     if (!shop) return;
+    const path = `shops/${shop.id}/expenses/${expenseId}`;
     setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
-  };
-
-  // Upgrade / Renew Plan via Mobile Money
-  const upgradePlan = async (
-    planId: PlanBillingCycle,
-    momoPhone: string,
-    operator: string
-  ): Promise<boolean> => {
-    if (!shop) return false;
-    const selectedPlan = SUBSCRIPTION_PLANS[planId];
-    if (!selectedPlan) return false;
-
-    // Calculate new expiry date based on existing expiry or now
-    const now = new Date();
-    const currentExpiry = shop.planExpiryDate ? new Date(shop.planExpiryDate) : now;
-    const baseDate = currentExpiry.getTime() > now.getTime() ? currentExpiry : now;
-    const additionalMs = selectedPlan.months * 30 * 24 * 60 * 60 * 1000;
-    const newExpiry = new Date(baseDate.getTime() + additionalMs);
-
-    const updatedShop: Shop = {
-      ...shop,
-      planStatus: 'active',
-      planType: planId,
-      planExpiryDate: newExpiry.toISOString(),
-    };
-
-    setShop(updatedShop);
 
     if (navigator.onLine && auth.currentUser) {
       try {
-        await setDoc(doc(db, 'shops', shop.id), updatedShop, { merge: true });
+        await setDoc(doc(db, path), { isDeleted: true }, { merge: true });
+        return;
       } catch (e) {
-        queueAction('item', `shops/${shop.id}`, updatedShop);
+        console.warn('Delete expense sync note, queued for retry:', e);
       }
-    } else {
-      queueAction('item', `shops/${shop.id}`, updatedShop);
     }
+    queueAction('expense', path, { isDeleted: true });
+  };
 
-    return true;
+  const restoreExpense = async (expense: Expense) => {
+    if (!shop) return;
+    const path = `shops/${shop.id}/expenses/${expense.id}`;
+    setExpenses((prev) => (prev.some((e) => e.id === expense.id) ? prev : [expense, ...prev]));
+
+    if (navigator.onLine && auth.currentUser) {
+      try {
+        await setDoc(doc(db, path), { ...expense, isDeleted: false }, { merge: true });
+        return;
+      } catch (e) {
+        console.warn('Restore expense sync note, queued for retry:', e);
+      }
+    }
+    queueAction('expense', path, { ...expense, isDeleted: false });
   };
 
   // Admin Controls
@@ -1244,11 +1279,10 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         isAdmin,
         loginWithPhoneAndPin,
-        loginWithGoogle,
         registerNewShop,
-        loadDemoShop,
         logout,
-        toggleAdminMode,
+        deleteShopAccount,
+        changePin,
         language,
         setLanguage,
         t,
@@ -1260,16 +1294,19 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         creditPayments,
         expenses,
         recordSale,
+        voidSale,
         addItem,
         updateItem,
         quickRestock,
         deleteItem,
+        restoreItem,
         addCustomer,
         recordCreditPayment,
         addExpense,
         deleteExpense,
+        restoreExpense,
         subscription,
-        upgradePlan,
+        isShopDeactivated,
         isOnline,
         pendingSyncCount: pendingQueue.length,
         isSyncing,

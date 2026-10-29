@@ -16,6 +16,7 @@ import { PlanScreen } from './components/PlanScreen';
 import { AdminScreen } from './components/AdminScreen';
 import { AuthScreen } from './components/AuthScreen';
 import { OfflineNotice } from './components/OfflineNotice';
+import { ToastProvider } from './components/Toast';
 import { LegalPages } from './components/LegalPages';
 import icon from '/brand/icon.png';
 
@@ -41,6 +42,7 @@ const MainAppContent: React.FC = () => {
   // Handle custom events from Header
   useEffect(() => {
     const handleOpenPlan = () => setIsPlanOpen(true);
+    const handleOpenAdmin = () => setIsAdminOpen(true);
     const handleOpenLegal = (e: CustomEvent) => setLegalPage(e.detail as 'privacy' | 'terms' | 'security');
     const handleExportData = () => {
       // Export all data as JSON
@@ -67,11 +69,13 @@ const MainAppContent: React.FC = () => {
     };
 
     window.addEventListener('open-plan', handleOpenPlan as EventListener);
+    window.addEventListener('open-admin', handleOpenAdmin as EventListener);
     window.addEventListener('open-legal', handleOpenLegal as EventListener);
     window.addEventListener('export-data', handleExportData as EventListener);
 
     return () => {
       window.removeEventListener('open-plan', handleOpenPlan as EventListener);
+      window.removeEventListener('open-admin', handleOpenAdmin as EventListener);
       window.removeEventListener('open-legal', handleOpenLegal as EventListener);
       window.removeEventListener('export-data', handleExportData as EventListener);
     };
@@ -162,8 +166,10 @@ const MainAppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <ShopProvider>
-      <MainAppContent />
-    </ShopProvider>
+    <ToastProvider>
+      <ShopProvider>
+        <MainAppContent />
+      </ShopProvider>
+    </ToastProvider>
   );
 }
