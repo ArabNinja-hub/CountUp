@@ -14,6 +14,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Language } from '../types';
+import { sanitizePhoneInput } from '../utils/format';
 import logo from '/brand/logo.png';
 import { LegalPages } from './LegalPages';
 
@@ -42,13 +43,19 @@ export const AuthScreen: React.FC = () => {
     const cleanPhone = phone.trim();
     const cleanPin = pin.trim();
 
-    if (!cleanPhone || cleanPhone.length < 8) {
-      setErrorMessage('Please enter a valid Zambian phone number (e.g. 0977 123 456)');
+    // Accept 0977 123 456, 260977123456 and everything in between; reject anything
+    // that is not a Zambian mobile number so a typo cannot create a second shop.
+    const phoneDigits = cleanPhone.replace(/\D/g, '');
+    const national = phoneDigits.startsWith('260') ? `0${phoneDigits.slice(3)}` : phoneDigits;
+    if (!/^0(9[5-7]|7[5-7])\d{7}$/.test(national)) {
+      setErrorMessage(
+        'Enter a Zambian mobile number — 10 digits starting 095, 096, 097, 076 or 077 (e.g. 0977 123 456).'
+      );
       return;
     }
 
     if (!cleanPin || cleanPin.length !== 4 || !/^\d{4}$/.test(cleanPin)) {
-      setErrorMessage('PIN must be exactly 4 numbers (e.g. 1234)');
+      setErrorMessage('Your PIN must be exactly 4 numbers (e.g. 1234).');
       return;
     }
 
@@ -66,7 +73,9 @@ export const AuthScreen: React.FC = () => {
     } else {
       const success = await loginWithPhoneAndPin(cleanPhone, cleanPin);
       if (!success) {
-        setErrorMessage('Incorrect phone or PIN. New shop? Switch to "Create Shop" below.');
+        setErrorMessage(
+          'That phone number and PIN do not match a shop saved on this phone. Check the PIN, or create your shop if this is your first time.'
+        );
       }
     }
   };
@@ -163,7 +172,7 @@ export const AuthScreen: React.FC = () => {
                   type="tel"
                   required
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => setPhone(sanitizePhoneInput(e.target.value))}
                   placeholder="e.g. 0977 123 456"
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
                   autoComplete="tel"
@@ -184,7 +193,7 @@ export const AuthScreen: React.FC = () => {
                   maxLength={4}
                   required
                   value={pin}
-                  onChange={(e) => setPin(e.target.value)}
+                  onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
                   placeholder="••••"
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-10 pr-12 py-2.5 text-base font-black tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono text-center"
                   autoComplete="off"

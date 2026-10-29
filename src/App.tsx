@@ -16,6 +16,7 @@ import { PlanScreen } from './components/PlanScreen';
 import { AdminScreen } from './components/AdminScreen';
 import { AuthScreen } from './components/AuthScreen';
 import { OfflineNotice } from './components/OfflineNotice';
+import { ToastProvider } from './components/Toast';
 import { LegalPages } from './components/LegalPages';
 import icon from '/brand/icon.png';
 
@@ -165,8 +166,10 @@ const MainAppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <ShopProvider>
-      <MainAppContent />
-    </ShopProvider>
+    <ToastProvider>
+      <ShopProvider>
+        <MainAppContent />
+      </ShopProvider>
+    </ToastProvider>
   );
 }

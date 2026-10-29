@@ -1,25 +1,26 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
   Search,
   Plus,
   Minus,
-  Check,
   AlertTriangle,
   UserPlus,
   ShoppingBag,
   Sparkles,
-  ArrowRight,
   Trash2,
   Lock,
   Smartphone,
   Banknote,
-  Clock,
   CheckCircle2,
   Receipt,
-  X,
+  HandCoins,
+  UserRound,
 } from 'lucide-react';
 import { Item, PaymentType, Customer } from '../types';
+import { useToast } from './Toast';
+import { ConfirmDialog } from './ConfirmDialog';
+import { formatKwacha, formatKwachaCompact, isToday, sanitizePhoneInput } from '../utils/format';
 
 interface CartItem {
   item: Item;
@@ -41,6 +42,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     subscription,
     isShopDeactivated,
     shop,
+    sales,
   } = useShop();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -52,6 +54,12 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   const [newCustName, setNewCustName] = useState('');
   const [newCustPhone, setNewCustPhone] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [creditError, setCreditError] = useState('');
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const { notify } = useToast();
 
   // Success modal
   const [lastCompletedSale, setLastCompletedSale] = useState<{
@@ -60,6 +68,21 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     momoOperator?: 'airtel' | 'mtn' | 'zamtel';
     customerName?: string;
   } | null>(null);
+
+  // Live "today" figures — recomputed from the sales collection, which the context
+  // keeps in sync in real time, so the numbers change the instant a sale is saved.
+  const today = useMemo(() => {
+    const todaySales = sales.filter((s) => isToday(s.createdAt));
+    const sum = (type: PaymentType) =>
+      todaySales.filter((s) => s.paymentType === type).reduce((t, s) => t + s.totalAmount, 0);
+    return {
+      count: todaySales.length,
+      total: todaySales.reduce((t, s) => t + s.totalAmount, 0),
+      cash: sum('cash') + sum('momo'),
+      credit: sum('credit'),
+      profit: todaySales.reduce((t, s) => t + s.profit, 0),
+    };
+  }, [sales]);
 
   // Filter & sort items: Most recently sold items appear first!
   const sortedItems = useMemo(() => {
@@ -80,17 +103,28 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     });
   }, [items, searchQuery]);
 
-  // Cart helper functions
+  // Cart helpers. Quantity can never exceed what is actually on the shelf, so the
+  // stock book and the sale can't disagree — the shopkeeper gets a plain warning
+  // instead of a silently impossible sale.
   const addToCart = (item: Item) => {
-    setCart((prev) => {
-      const existing = prev.find((ci) => ci.item.id === item.id);
-      if (existing) {
-        return prev.map((ci) =>
-          ci.item.id === item.id ? { ...ci, quantity: ci.quantity + 1 } : ci
-        );
-      }
-      return [...prev, { item, quantity: 1 }];
-    });
+    const inCart = cart.find((ci) => ci.item.id === item.id);
+    const current = inCart?.quantity ?? 0;
+    if (item.quantity <= 0) {
+      notify(`${item.name} is out of stock`, { kind: 'error', detail: 'Restock it in the Stock tab first.' });
+      return;
+    }
+    if (current >= item.quantity) {
+      notify(`Only ${item.quantity} of ${item.name} left`, {
+        kind: 'info',
+        detail: 'That is the whole stock on hand — you cannot sell more than you have.',
+      });
+      return;
+    }
+    setCart((prev) =>
+      prev.some((ci) => ci.item.id === item.id)
+        ? prev.map((ci) => (ci.item.id === item.id ? { ...ci, quantity: ci.quantity + 1 } : ci))
+        : [...prev, { item, quantity: 1 }]
+    );
   };
 
   const removeFromCart = (itemId: string) => {
@@ -109,9 +143,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     setCart((prev) => prev.filter((ci) => ci.item.id !== itemId));
   };
 
-  const clearCart = () => {
-    setCart([]);
-  };
+  // If stock changes elsewhere (a restock, an item sold on another screen), trim the
+  // cart so it always matches what is really available.
+  useEffect(() => {
+    setCart((prev) =>
+      prev
+        .map((ci) => {
+          const live = items.find((i) => i.id === ci.item.id);
+          if (!live) return null;
+          return { item: live, quantity: Math.min(ci.quantity, live.quantity) };
+        })
+        .filter((ci): ci is CartItem => Boolean(ci) && ci!.quantity > 0)
+    );
+  }, [items]);
 
   // Calculations
   const totalAmount = useMemo(() => {
@@ -135,6 +179,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       return;
     }
 
+    setCreditError('');
+
+    // Credit sales need a named customer, otherwise the debt goes nowhere.
+    if (paymentType === 'credit') {
+      const hasNew = isAddingNewCustomer && newCustName.trim().length > 0;
+      if (!hasNew && !selectedCustomerId) {
+        setCreditError(
+          'Choose who is buying on credit, or add them as a new customer, before saving.'
+        );
+        return;
+      }
+    }
+
     setIsSaving(true);
     try {
       let customerObj: Customer | undefined;
@@ -144,9 +201,9 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           customerObj = await addCustomer(newCustName.trim(), newCustPhone.trim());
         } else if (selectedCustomerId) {
           customerObj = customers.find((c) => c.id === selectedCustomerId);
-        } else {
-          alert('Please select or enter the customer name for credit');
-          setIsSaving(false);
+        }
+        if (!customerObj) {
+          setCreditError('That customer could not be found. Pick them again.');
           return;
         }
       }
@@ -180,14 +237,29 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         customerName: customerObj?.name,
       });
 
+      notify(`Sale saved — ${formatKwacha(totalAmount)}`, {
+        kind: 'success',
+        detail:
+          paymentType === 'credit'
+            ? `Added to ${customerObj?.name}'s credit balance`
+            : paymentType === 'momo'
+            ? `Recorded as Mobile Money (${momoOperator})`
+            : 'Recorded as cash in hand',
+      });
+
       // Reset cart immediately
       setCart([]);
       setNewCustName('');
       setNewCustPhone('');
       setIsAddingNewCustomer(false);
       setSelectedCustomerId('');
+      setCustomerQuery('');
     } catch (err) {
-      console.error('Error saving sale:', err);
+      // e.g. stock ran out between adding to the cart and saving
+      notify('Sale not saved', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
     } finally {
       setIsSaving(false);
     }
@@ -196,93 +268,87 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   // Reusable Checkout Panel content (used in desktop sidebar AND mobile bottom sheet)
   const renderCheckoutControls = () => (
     <div className="space-y-3">
-      {/* Payment Type Switcher */}
+      {/* Payment Method */}
       <div>
         <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
-          Payment Method
+          How is the customer paying?
         </label>
         <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
-            onClick={() => setPaymentType('cash')}
-            className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 border ${
+            onClick={() => { setPaymentType('cash'); setCreditError(''); }}
+            aria-pressed={paymentType === 'cash'}
+            className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 border ${
               paymentType === 'cash'
                 ? 'bg-emerald-800 text-white border-emerald-800 shadow-xs ring-1 ring-emerald-700'
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <Banknote className="w-4 h-4 text-emerald-400" />
+            <Banknote className={`w-4 h-4 ${paymentType === 'cash' ? 'text-emerald-300' : 'text-emerald-600'}`} />
             <span>{t.paidCash}</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setPaymentType('momo')}
-            className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 border ${
+            onClick={() => { setPaymentType('momo'); setCreditError(''); }}
+            aria-pressed={paymentType === 'momo'}
+            className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 border ${
               paymentType === 'momo'
                 ? 'bg-sky-800 text-white border-sky-800 shadow-xs ring-1 ring-sky-700'
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <Smartphone className="w-4 h-4 text-sky-400" />
+            <Smartphone className={`w-4 h-4 ${paymentType === 'momo' ? 'text-sky-300' : 'text-sky-600'}`} />
             <span>{t.paidMomo}</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setPaymentType('credit')}
-            className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 border ${
+            onClick={() => { setPaymentType('credit'); setCreditError(''); }}
+            aria-pressed={paymentType === 'credit'}
+            className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 border ${
               paymentType === 'credit'
                 ? 'bg-amber-800 text-white border-amber-800 shadow-xs ring-1 ring-amber-700'
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <Check className={`w-3.5 h-3.5 ${paymentType === 'credit' ? 'opacity-100 text-amber-300' : 'opacity-0'}`} />
+            <HandCoins className={`w-4 h-4 ${paymentType === 'credit' ? 'text-amber-300' : 'text-amber-600'}`} />
             <span>{t.onCredit}</span>
           </button>
         </div>
+        <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
+          {paymentType === 'cash' && 'Money received now, in hand.'}
+          {paymentType === 'momo' && `Money received now via ${momoOperator === 'mtn' ? 'MTN MoMo' : momoOperator === 'zamtel' ? 'Zamtel Kwacha' : 'Airtel Money'}.`}
+          {paymentType === 'credit' && 'Nothing received now — the balance is added to the customer’s credit book.'}
+        </p>
       </div>
 
       {/* If MoMo is selected: Zambian Operator Selection */}
       {paymentType === 'momo' && (
         <div className="p-2.5 bg-sky-50/80 border border-sky-200 rounded-xl space-y-1.5">
           <span className="text-[11px] font-semibold text-sky-950 block">
-            Select Mobile Money Network:
+            Which network sent the money?
           </span>
           <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => setMomoOperator('airtel')}
-              className={`min-h-[40px] py-1.5 px-2 rounded-lg text-xs font-bold transition-all text-center border ${
-                momoOperator === 'airtel'
-                  ? 'bg-red-700 text-white border-red-700 shadow-xs'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              Airtel (*115#)
-            </button>
-            <button
-              type="button"
-              onClick={() => setMomoOperator('mtn')}
-              className={`min-h-[40px] py-1.5 px-2 rounded-lg text-xs font-bold transition-all text-center border ${
-                momoOperator === 'mtn'
-                  ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              MTN (*303#)
-            </button>
-            <button
-              type="button"
-              onClick={() => setMomoOperator('zamtel')}
-              className={`min-h-[40px] py-1.5 px-2 rounded-lg text-xs font-bold transition-all text-center border ${
-                momoOperator === 'zamtel'
-                  ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              Zamtel Kwacha
-            </button>
+            {([
+              { id: 'airtel', label: 'Airtel', active: 'bg-red-700 border-red-700 text-white' },
+              { id: 'mtn', label: 'MTN MoMo', active: 'bg-amber-500 border-amber-500 text-slate-950' },
+              { id: 'zamtel', label: 'Zamtel', active: 'bg-emerald-700 border-emerald-700 text-white' },
+            ] as const).map((op) => (
+              <button
+                key={op.id}
+                type="button"
+                onClick={() => setMomoOperator(op.id)}
+                aria-pressed={momoOperator === op.id}
+                className={`min-h-[40px] py-1.5 px-2 rounded-lg text-xs font-bold transition-all text-center border ${
+                  momoOperator === op.id
+                    ? op.active + ' shadow-xs'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {op.label}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -290,17 +356,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       {/* If On Credit is selected: Customer Selection */}
       {paymentType === 'credit' && (
         <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-amber-950">
-              {t.selectCustomer}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold text-amber-950 flex items-center gap-1">
+              <UserRound className="w-3.5 h-3.5" />
+              Who is buying on credit?
             </span>
             <button
               type="button"
-              onClick={() => setIsAddingNewCustomer(!isAddingNewCustomer)}
-              className="text-xs text-amber-800 font-bold hover:underline flex items-center space-x-1"
+              onClick={() => { setIsAddingNewCustomer(!isAddingNewCustomer); setCreditError(''); }}
+              className="text-[11px] text-amber-900 font-bold hover:underline flex items-center space-x-1 shrink-0"
             >
               <UserPlus className="w-3.5 h-3.5" />
-              <span>{isAddingNewCustomer ? 'Pick from list' : '+ New Customer'}</span>
+              <span>{isAddingNewCustomer ? 'Pick an existing customer' : 'New customer'}</span>
             </button>
           </div>
 
@@ -308,32 +375,105 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             <div className="space-y-2">
               <input
                 type="text"
-                placeholder={t.customerName + ' *'}
+                placeholder="Customer name (required)"
                 value={newCustName}
-                onChange={(e) => setNewCustName(e.target.value)}
-                className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-600"
+                onChange={(e) => { setNewCustName(e.target.value); setCreditError(''); }}
+                autoComplete="off"
+                className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
               />
               <input
                 type="tel"
+                inputMode="tel"
                 placeholder="Phone (optional, for WhatsApp reminders)"
                 value={newCustPhone}
-                onChange={(e) => setNewCustPhone(e.target.value)}
-                className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
+                onChange={(e) => setNewCustPhone(sanitizePhoneInput(e.target.value))}
+                autoComplete="off"
+                className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600 font-mono"
               />
+
+              {(() => {
+                const typed = newCustName.trim().toLowerCase();
+                const existing = typed
+                  ? customers.find((c) => c.name.trim().toLowerCase() === typed)
+                  : undefined;
+                if (!existing) return null;
+                return (
+                  <div className="bg-white border border-amber-300 rounded-lg p-2 text-[11px] text-amber-900 leading-snug">
+                    <strong>{existing.name}</strong> is already in your credit book
+                    {existing.totalOwed > 0 ? ` and owes ${formatKwacha(existing.totalOwed)}` : ''}. Add
+                    this sale to that account instead of starting a second one.
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomerId(existing.id);
+                        setIsAddingNewCustomer(false);
+                        setNewCustName('');
+                        setNewCustPhone('');
+                        setCreditError('');
+                      }}
+                      className="mt-1.5 block w-full bg-amber-800 hover:bg-amber-900 text-white font-bold text-[11px] py-1.5 rounded-md"
+                    >
+                      Use {existing.name}
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
+          ) : customers.length === 0 ? (
+            <p className="text-[11px] text-amber-900 bg-white border border-amber-200 rounded-lg p-2.5 leading-snug">
+              No credit customers yet. Tap <strong>New customer</strong> above and enter their name —
+              it takes a few seconds.
+            </p>
           ) : (
-            <select
-              value={selectedCustomerId}
-              onChange={(e) => setSelectedCustomerId(e.target.value)}
-              className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-600"
-            >
-              <option value="">-- Choose existing customer --</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} {c.totalOwed > 0 ? `(Owes K ${c.totalOwed})` : ''}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={customerQuery}
+                  onChange={(e) => setCustomerQuery(e.target.value)}
+                  placeholder="Search customer…"
+                  className="w-full bg-white border border-amber-300 rounded-lg pl-8 pr-2 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
+                />
+              </div>
+              <div className="max-h-40 overflow-y-auto bg-white border border-amber-200 rounded-lg divide-y divide-amber-50">
+                {customers
+                  .filter((c) => {
+                    const q = customerQuery.trim().toLowerCase();
+                    return !q || c.name.toLowerCase().includes(q) || (c.phone || '').includes(q);
+                  })
+                  .sort((a, b) => b.totalOwed - a.totalOwed)
+                  .map((c) => {
+                    const isPicked = selectedCustomerId === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => { setSelectedCustomerId(c.id); setCreditError(''); }}
+                        aria-pressed={isPicked}
+                        className={`w-full flex items-center justify-between px-2.5 py-2 text-left transition-colors ${
+                          isPicked ? 'bg-amber-100' : 'hover:bg-amber-50'
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-xs font-bold text-slate-900 truncate">{c.name}</span>
+                          {c.phone && <span className="block text-[10px] text-slate-500 font-mono">{c.phone}</span>}
+                        </span>
+                        <span className={`text-[11px] font-bold tabular-nums shrink-0 ${c.totalOwed > 0 ? 'text-amber-900' : 'text-emerald-700'}`}>
+                          {c.totalOwed > 0 ? `owes ${formatKwachaCompact(c.totalOwed)}` : 'cleared'}
+                        </span>
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {creditError && (
+            <p className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg p-2 flex items-start gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>{creditError}</span>
+            </p>
           )}
         </div>
       )}
@@ -342,16 +482,23 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       <button
         onClick={handleSaveSale}
         disabled={isSaving || cart.length === 0}
-        className="w-full min-h-[48px] bg-emerald-800 hover:bg-emerald-900 active:scale-[0.99] text-white py-3 px-4 rounded-xl font-bold text-sm flex items-center justify-between shadow-md transition-all cursor-pointer disabled:opacity-50"
+        className="w-full min-h-[52px] bg-emerald-800 hover:bg-emerald-900 active:scale-[0.99] text-white py-3 px-4 rounded-xl font-bold text-sm flex items-center justify-between shadow-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <span className="flex items-center space-x-2">
-          <span>{isSaving ? 'Recording sale...' : t.completeSale}</span>
-          <span className="text-emerald-200 text-xs">({totalItemsCount} items)</span>
+          <Receipt className="w-4 h-4" />
+          <span>{isSaving ? 'Saving sale…' : t.completeSale}</span>
         </span>
         <span className="text-base font-extrabold tracking-tight tabular-nums">
-          K {totalAmount.toFixed(2)}
+          {formatKwacha(totalAmount)}
         </span>
       </button>
+      <p className="text-[10px] text-slate-500 text-center -mt-1">
+        {cart.length === 0
+          ? 'Add an item to start a sale.'
+          : paymentType === 'credit' && !selectedCustomerId && !newCustName.trim()
+          ? 'Choose who is buying on credit above to save this sale.'
+          : 'Saves instantly — works offline, syncs when you have network.'}
+      </p>
     </div>
   );
 
@@ -390,6 +537,40 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         </div>
       )}
 
+      {/* Live "today" strip — updates the moment a sale is recorded */}
+      <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Today</span>
+          <p className="text-sm font-black text-slate-900 tabular-nums leading-tight">
+            {formatKwacha(today.total)}
+          </p>
+          <span className="text-[10px] text-slate-500">
+            {today.count} {today.count === 1 ? 'sale' : 'sales'}
+          </span>
+        </div>
+        <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Cash & MoMo</span>
+          <p className="text-sm font-black text-emerald-800 tabular-nums leading-tight">
+            {formatKwacha(today.cash)}
+          </p>
+          <span className="text-[10px] text-slate-500">Money in hand</span>
+        </div>
+        <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">On credit</span>
+          <p className="text-sm font-black text-amber-800 tabular-nums leading-tight">
+            {formatKwacha(today.credit)}
+          </p>
+          <span className="text-[10px] text-slate-500">Still to be paid</span>
+        </div>
+        <div className="bg-emerald-900 border border-emerald-800 rounded-xl px-3 py-2 shadow-xs">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Profit</span>
+          <p className="text-sm font-black text-white tabular-nums leading-tight">
+            {formatKwacha(today.profit)}
+          </p>
+          <span className="text-[10px] text-emerald-200">Today</span>
+        </div>
+      </div>
+
       {/* Responsive Grid: Left side catalog, Right side sticky receipt on desktop */}
       <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start">
         {/* Left Column: Search & Catalog */}
@@ -399,16 +580,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             <div className="relative">
               <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
               <input
-                type="text"
+                ref={searchRef}
+                type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t.searchItem}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-16 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white transition-all"
+                onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery(''); }}
+                placeholder="Search your items by name…"
+                autoComplete="off"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-16 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white transition-all"
               />
               {searchQuery && (
                 <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-2 text-xs font-semibold text-slate-400 hover:text-slate-700 px-2 py-0.5 rounded"
+                  onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+                  className="absolute right-2.5 top-2 text-xs font-bold text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-md px-2 py-1"
                 >
                   Clear
                 </button>
@@ -438,6 +622,23 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 className="bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-xs transition-colors cursor-pointer"
               >
                 {t.addItem}
+              </button>
+            </div>
+          ) : sortedItems.length === 0 ? (
+            <div className="bg-white border border-dashed border-slate-300 rounded-2xl p-8 text-center my-2">
+              <Search className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <p className="font-bold text-slate-800 text-sm mb-1">
+                Nothing matches “{searchQuery.trim()}”
+              </p>
+              <p className="text-xs text-slate-500 mb-4">
+                {items.length} {items.length === 1 ? 'item is' : 'items are'} in your stock book — try a
+                shorter word, or check the spelling.
+              </p>
+              <button
+                onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2.5 rounded-xl transition-colors cursor-pointer"
+              >
+                Show all items
               </button>
             </div>
           ) : (
@@ -487,7 +688,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                     {/* Price and Cart Stepper */}
                     <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
                       <span className="text-base font-extrabold text-emerald-900 tracking-tight tabular-nums">
-                        K {item.sellingPrice}
+                        {formatKwachaCompact(item.sellingPrice)}
                       </span>
 
                       {inCart ? (
@@ -541,7 +742,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
               </div>
               {cart.length > 0 && (
                 <button
-                  onClick={clearCart}
+                  onClick={() => setShowClearConfirm(true)}
                   className="text-xs text-slate-400 hover:text-rose-600 flex items-center space-x-1"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -565,7 +766,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                       <div className="min-w-0 flex-1 pr-2">
                         <p className="font-semibold text-slate-900 truncate">{ci.item.name}</p>
                         <p className="text-[11px] text-slate-400 tabular-nums">
-                          K {ci.item.sellingPrice} each
+                          {formatKwacha(ci.item.sellingPrice)} each
                         </p>
                       </div>
 
@@ -590,7 +791,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
                       <div className="text-right shrink-0">
                         <p className="font-bold text-slate-900 tabular-nums">
-                          K {(ci.item.sellingPrice * ci.quantity).toFixed(2)}
+                          {formatKwacha(ci.item.sellingPrice * ci.quantity)}
                         </p>
                         <button
                           onClick={() => deleteFromCart(ci.item.id)}
@@ -607,18 +808,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 <div className="pt-3 border-t border-slate-100 space-y-1 text-xs">
                   <div className="flex justify-between text-slate-500">
                     <span>Subtotal</span>
-                    <span className="tabular-nums font-medium">K {totalAmount.toFixed(2)}</span>
+                    <span className="tabular-nums font-medium">{formatKwacha(totalAmount)}</span>
                   </div>
                   <div className="flex justify-between text-slate-500">
-                    <span>Est. Profit</span>
+                    <span>Profit on this sale</span>
                     <span className="tabular-nums text-emerald-700 font-semibold">
-                      +K {(totalAmount - totalCost).toFixed(2)}
+                      +{formatKwacha(totalAmount - totalCost)}
                     </span>
                   </div>
                   <div className="flex justify-between text-sm font-extrabold text-slate-900 pt-1 border-t border-slate-100">
                     <span>Total Due</span>
                     <span className="tabular-nums text-emerald-900 text-base">
-                      K {totalAmount.toFixed(2)}
+                      {formatKwacha(totalAmount)}
                     </span>
                   </div>
                 </div>
@@ -634,7 +835,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       {/* Mobile-Only Drawer / Bottom Sheet when cart has items */}
       <div className="lg:hidden">
         {cart.length > 0 && (
-          <div className="fixed bottom-16 left-0 right-0 z-30 bg-white border-t border-slate-200 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] max-w-lg mx-auto rounded-t-2xl px-4 pt-3 pb-4">
+          <div className="fixed bottom-16 left-0 right-0 z-30 bg-white border-t border-slate-200 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] max-w-lg mx-auto rounded-t-2xl px-4 pt-3 pb-4 max-h-[72vh] overflow-y-auto overscroll-contain">
             {/* Grab Handle */}
             <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-2" />
 
@@ -645,11 +846,11 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                   {totalItemsCount} {totalItemsCount === 1 ? 'item' : 'items'}
                 </span>
                 <span className="text-xs font-extrabold text-slate-900 tabular-nums">
-                  K {totalAmount.toFixed(2)}
+                  {formatKwacha(totalAmount)}
                 </span>
               </div>
               <button
-                onClick={clearCart}
+                onClick={() => setShowClearConfirm(true)}
                 className="text-xs text-slate-400 hover:text-rose-600 flex items-center space-x-1"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -682,6 +883,26 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         )}
       </div>
 
+      {showClearConfirm && (
+        <ConfirmDialog
+          title="Clear this sale?"
+          description={
+            <>
+              <p>
+                This removes the {totalItemsCount} {totalItemsCount === 1 ? 'item' : 'items'} in the
+                current sale. Nothing has been recorded yet, so no stock will change.
+              </p>
+              <p className="font-semibold text-slate-700">
+                {items.length > 0 ? 'You can start a new sale straight away.' : ''}
+              </p>
+            </>
+          }
+          confirmLabel="Clear sale"
+          onCancel={() => setShowClearConfirm(false)}
+          onConfirm={() => { setCart([]); setShowClearConfirm(false); }}
+        />
+      )}
+
       {/* Sale Success Modal Toast */}
       {lastCompletedSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-xs">
@@ -693,7 +914,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
               Sale Recorded!
             </h3>
             <p className="text-2xl font-black text-emerald-800 my-1 tabular-nums">
-              K {lastCompletedSale.total.toFixed(2)}
+              {formatKwacha(lastCompletedSale.total)}
             </p>
             <p className="text-xs text-slate-500 mb-4">
               {lastCompletedSale.paymentType === 'cash'

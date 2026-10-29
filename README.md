@@ -26,6 +26,25 @@ runs fully **offline** on a phone, and syncs to the cloud when a connection retu
 Every new shop starts with an **empty** stock book: the owner enters their own items.
 There is no sample data, demo shop, or pre-filled inventory anywhere in the app.
 
+### What happens the moment you tap something
+
+- **Real-time everywhere.** Sales, stock, credit balances, expenses, the plan expiry
+  and the admin shop list are all backed by live Firestore listeners. A sale shows up
+  in Today's totals, Reports and the credit book immediately, with no reload.
+- **One write, one truth.** A sale is committed as a single atomic batch with its
+  stock changes and credit balance, so a dropped connection can never leave a sale
+  recorded against stock that never went down.
+- **Offline is normal, not an error.** Every action is saved locally and queued; the
+  header shows how many entries are waiting, and the queued entries stay on screen
+  while they sync.
+- **Nothing can be entered by accident.** Quantities cannot exceed the stock on hand,
+  a credit sale cannot be saved without naming the customer, a credit payment cannot
+  exceed the balance, prices accept digits only, and "no search results" is never
+  confused with "no items".
+- **Everything is reversible.** Undo a sale recorded today from Reports (stock and
+  credit are restored), undo a deleted item or expense from the toast that follows,
+  and confirm before anything destructive happens. No `alert()` or `confirm()` boxes.
+
 ---
 
 ## Tech Stack

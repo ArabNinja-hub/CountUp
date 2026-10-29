@@ -19,6 +19,13 @@ import {
   Receipt,
 } from 'lucide-react';
 import { Customer } from '../types';
+import { useToast } from './Toast';
+import {
+  formatKwacha,
+  formatKwachaCompact,
+  sanitizeMoneyInput,
+  sanitizePhoneInput,
+} from '../utils/format';
 
 export const CreditBookScreen: React.FC = () => {
   const {
@@ -31,6 +38,7 @@ export const CreditBookScreen: React.FC = () => {
     shop,
     language,
   } = useShop();
+  const { notify } = useToast();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddCustomerOpen, setIsAddCustomerOpen] = useState(false);
@@ -41,6 +49,8 @@ export const CreditBookScreen: React.FC = () => {
   const [paymentModalCustomer, setPaymentModalCustomer] = useState<Customer | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentNote, setPaymentNote] = useState('');
+  const [paymentError, setPaymentError] = useState('');
+  const [isPaymentSaving, setIsPaymentSaving] = useState(false);
 
   // WhatsApp Reminder modal state
   const [reminderCustomer, setReminderCustomer] = useState<Customer | null>(null);
@@ -127,33 +137,60 @@ export const CreditBookScreen: React.FC = () => {
   const handleAddCustomerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCustName.trim()) return;
-    const newCust = await addCustomer(newCustName.trim(), newCustPhone.trim());
+    const newCust = await addCustomer(newCustName.trim(), newCustPhone.trim() || undefined);
+    notify(`${newCust.name} added to your credit book`, {
+      kind: 'success',
+      detail: newCust.phone
+        ? 'You can send WhatsApp reminders from their statement.'
+        : 'Add a phone number later to send WhatsApp reminders.',
+    });
     setNewCustName('');
     setNewCustPhone('');
     setIsAddCustomerOpen(false);
-    if (newCust) {
-      setSelectedCustomerId(newCust.id);
-    }
+    setSelectedCustomerId(newCust.id);
   };
 
-  // Record payment submit
+  // Record payment submit — validates against the real balance and tells the
+  // shopkeeper exactly what is left afterwards.
   const handlePaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!paymentModalCustomer) return;
+    if (!paymentModalCustomer || isPaymentSaving) return;
+    setPaymentError('');
+
     const amount = parseFloat(paymentAmount);
-    if (!amount || amount <= 0) {
-      alert('Please enter a valid payment amount');
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setPaymentError('Enter the amount the customer actually handed over.');
+      return;
+    }
+    if (amount > paymentModalCustomer.totalOwed) {
+      setPaymentError(
+        `${paymentModalCustomer.name} owes ${formatKwacha(paymentModalCustomer.totalOwed)}. Enter that amount or less.`
+      );
       return;
     }
 
-    await recordCreditPayment(
-      paymentModalCustomer.id,
-      amount,
-      paymentNote.trim() || undefined
-    );
-    setPaymentModalCustomer(null);
-    setPaymentAmount('');
-    setPaymentNote('');
+    setIsPaymentSaving(true);
+    try {
+      const { applied, remaining } = await recordCreditPayment(
+        paymentModalCustomer.id,
+        amount,
+        paymentNote.trim() || undefined
+      );
+      notify(`Payment recorded — ${formatKwacha(applied)}`, {
+        kind: 'success',
+        detail:
+          remaining > 0
+            ? `${paymentModalCustomer.name} still owes ${formatKwacha(remaining)}`
+            : `${paymentModalCustomer.name}'s account is now cleared`,
+      });
+      setPaymentModalCustomer(null);
+      setPaymentAmount('');
+      setPaymentNote('');
+    } catch (err) {
+      setPaymentError(err instanceof Error ? err.message : 'Could not save that payment.');
+    } finally {
+      setIsPaymentSaving(false);
+    }
   };
 
   // Customer Transaction History
@@ -194,7 +231,7 @@ export const CreditBookScreen: React.FC = () => {
             {t.totalCreditOwed}
           </span>
           <p className="text-3xl font-black text-amber-950 tracking-tight mt-1 tabular-nums">
-            K {totalMoneyOwed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {formatKwacha(totalMoneyOwed)}
           </p>
           <span className="text-xs text-amber-800 font-medium">
             Outstanding from {customers.filter((c) => c.totalOwed > 0).length} customers
@@ -317,7 +354,7 @@ export const CreditBookScreen: React.FC = () => {
                           owesMoney ? 'text-amber-900' : 'text-slate-400'
                         }`}
                       >
-                        K {customer.totalOwed.toFixed(2)}
+                        {formatKwacha(customer.totalOwed)}
                       </span>
 
                       <div className="mt-1 flex items-center justify-end space-x-1">
@@ -337,6 +374,9 @@ export const CreditBookScreen: React.FC = () => {
                           onClick={(e) => {
                             e.stopPropagation();
                             setPaymentModalCustomer(customer);
+                            setPaymentAmount('');
+                            setPaymentNote('');
+                            setPaymentError('');
                           }}
                           className="text-[11px] font-bold text-emerald-800 hover:text-emerald-950 px-2 py-0.5 rounded bg-emerald-100 hover:bg-emerald-200 transition-colors"
                         >
@@ -379,7 +419,7 @@ export const CreditBookScreen: React.FC = () => {
                   )}
 
                   <button
-                    onClick={() => setPaymentModalCustomer(activeCustomer)}
+                    onClick={() => { setPaymentModalCustomer(activeCustomer); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
                     className="min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-800 hover:bg-emerald-900 text-white flex items-center space-x-1.5 shadow-xs transition-colors"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
@@ -395,7 +435,7 @@ export const CreditBookScreen: React.FC = () => {
                     Current Balance Due
                   </span>
                   <p className="text-2xl font-black text-amber-950 tabular-nums">
-                    K {activeCustomer.totalOwed.toFixed(2)}
+                    {formatKwacha(activeCustomer.totalOwed)}
                   </p>
                 </div>
                 <div className="text-right">
@@ -443,7 +483,7 @@ export const CreditBookScreen: React.FC = () => {
                             tx.type === 'sale' ? 'text-amber-900' : 'text-emerald-800'
                           }`}
                         >
-                          {tx.type === 'sale' ? `+K ${tx.amount.toFixed(2)}` : `-K ${tx.amount.toFixed(2)}`}
+                          {tx.type === 'sale' ? `+${formatKwacha(tx.amount)}` : `-${formatKwacha(tx.amount)}`}
                         </span>
                       </div>
                     ))}
@@ -478,54 +518,103 @@ export const CreditBookScreen: React.FC = () => {
             <div className="my-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
               <p className="text-xs text-amber-900 font-bold">{paymentModalCustomer.name}</p>
               <p className="text-sm font-black text-amber-950 tabular-nums">
-                Current Debt: K {paymentModalCustomer.totalOwed.toFixed(2)}
+                Current debt: {formatKwacha(paymentModalCustomer.totalOwed)}
               </p>
             </div>
 
             <form onSubmit={handlePaymentSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Amount Received (K) *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Amount received (K) *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentAmount(String(paymentModalCustomer.totalOwed));
+                      setPaymentError('');
+                    }}
+                    className="text-[10px] font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md px-1.5 py-0.5"
+                  >
+                    Full balance
+                  </button>
+                </div>
                 <input
-                  type="number"
-                  step="0.5"
-                  min="0.5"
-                  max={paymentModalCustomer.totalOwed > 0 ? paymentModalCustomer.totalOwed * 2 : 10000}
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  autoFocus
                   required
                   placeholder={`e.g. ${paymentModalCustomer.totalOwed}`}
                   value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
+                  onChange={(e) => { setPaymentAmount(sanitizeMoneyInput(e.target.value)); setPaymentError(''); }}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
                 />
+                {(() => {
+                  const typed = parseFloat(paymentAmount);
+                  if (!Number.isFinite(typed) || typed <= 0) return null;
+                  const left = Math.max(0, Number((paymentModalCustomer.totalOwed - typed).toFixed(2)));
+                  return (
+                    <p className="text-[11px] mt-1 font-semibold text-slate-600">
+                      After this payment:{' '}
+                      <span className={left > 0 ? 'text-amber-800' : 'text-emerald-700'}>
+                        {left > 0 ? `${formatKwacha(left)} still owed` : 'account cleared'}
+                      </span>
+                    </p>
+                  );
+                })()}
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Note / Reference (Optional)
+                  How did they pay? (optional)
                 </label>
+                <div className="flex flex-wrap gap-1.5 mb-1.5">
+                  {['Cash', 'Airtel Money', 'MTN MoMo', 'Zamtel'].map((method) => (
+                    <button
+                      key={method}
+                      type="button"
+                      onClick={() => setPaymentNote(method)}
+                      className={`text-[10px] font-bold rounded-md px-2 py-1 border transition-colors ${
+                        paymentNote === method
+                          ? 'bg-emerald-800 text-white border-emerald-800'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {method}
+                    </button>
+                  ))}
+                </div>
                 <input
                   type="text"
-                  placeholder="e.g. Paid cash at kiosk, Airtel transfer"
+                  placeholder="e.g. Paid cash at kiosk"
                   value={paymentNote}
                   onChange={(e) => setPaymentNote(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
                 />
               </div>
 
+              {paymentError && (
+                <p className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl p-2.5">
+                  {paymentError}
+                </p>
+              )}
+
               <div className="pt-2 flex items-center space-x-2">
                 <button
                   type="button"
-                  onClick={() => setPaymentModalCustomer(null)}
-                  className="flex-1 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition-colors"
+                  onClick={() => { setPaymentModalCustomer(null); setPaymentAmount(''); setPaymentNote(''); setPaymentError(''); }}
+                  disabled={isPaymentSaving}
+                  className="flex-1 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition-colors disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors"
+                  disabled={isPaymentSaving}
+                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors disabled:opacity-50"
                 >
-                  Save Payment
+                  {isPaymentSaving ? 'Saving…' : 'Save payment'}
                 </button>
               </div>
             </form>
@@ -547,7 +636,7 @@ export const CreditBookScreen: React.FC = () => {
                     WhatsApp Credit Reminder
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    For {reminderCustomer.name} (K {reminderCustomer.totalOwed})
+                    For {reminderCustomer.name} ({formatKwachaCompact(reminderCustomer.totalOwed)} owed)
                   </p>
                 </div>
               </div>
@@ -633,8 +722,9 @@ export const CreditBookScreen: React.FC = () => {
                 <input
                   type="tel"
                   placeholder="e.g. 0977 123 456"
+                  inputMode="tel"
                   value={newCustPhone}
-                  onChange={(e) => setNewCustPhone(e.target.value)}
+                  onChange={(e) => setNewCustPhone(sanitizePhoneInput(e.target.value))}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
                 />
               </div>

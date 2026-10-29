@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
   Boxes,
@@ -7,21 +7,32 @@ import {
   Search,
   Edit2,
   Trash2,
-  TrendingUp,
   X,
-  Check,
   PackagePlus,
-  ArrowUpDown,
+  RotateCcw,
 } from 'lucide-react';
 import { Item } from '../types';
+import { useToast } from './Toast';
+import { ConfirmDialog } from './ConfirmDialog';
+import {
+  formatKwacha,
+  formatKwachaCompact,
+  sanitizeIntegerInput,
+  sanitizeMoneyInput,
+} from '../utils/format';
 
 export const StockScreen: React.FC = () => {
-  const { items, addItem, updateItem, quickRestock, deleteItem, t } = useShop();
+  const { items, addItem, updateItem, quickRestock, deleteItem, restoreItem, t } = useShop();
+  const { notify } = useToast();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeSubTab, setActiveSubTab] = useState<'all' | 'low'>('all');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [itemToDelete, setItemToDelete] = useState<Item | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Form states
   const [formData, setFormData] = useState({
@@ -80,48 +91,110 @@ export const StockScreen: React.FC = () => {
     setIsAddModalOpen(true);
   };
 
-  // Save (add or edit)
+  // Save (add or edit), validating every field before anything is written
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const name = formData.name.trim();
-    const buyingPrice = parseFloat(formData.buyingPrice) || 0;
-    const sellingPrice = parseFloat(formData.sellingPrice) || 0;
-    const quantity = parseInt(formData.quantity, 10) || 0;
-    const lowStockThreshold = parseInt(formData.lowStockThreshold, 10) || 5;
+    if (isSaving) return;
+    setFormError('');
 
-    if (!name || sellingPrice <= 0) {
-      alert('Please enter item name and a valid selling price');
+    const name = formData.name.trim();
+    const buyingPrice = parseFloat(formData.buyingPrice);
+    const sellingPrice = parseFloat(formData.sellingPrice);
+    const quantity = parseInt(formData.quantity, 10);
+    const lowStockThreshold = parseInt(formData.lowStockThreshold, 10);
+
+    // A blank price parses to NaN — treat it as "not filled in" rather than 0.
+    const buying = Number.isFinite(buyingPrice) ? buyingPrice : 0;
+    const selling = Number.isFinite(sellingPrice) ? sellingPrice : 0;
+    const qty = Number.isFinite(quantity) ? quantity : 0;
+    const threshold = Number.isFinite(lowStockThreshold) ? lowStockThreshold : 5;
+
+    if (!name) {
+      setFormError('Give the item a name — e.g. “Sugar 1kg”.');
+      return;
+    }
+    if (!formData.sellingPrice.trim() || selling <= 0) {
+      setFormError('Enter the selling price in Kwacha. It must be more than K 0.');
+      return;
+    }
+    if (!formData.quantity.trim()) {
+      setFormError('Enter how many you have in stock. Use 0 if it has run out.');
+      return;
+    }
+    if (threshold < 0) {
+      setFormError('The low-stock warning has to be 0 or more.');
       return;
     }
 
-    if (editingItem) {
-      await updateItem(editingItem.id, {
-        name,
-        buyingPrice,
-        sellingPrice,
-        quantity,
-        lowStockThreshold,
+    setIsSaving(true);
+    try {
+      if (editingItem) {
+        await updateItem(editingItem.id, {
+          name,
+          buyingPrice: buying,
+          sellingPrice: selling,
+          quantity: qty,
+          lowStockThreshold: threshold,
+        });
+        notify(`${name} updated`, {
+          kind: 'success',
+          detail: `${qty} in stock · selling at ${formatKwacha(selling)}`,
+        });
+      } else {
+        await addItem({
+          name,
+          buyingPrice: buying,
+          sellingPrice: selling,
+          quantity: qty,
+          lowStockThreshold: threshold,
+        });
+        notify(`${name} added to your stock book`, {
+          kind: 'success',
+          detail: `${qty} in stock · selling at ${formatKwacha(selling)}`,
+        });
+      }
+      setIsAddModalOpen(false);
+    } catch (err) {
+      notify('Could not save that item', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
       });
-    } else {
-      await addItem({
-        name,
-        buyingPrice,
-        sellingPrice,
-        quantity,
-        lowStockThreshold,
-      });
+    } finally {
+      setIsSaving(false);
     }
+  };
 
-    setIsAddModalOpen(false);
+  // Delete with an undo, so a mis-tap cannot lose a product and its prices
+  const handleConfirmDelete = async () => {
+    if (!itemToDelete) return;
+    setIsDeleting(true);
+    const removed = itemToDelete;
+    await deleteItem(removed.id);
+    setIsDeleting(false);
+    setItemToDelete(null);
+    notify(`${removed.name} removed from stock`, {
+      kind: 'info',
+      detail: 'Past sales that include it are kept for your reports.',
+      action: { label: 'Undo', onClick: () => void restoreItem(removed) },
+    });
+  };
+
+  const handleRestock = async (item: Item, amount: number) => {
+    await quickRestock(item.id, amount);
+    notify(`${item.name} restocked +${amount}`, {
+      kind: 'success',
+      detail: `Now ${item.quantity + amount} in stock`,
+    });
   };
 
   const previewMargin = useMemo(() => {
-    const buy = parseFloat(formData.buyingPrice) || 0;
-    const sell = parseFloat(formData.sellingPrice) || 0;
-    if (sell <= 0) return null;
-    const profit = sell - buy;
-    const pct = buy > 0 ? ((profit / buy) * 100).toFixed(0) : '100';
-    return { profit, pct };
+    const buy = parseFloat(formData.buyingPrice);
+    const sell = parseFloat(formData.sellingPrice);
+    if (!Number.isFinite(sell) || sell <= 0) return null;
+    const cost = Number.isFinite(buy) ? buy : 0;
+    const profit = sell - cost;
+    const pct = cost > 0 ? Math.round((profit / cost) * 100).toString() : '—';
+    return { profit, pct, isLoss: profit < 0, missingCost: !Number.isFinite(buy) };
   }, [formData.buyingPrice, formData.sellingPrice]);
 
   return (
@@ -238,21 +311,49 @@ export const StockScreen: React.FC = () => {
       {filteredItems.length === 0 ? (
         <div className="bg-white border border-dashed border-slate-300 rounded-2xl p-12 text-center">
           <Boxes className="w-12 h-12 text-slate-300 mx-auto mb-2" />
-          <h3 className="font-bold text-slate-800 text-sm">
-            {activeSubTab === 'low' ? 'No low stock items!' : t.noItemsYet}
-          </h3>
-          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-            {activeSubTab === 'low'
-              ? 'All products are currently stocked above their warning thresholds.'
-              : t.noItemsYetHint}
-          </p>
-          {activeSubTab === 'all' && (
-            <button
-              onClick={handleOpenAdd}
-              className="mt-4 bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-xs transition-colors"
-            >
-              {t.addItem}
-            </button>
+          {searchQuery.trim() ? (
+            <>
+              <h3 className="font-bold text-slate-800 text-sm">
+                Nothing matches “{searchQuery.trim()}”
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                {items.length} {items.length === 1 ? 'item is' : 'items are'} in your stock book — try a
+                shorter word, or add this product.
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2.5 rounded-xl transition-colors"
+                >
+                  Clear search
+                </button>
+                <button
+                  onClick={handleOpenAdd}
+                  className="bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors"
+                >
+                  {t.addItem}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h3 className="font-bold text-slate-800 text-sm">
+                {activeSubTab === 'low' ? 'Nothing is running low' : t.noItemsYet}
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                {activeSubTab === 'low'
+                  ? 'Every product is above its warning level. You will see it here when stock drops.'
+                  : t.noItemsYetHint}
+              </p>
+              {activeSubTab === 'all' && (
+                <button
+                  onClick={handleOpenAdd}
+                  className="mt-4 bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-xs transition-colors"
+                >
+                  {t.addItem}
+                </button>
+              )}
+            </>
           )}
         </div>
       ) : (
@@ -333,20 +434,16 @@ export const StockScreen: React.FC = () => {
 
                     {/* Quick restock shortcuts */}
                     <div className="flex items-center space-x-1">
-                      <button
-                        onClick={() => void quickRestock(item.id, 5)}
-                        title="Restock +5 units"
-                        className="text-[10px] font-bold bg-slate-100 hover:bg-emerald-100 hover:text-emerald-900 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 transition-colors"
-                      >
-                        +5
-                      </button>
-                      <button
-                        onClick={() => void quickRestock(item.id, 10)}
-                        title="Restock +10 units"
-                        className="text-[10px] font-bold bg-slate-100 hover:bg-emerald-100 hover:text-emerald-900 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 transition-colors"
-                      >
-                        +10
-                      </button>
+                      {[5, 10].map((amount) => (
+                        <button
+                          key={amount}
+                          onClick={() => void handleRestock(item, amount)}
+                          title={`Add ${amount} units to stock`}
+                          className="text-[10px] font-bold bg-slate-100 hover:bg-emerald-100 hover:text-emerald-900 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 transition-colors"
+                        >
+                          +{amount}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -361,13 +458,10 @@ export const StockScreen: React.FC = () => {
                     <Edit2 className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => {
-                      if (confirm(`Delete "${item.name}" from your shop?`)) {
-                        void deleteItem(item.id);
-                      }
-                    }}
+                    onClick={() => setItemToDelete(item)}
                     className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                    title="Delete item"
+                    title="Remove item"
+                    aria-label={`Remove ${item.name}`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -412,10 +506,12 @@ export const StockScreen: React.FC = () => {
                 <input
                   type="text"
                   required
+                  autoFocus={!editingItem}
+                  autoComplete="off"
                   placeholder="e.g. Sugar 1kg, Cooking Oil 2L, Panado"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
+                  onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setFormError(''); }}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
                 />
               </div>
 
@@ -425,15 +521,19 @@ export const StockScreen: React.FC = () => {
                     {t.sellingPrice} (K) *
                   </label>
                   <input
-                    type="number"
-                    step="0.5"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
                     required
                     placeholder="e.g. 25"
                     value={formData.sellingPrice}
-                    onChange={(e) => setFormData({ ...formData, sellingPrice: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono font-bold"
+                    onChange={(e) => {
+                      setFormData({ ...formData, sellingPrice: sanitizeMoneyInput(e.target.value) });
+                      setFormError('');
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono font-bold"
                   />
+                  <p className="text-[10px] text-slate-400 mt-0.5">What you sell it for</p>
                 </div>
 
                 <div>
@@ -441,25 +541,37 @@ export const StockScreen: React.FC = () => {
                     {t.buyingPrice} (K)
                   </label>
                   <input
-                    type="number"
-                    step="0.5"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
                     placeholder="e.g. 18"
                     value={formData.buyingPrice}
-                    onChange={(e) => setFormData({ ...formData, buyingPrice: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
+                    onChange={(e) => setFormData({ ...formData, buyingPrice: sanitizeMoneyInput(e.target.value) })}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
                   />
+                  <p className="text-[10px] text-slate-400 mt-0.5">What you paid for it</p>
                 </div>
               </div>
 
-              {/* Profit margin preview */}
+              {/* Profit preview — tells the shopkeeper, in words, what each sale earns */}
               {previewMargin && (
-                <div className="p-2 bg-emerald-50 rounded-xl border border-emerald-200 text-[11px] text-emerald-900 flex items-center justify-between">
-                  <span>Gross Profit Margin:</span>
-                  <span className="font-extrabold tabular-nums">
-                    +K {previewMargin.profit.toFixed(2)} ({previewMargin.pct}%)
-                  </span>
-                </div>
+                previewMargin.isLoss ? (
+                  <div className="p-2 bg-amber-50 rounded-xl border border-amber-300 text-[11px] text-amber-900 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      You would <strong>lose {formatKwacha(Math.abs(previewMargin.profit))}</strong> on
+                      every sale at this price. Check the two prices.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="p-2 bg-emerald-50 rounded-xl border border-emerald-200 text-[11px] text-emerald-900 flex items-center justify-between">
+                    <span>Profit on each sale</span>
+                    <span className="font-extrabold tabular-nums">
+                      +{formatKwacha(previewMargin.profit)}
+                      {previewMargin.missingCost ? '' : ` (${previewMargin.pct}%)`}
+                    </span>
+                  </div>
+                )
               )}
 
               <div className="grid grid-cols-2 gap-3">
@@ -468,14 +580,19 @@ export const StockScreen: React.FC = () => {
                     {t.inStock} ({t.qty}) *
                   </label>
                   <input
-                    type="number"
-                    min="0"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
                     required
                     placeholder="e.g. 50"
                     value={formData.quantity}
-                    onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono font-bold"
+                    onChange={(e) => {
+                      setFormData({ ...formData, quantity: sanitizeIntegerInput(e.target.value) });
+                      setFormError('');
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono font-bold"
                   />
+                  <p className="text-[10px] text-slate-400 mt-0.5">How many you have now</p>
                 </div>
 
                 <div>
@@ -483,34 +600,68 @@ export const StockScreen: React.FC = () => {
                     {t.lowStockWarning}
                   </label>
                   <input
-                    type="number"
-                    min="1"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
                     placeholder="e.g. 5"
                     value={formData.lowStockThreshold}
-                    onChange={(e) => setFormData({ ...formData, lowStockThreshold: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
+                    onChange={(e) =>
+                      setFormData({ ...formData, lowStockThreshold: sanitizeIntegerInput(e.target.value) })
+                    }
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
                   />
+                  <p className="text-[10px] text-slate-400 mt-0.5">Warn me at or below this</p>
                 </div>
               </div>
+
+              {formError && (
+                <p className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl p-2.5 flex items-start gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{formError}</span>
+                </p>
+              )}
 
               <div className="pt-2 flex items-center space-x-2">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="flex-1 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition-colors"
+                  disabled={isSaving}
+                  className="flex-1 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition-colors disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors"
+                  disabled={isSaving}
+                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors disabled:opacity-50"
                 >
-                  {editingItem ? 'Save Changes' : t.addItem}
+                  {isSaving ? 'Saving…' : editingItem ? 'Save Changes' : t.addItem}
                 </button>
               </div>
             </form>
           </div>
         </div>
+      )}
+
+      {itemToDelete && (
+        <ConfirmDialog
+          title={`Remove ${itemToDelete.name}?`}
+          description={
+            <>
+              <p>
+                It disappears from the Sell screen and your stock list. Past sales that include it
+                stay in your reports.
+              </p>
+              <p className="text-slate-500">
+                You can undo this straight away from the message that follows.
+              </p>
+            </>
+          }
+          confirmLabel="Remove item"
+          busy={isDeleting}
+          onCancel={() => setItemToDelete(null)}
+          onConfirm={() => void handleConfirmDelete()}
+        />
       )}
     </div>
   );

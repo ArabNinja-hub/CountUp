@@ -223,28 +223,23 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           </button>
         </div>
 
-        {/* Alternative: Show USSD codes for manual payment */}
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-2">
-          <p className="font-bold text-slate-800">Or pay manually via Mobile Money USSD:</p>
-          <div className="grid grid-cols-3 gap-2 text-[10px]">
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <p className="font-bold text-red-700">Airtel Money</p>
-              <p className="font-mono text-slate-700">*115#</p>
-              <p className="text-slate-500">Select: Payments → Enter Amount</p>
-            </div>
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <p className="font-bold text-yellow-700">MTN MoMo</p>
-              <p className="font-mono text-slate-700">*303#</p>
-              <p className="text-slate-500">Select: Pay Bill → Enter Amount</p>
-            </div>
-            <div className="bg-white p-2 rounded border border-slate-200">
-              <p className="font-bold text-green-700">Zamtel Kwacha</p>
-              <p className="font-mono text-slate-700">*778#</p>
-              <p className="text-slate-500">Select: Send Money → Enter Amount</p>
-            </div>
-          </div>
-          <p className="text-[10px] text-slate-500 italic">
-            After paying, contact us with your shop name & phone to activate. Reference: <code className="font-mono bg-slate-200 px-1 rounded">{shop?.id || 'your-shop-id'}</code>
+        {/* Payment happens out-of-band: no gateway is wired into the static build,
+            so the app must not print USSD codes it cannot verify. */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-1.5">
+          <p className="font-bold text-slate-800">How activation works</p>
+          <ol className="list-decimal pl-4 space-y-1 text-[11px] leading-relaxed">
+            <li>Contact us using one of the buttons above.</li>
+            <li>
+              We send you a Mobile Money request, or the payment details for Airtel, MTN or Zamtel.
+            </li>
+            <li>
+              Once the payment shows, we activate your plan — the days remaining at the top of this
+              screen update immediately.
+            </li>
+          </ol>
+          <p className="text-[10px] text-slate-500">
+            Quote this shop ID so we credit the right shop:{' '}
+            <code className="font-mono bg-slate-200 px-1 rounded">{shop?.id || 'your-shop-id'}</code>
           </p>
         </div>
       </div>

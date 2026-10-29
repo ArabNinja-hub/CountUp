@@ -20,14 +20,23 @@ import {
 } from 'lucide-react';
 import { ExpensesModal } from './ExpensesModal';
 import { TrendChart, TrendPoint } from './TrendChart';
-import { Expense } from '../types';
+import { Expense, Sale } from '../types';
+import { useToast } from './Toast';
+import { ConfirmDialog } from './ConfirmDialog';
+import { formatKwacha, formatKwachaCompact, formatWhen, isToday } from '../utils/format';
 
 export const ReportsScreen: React.FC = () => {
-  const { sales, creditPayments, expenses, deleteExpense, t, shop, items } = useShop();
+  const { sales, creditPayments, expenses, deleteExpense, restoreExpense, voidSale, t, shop, items } =
+    useShop();
+  const { notify } = useToast();
 
   const [timeView, setTimeView] = useState<'day' | 'week' | 'month'>('day');
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
+  const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
+  const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+  const [saleToVoid, setSaleToVoid] = useState<Sale | null>(null);
+  const [isVoiding, setIsVoiding] = useState(false);
 
   // Filter window based on timeView
   const { filteredSales, filteredPayments, filteredExpenses } = useMemo(() => {
@@ -220,57 +229,116 @@ export const ReportsScreen: React.FC = () => {
       .slice(0, 5);
   }, [filteredSales]);
 
-  // Export to CSV
+  // Export to CSV — exports exactly the period currently on screen (the old
+  // version silently exported every sale ever, whatever tab was selected)
+  const periodLabel =
+    timeView === 'day' ? 'Today' : timeView === 'week' ? 'This Week' : 'This Month';
+  // Declared here (before the handlers) so the export/ share functions can use it.
+
   const handleExportCSV = () => {
-    if (sales.length === 0) {
-      alert('No sales data available to export.');
+    if (filteredSales.length === 0) {
+      notify(`No sales to export for ${periodLabel.toLowerCase()}`, {
+        kind: 'info',
+        detail: 'Record a sale first, or switch to a longer period.',
+      });
       return;
     }
 
-    const headers = ['Sale ID', 'Date', 'Items Count', 'Total (K)', 'Profit (K)', 'Payment Type', 'Customer Name'];
-    const rows = sales.map((s) => [
+    const headers = [
+      'Sale ID',
+      'Date',
+      'Items',
+      'Total (K)',
+      'Cost (K)',
+      'Profit (K)',
+      'Payment',
+      'Customer',
+    ];
+    const rows = filteredSales.map((s) => [
       s.id,
       new Date(s.createdAt).toLocaleString(),
-      s.itemsCount,
+      s.items.map((i) => `${i.name} x${i.quantity}`).join(' + '),
       s.totalAmount,
+      s.totalCost,
       s.profit,
       s.paymentType,
-      s.customerName || 'Walk-in Cash',
+      s.customerName || 'Walk-in',
     ]);
 
-    const csvContent =
-      'data:text/csv;charset=utf-8,' +
-      [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+    // Quote every field so item names containing commas cannot break the columns.
+    const csv = [headers, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\r\n');
 
-    const encodedUri = encodeURI(csvContent);
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute(
-      'download',
-      `Countup_Sales_${shop?.name.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.csv`
-    );
+    link.href = url;
+    link.download = `Countup_${(shop?.name || 'Shop').replace(/\s+/g, '_')}_${timeView}_${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    notify(`${filteredSales.length} sales exported`, {
+      kind: 'success',
+      detail: `Saved as a CSV file for ${periodLabel.toLowerCase()}.`,
+    });
+  };
+
+  // Undo a sale recorded by mistake: puts stock back and clears the credit it created
+  const handleVoidSale = async () => {
+    if (!saleToVoid) return;
+    setIsVoiding(true);
+    try {
+      const voided = await voidSale(saleToVoid.id);
+      notify(`Sale of ${formatKwacha(voided.totalAmount)} undone`, {
+        kind: 'success',
+        detail: 'The stock is back on the shelf and any credit was removed from the customer.',
+      });
+      setSaleToVoid(null);
+    } catch (err) {
+      notify('Could not undo that sale', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
+      setSaleToVoid(null);
+    } finally {
+      setIsVoiding(false);
+    }
+  };
+
+  const handleDeleteExpense = async () => {
+    if (!expenseToDelete) return;
+    setIsDeletingExpense(true);
+    const removed = expenseToDelete;
+    await deleteExpense(removed.id);
+    setIsDeletingExpense(false);
+    setExpenseToDelete(null);
+    notify(`Expense removed — ${formatKwacha(removed.amount)}`, {
+      kind: 'info',
+      detail: 'Your profit for this period has been recalculated.',
+      action: { label: 'Undo', onClick: () => void restoreExpense(removed) },
+    });
   };
 
   // Generate WhatsApp-friendly summary text
   const handleShareSummary = () => {
-    const periodLabel =
-      timeView === 'day' ? 'Today' : timeView === 'week' ? 'This Week' : 'This Month';
     const text = `📊 *${shop?.name || 'Shop'} - ${periodLabel} Summary*
-💰 Total Sales: K ${totalSalesAmount.toLocaleString()}
-💵 Cash in Hand: K ${totalCashInHand.toLocaleString()}
-📱 MoMo in Phone: K ${totalMomoInWallet.toLocaleString()}
-🤝 Credit Given: K ${creditSalesGiven.toLocaleString()}
-🧾 Expenses: K ${totalExpensesAmount.toLocaleString()}
-📈 Net Profit: K ${netProfit.toLocaleString()}
+💰 Total Sales: ${formatKwacha(totalSalesAmount)}
+💵 Cash & MoMo received: ${formatKwacha(totalCashInHand + totalMomoInWallet)}
+🤝 Credit given: ${formatKwacha(creditSalesGiven)}
+🧾 Expenses: ${formatKwacha(totalExpensesAmount)}
+📈 Net Profit: ${formatKwacha(netProfit)}
 
 _Recorded with Countup Zambia_`;
 
-    navigator.clipboard.writeText(text);
+    void navigator.clipboard?.writeText(text).catch(() => undefined);
     setCopiedShare(true);
     setTimeout(() => setCopiedShare(false), 2500);
+    notify('Summary copied', { kind: 'success', detail: 'Paste it into WhatsApp to share.' });
 
     const encoded = encodeURIComponent(text);
     window.open(`https://wa.me/?text=${encoded}`, '_blank');
@@ -434,7 +502,7 @@ _Recorded with Countup Zambia_`;
             <TrendingUp className="w-4 h-4 text-emerald-700" />
           </div>
           <p className="text-2xl font-black text-slate-900 tracking-tight mt-1 tabular-nums">
-            K {totalSalesAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {formatKwacha(totalSalesAmount)}
           </p>
           <span className="text-xs text-slate-500 font-medium">
             {filteredSales.length} {filteredSales.length === 1 ? 'sale logged' : 'sales logged'}
@@ -450,10 +518,10 @@ _Recorded with Countup Zambia_`;
             <ArrowUpRight className="w-4 h-4 text-emerald-300" />
           </div>
           <p className="text-2xl font-black text-white tracking-tight mt-1 tabular-nums">
-            K {netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {formatKwacha(netProfit)}
           </p>
           <span className="text-xs text-emerald-200 font-medium">
-            After K {totalExpensesAmount.toLocaleString()} expenses
+            After {formatKwachaCompact(totalExpensesAmount)} expenses
           </span>
         </div>
 
@@ -564,6 +632,74 @@ _Recorded with Countup Zambia_`;
           )}
         </div>
 
+        {/* Sales Ledger Card — every sale in the selected period, reversible today */}
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4 space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+            <h3 className="font-bold text-sm text-slate-900 flex items-center space-x-1.5">
+              <ShoppingBag className="w-4 h-4 text-emerald-700" />
+              <span>Sales ledger</span>
+            </h3>
+            <span className="text-[11px] font-semibold text-slate-500">
+              {filteredSales.length} {filteredSales.length === 1 ? 'sale' : 'sales'}
+            </span>
+          </div>
+
+          {filteredSales.length === 0 ? (
+            <p className="text-xs text-slate-400 py-6 text-center">
+              No sales recorded in {periodLabel.toLowerCase()}. Record one from the Sell tab.
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto pr-1">
+              {filteredSales.map((sale) => {
+                const canUndo = isToday(sale.createdAt);
+                return (
+                  <div key={sale.id} className="py-2.5 flex items-start justify-between gap-3 text-xs">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            sale.paymentType === 'cash'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : sale.paymentType === 'momo'
+                              ? 'bg-sky-100 text-sky-800'
+                              : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {sale.paymentType === 'cash'
+                            ? 'Cash'
+                            : sale.paymentType === 'momo'
+                            ? `MoMo${sale.momoOperator ? ` · ${sale.momoOperator}` : ''}`
+                            : `Credit${sale.customerName ? ` · ${sale.customerName}` : ''}`}
+                        </span>
+                        <span className="text-[10px] text-slate-400">{formatWhen(sale.createdAt)}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1 truncate">
+                        {sale.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}
+                      </p>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span className="font-black text-slate-900 tabular-nums block">
+                        {formatKwacha(sale.totalAmount)}
+                      </span>
+                      {canUndo ? (
+                        <button
+                          onClick={() => setSaleToVoid(sale)}
+                          className="text-[10px] font-bold text-slate-400 hover:text-rose-600"
+                        >
+                          Undo sale
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-slate-300">Past day</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {/* Expenses Ledger Card */}
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4 space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-slate-100">
@@ -595,18 +731,19 @@ _Recorded with Countup Zambia_`;
                       <p className="text-[11px] text-slate-500">{expense.note}</p>
                     )}
                     <span className="text-[10px] text-slate-400">
-                      {new Date(expense.createdAt).toLocaleDateString()}
+                      {formatWhen(expense.createdAt)}
                     </span>
                   </div>
 
                   <div className="flex items-center space-x-2">
                     <span className="font-black text-rose-800 tabular-nums">
-                      -K {expense.amount.toFixed(2)}
+                      -{formatKwacha(expense.amount)}
                     </span>
                     <button
-                      onClick={() => void deleteExpense(expense.id)}
+                      onClick={() => setExpenseToDelete(expense)}
                       className="p-1 text-slate-300 hover:text-rose-600 transition-colors"
                       title="Delete expense"
+                      aria-label={`Delete ${expense.category} expense`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -623,6 +760,51 @@ _Recorded with Countup Zambia_`;
         isOpen={isExpenseModalOpen}
         onClose={() => setIsExpenseModalOpen(false)}
       />
+
+      {saleToVoid && (
+        <ConfirmDialog
+          title={`Undo this ${formatKwacha(saleToVoid.totalAmount)} sale?`}
+          description={
+            <>
+              <p className="text-[11px] text-slate-600">{saleToVoid.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}</p>
+              <p>The stock goes back on the shelf.</p>
+              {saleToVoid.paymentType === 'credit' && saleToVoid.customerName && (
+                <p>
+                  {saleToVoid.customerName}&apos;s credit balance goes down by{' '}
+                  {formatKwacha(saleToVoid.totalAmount)}.
+                </p>
+              )}
+              <p className="text-slate-500">The sale disappears from your reports and totals.</p>
+            </>
+          }
+          confirmLabel="Undo sale"
+          busy={isVoiding}
+          onCancel={() => setSaleToVoid(null)}
+          onConfirm={() => void handleVoidSale()}
+        />
+      )}
+
+      {expenseToDelete && (
+        <ConfirmDialog
+          title="Delete this expense?"
+          description={
+            <>
+              <p>
+                <strong className="capitalize">{expenseToDelete.category.replace('_', ' ')}</strong> —{' '}
+                {formatKwacha(expenseToDelete.amount)}
+                {expenseToDelete.note ? ` (${expenseToDelete.note})` : ''}
+              </p>
+              <p className="text-slate-500">
+                It will no longer count against your profit. You can undo straight away.
+              </p>
+            </>
+          }
+          confirmLabel="Delete expense"
+          busy={isDeletingExpense}
+          onCancel={() => setExpenseToDelete(null)}
+          onConfirm={() => void handleDeleteExpense()}
+        />
+      )}
     </div>
   );
 };
