@@ -96,20 +96,6 @@ export interface Translations {
   };
   exportSummary: string;
   copiedToClipboard: string;
-  // Company Hold-Up & Capital Graph
-  holdUpTitle: string;
-  holdUpSubtitle: string;
-  totalHeldUp: string;
-  stockHoldUp: string;
-  creditHoldUp: string;
-  liquidCapital: string;
-  totalCapital: string;
-  holdUpRatio: string;
-  topStockHoldingUp: string;
-  topDebtorsHoldingUp: string;
-  unlockCapitalTips: string;
-  viewHoldUpTab: string;
-  viewSalesTab: string;
   // Subscription
   planTitle: string;
   trialBadge: string;
@@ -135,8 +121,6 @@ export interface Translations {
   registerBtn: string;
   switchRegister: string;
   switchLogin: string;
-  demoShops: string;
-  demoHint: string;
   logout: string;
   // Offline
   onlineSynced: string;
@@ -244,20 +228,6 @@ export const translations: Record<Language, Translations> = {
     },
     exportSummary: 'Share / Export Summary',
     copiedToClipboard: 'Copied to clipboard!',
-    // Company Hold-Up & Capital Graph
-    holdUpTitle: 'Company Capital Hold-Up',
-    holdUpSubtitle: 'Track your trapped capital in stock & customer credit debt',
-    totalHeldUp: 'Total Capital Held Up',
-    stockHoldUp: 'Stock Inventory Hold-Up',
-    creditHoldUp: 'Customer Credit (Kaloba)',
-    liquidCapital: 'Liquid Cash & MoMo',
-    totalCapital: 'Total Working Capital',
-    holdUpRatio: 'Capital Hold-Up Ratio',
-    topStockHoldingUp: 'Top Stock Items Holding Up Cash',
-    topDebtorsHoldingUp: 'Customers Holding Up Your Money',
-    unlockCapitalTips: 'How to Unlock Your Cash Flow',
-    viewHoldUpTab: 'Capital Hold-Up Graph',
-    viewSalesTab: 'Sales & Profit',
     planTitle: 'Your Subscription Plan',
     trialBadge: '30-Day Free Trial',
     daysRemaining: 'days remaining',
@@ -281,8 +251,6 @@ export const translations: Record<Language, Translations> = {
     registerBtn: 'Create New Shop',
     switchRegister: 'New shop? Start 30-day free trial',
     switchLogin: 'Already have a shop? Log in here',
-    demoShops: 'Try a Demo Shop (Instant 1-Tap)',
-    demoHint: 'Test with sample Zambian kiosk data immediately',
     logout: 'Log Out',
     onlineSynced: 'Online & Synced',
     offlineSaved: 'Saved to phone (Offline)',
@@ -387,20 +355,6 @@ export const translations: Record<Language, Translations> = {
     },
     exportSummary: 'Tumeni Amalyashi',
     copiedToClipboard: 'Kwakopolwa bwino!',
-    // Company Hold-Up & Capital Graph
-    holdUpTitle: 'Indalama Shasungwa mu Shopu',
-    holdUpSubtitle: 'Moneni indalama shili mu fipe ne makongole ya bantu',
-    totalHeldUp: 'Indalama Shonse Ishisungilwe',
-    stockHoldUp: 'Indalama Shili mu Fipe (Stock)',
-    creditHoldUp: 'Indalama Sha Makongole (Kaloba)',
-    liquidCapital: 'Indalama Sha mu Minwe & MoMo',
-    totalCapital: 'Ndalama Shonse Sha mu Shopu',
-    holdUpRatio: 'Pelesenti ya Ndalama Shasungilwe',
-    topStockHoldingUp: 'Ifipe Ifikwete Ndalama Shinono',
-    topDebtorsHoldingUp: 'Abakwete Ndalama Shenu',
-    unlockCapitalTips: 'Ifyakucita Pakufumya Indalama',
-    viewHoldUpTab: 'Girafe ya Ndalama Shasungwa',
-    viewSalesTab: 'Malonda na Bunonshi',
     planTitle: 'Pulani ya Shopu Yenu',
     trialBadge: 'Inshiku 30 Sha Mahala',
     daysRemaining: 'inshiku shasheelepo',
@@ -424,8 +378,6 @@ export const translations: Record<Language, Translations> = {
     registerBtn: 'Isuleni Shopu Ipya',
     switchRegister: 'Shopu ipya? Tampeni inshiku 30 sha mahala',
     switchLogin: 'Mwalikwata kale shopu? Ingileni pano',
-    demoShops: 'Piminiko Shopu ya Bwangu (Demo)',
-    demoHint: 'Moneni ifyo ciba mukayafye kamo',
     logout: 'Fumeni',
     onlineSynced: 'Pa Intaneti kabili Fyabikwa',
     offlineSaved: 'Fyasungwa pa foni (Tapali Neti)',
@@ -452,7 +404,7 @@ export const translations: Record<Language, Translations> = {
     qty: 'Kuchuluka',
     total: 'Yonse Pamodzi',
     paidNow: 'Walipira Pompano',
-    paidCash: 'Cash m\'Manja',
+    paidCash: "Cash m'Manja",
     paidMomo: 'MoMo pa Foni',
     onCredit: 'Pa Ngawa (Credit)',
     selectCustomer: 'Sankhani kasitomala',
@@ -480,11 +432,11 @@ export const translations: Record<Language, Translations> = {
     sellingPrice: 'Mtengo Wogulitsira (K)',
     inStock: 'Zomwe Zilipo',
     lowStockAlert: 'Chenjezani zikatsala',
-    lowStockTab: 'Zatsala Pang\'ono',
+    lowStockTab: "Zatsala Pang'ono",
     allStockTab: 'Zonse',
     quickAddStock: 'Onjezerani Katundu',
     restocked: 'Katundu waonjezedwa',
-    lowStockWarning: 'Katundu wina watsala pang\'ono kutha!',
+    lowStockWarning: "Katundu wina watsala pang'ono kutha!",
     saveItem: 'Sungani Katundu',
     noItemsYet: 'Mulibe katundu pano',
     noItemsYetHint: 'Onjezani zinthu zanu ndi mitengo yake',
@@ -509,7 +461,7 @@ export const translations: Record<Language, Translations> = {
     monthlyView: 'Mwezi Uno',
     totalSales: 'Ndalama Zonse za Malonda',
     totalProfit: 'Phindu Leni-leni',
-    cashReceived: 'Ndalama za m\'Manja (Cash)',
+    cashReceived: "Ndalama za m'Manja (Cash)",
     momoReceived: 'Ndalama pa Foni (MoMo)',
     moneyOwed: 'Ndalama za Mangawa',
     topSelling: 'Zogulitsidwa Kwambiri',
@@ -530,27 +482,13 @@ export const translations: Record<Language, Translations> = {
     },
     exportSummary: 'Gawani / Tumizani Lipoti',
     copiedToClipboard: 'Zatengedwa bwino!',
-    // Company Hold-Up & Capital Graph
-    holdUpTitle: 'Ndalama Zili m’Shopu (Capital Hold-Up)',
-    holdUpSubtitle: 'Onani ndalama zanu zomwe zili mu katundu ndi ngongole za anthu',
-    totalHeldUp: 'Ndalama Zonse Zomangika',
-    stockHoldUp: 'Ndalama Zili mu Katundu',
-    creditHoldUp: 'Ndalama za Ngongole (Kaloba)',
-    liquidCapital: 'Ndalama Zili mmanja & MoMo',
-    totalCapital: 'Ndalama Zonse za Bizinesi',
-    holdUpRatio: 'Chiwerengero cha Ndalama Zomangika',
-    topStockHoldingUp: 'Katundu Womwe Wagwira Ndalama Zambiri',
-    topDebtorsHoldingUp: 'Anthu Omwe Ali ndi Ndalama Zanu',
-    unlockCapitalTips: 'Mmene Mungamasulire Ndalama Zanu',
-    viewHoldUpTab: 'Galamu ya Ndalama Zomangika',
-    viewSalesTab: 'Malonda ndi Phindu',
     planTitle: 'Dongosolo Lanu la Shopu',
     trialBadge: 'Masiku 30 a Zaulere',
     daysRemaining: 'masiku otsala',
     planExpired: 'Nthawi Yatha',
     planExpiredNotice: 'Masiku a zaulere atha. Lipirani kuti mupitirize kulemba malonda.',
-    gracePeriodNotice: 'Muli m\'masiku achifundo. Lipirani mwamsanga.',
-    warningNotice: 'Dongosolo lanu latsala pang\'ono kutha.',
+    gracePeriodNotice: "Muli m'masiku achifundo. Lipirani mwamsanga.",
+    warningNotice: "Dongosolo lanu latsala pang'ono kutha.",
     payNow: 'Lipirani ndi Mobile Money',
     selectPlan: 'Sankhani Dongosolo',
     mobileMoneyPayment: 'Lipirani ndi Mobile Money',
@@ -567,8 +505,6 @@ export const translations: Record<Language, Translations> = {
     registerBtn: 'Pangani Shopu Yatsopano',
     switchRegister: 'Shopu yatsopano? Yambani masiku 30 a zaulere',
     switchLogin: 'Muli nayo kale? Lowani pano',
-    demoShops: 'Yesani Shopu ya Chitsanzo (Demo)',
-    demoHint: 'Onani mwachangu ndi zinthu za msika waku Zambia',
     logout: 'Tulukani',
     onlineSynced: 'Pa Intaneti & Zasungidwa',
     offlineSaved: 'Zasungidwa pa foni (Palibe Net)',

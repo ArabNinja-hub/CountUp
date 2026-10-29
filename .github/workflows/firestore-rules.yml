@@ -1,0 +1,67 @@
+name: Deploy Firestore rules
+
+# Keeps the live security rules in step with the repository.
+#
+# Firestore rules are NOT part of the GitHub Pages artifact: Pages only serves
+# files, so a rules fix merged to `main` would otherwise never reach the live
+# database. This workflow publishes `firestore.rules` to the project named in
+# `.firebaserc` whenever that file changes.
+#
+# It needs ONE repository secret: FIREBASE_TOKEN (see README -> "Deploying the
+# Firestore rules"). Until that secret exists the job runs, prints a warning and
+# skips the deploy instead of failing every push.
+on:
+  push:
+    branches: [main]
+    paths:
+      - firestore.rules
+      - firebase.json
+      - .firebaserc
+      - .github/workflows/firestore-rules.yml
+  workflow_dispatch:
+
+concurrency:
+  group: firestore-rules
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    name: Publish rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for the FIREBASE_TOKEN secret
+        id: creds
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FIREBASE_TOKEN}" ]; then
+            echo "::warning::FIREBASE_TOKEN is not set, so firestore.rules was NOT deployed. Follow README -> 'Deploying the Firestore rules' to add it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.creds.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.creds.outputs.skip == 'false'
+        run: npm ci
+
+      - name: Deploy firestore.rules
+        if: steps.creds.outputs.skip == 'false'
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: npx firebase deploy --only firestore:rules --project arboreal-amplifier-qbcxw --token "$FIREBASE_TOKEN" --non-interactive

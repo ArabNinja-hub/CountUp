@@ -2,37 +2,25 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Pillar 1: Global Safety Net (Catch-all default deny)
+    // Default deny all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Pillar 3: Path Variable & Primitive Helpers
+    // Helper functions
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    // Platform Administrator Check with Anti-Spoofing Guard
+    // Sign-in is phone + PIN only, which gives every device an anonymous Firebase
+    // session (no email claim). Platform ownership is therefore granted by the
+    // `admins` registry: create admins/<uid> for the owner account in the Firebase
+    // console. Nothing is granted by email or phone number.
     function isPlatformAdmin() {
-      return isSignedIn() && (
-        (request.auth.token.email == "ronisherbwalya@gmail.com" && request.auth.token.email_verified == true) ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
     }
 
-    // Master Gate (Relational Sync)
     function isShopOwner(shopId) {
       return isSignedIn() && (
         request.auth.uid == shopId ||
@@ -41,123 +29,83 @@ service cloud.firestore {
       );
     }
 
-    // Pillar 2: Validation Blueprints
-    function isValidShop(data) {
-      return data.keys().hasAll(['name', 'ownerPhone', 'ownerUid', 'planStatus']) &&
-        data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
-        data.ownerPhone is string && data.ownerPhone.size() <= 30 &&
-        data.ownerUid is string && data.ownerUid.size() <= 128 &&
-        data.planStatus in ['trial', 'active', 'grace', 'expired'];
+    // A PIN is the only credential a shop has, so it is always exactly 4 digits.
+    function isFourDigitPin(value) {
+      return value is string && value.matches('^[0-9]{4}$');
     }
 
-    function isValidItem(data) {
-      return data.keys().hasAll(['name', 'buyingPrice', 'sellingPrice', 'quantity', 'lowStockThreshold']) &&
-        data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
-        data.buyingPrice is number && data.buyingPrice >= 0 &&
-        data.sellingPrice is number && data.sellingPrice >= 0 &&
-        data.quantity is number &&
-        data.lowStockThreshold is number;
-    }
-
-    function isValidSale(data) {
-      return data.keys().hasAll(['totalAmount', 'paymentType', 'createdAt']) &&
-        data.totalAmount is number && data.totalAmount >= 0 &&
-        data.paymentType in ['cash', 'momo', 'credit'] &&
-        data.createdAt is string && data.createdAt.size() <= 50;
-    }
-
-    function isValidCustomer(data) {
-      return data.keys().hasAll(['name', 'totalOwed']) &&
-        data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
-        data.totalOwed is number;
-    }
-
-    function isValidCreditPayment(data) {
-      return data.keys().hasAll(['customerId', 'amount', 'createdAt']) &&
-        data.customerId is string && data.customerId.size() <= 128 &&
-        data.amount is number && data.amount > 0 &&
-        data.createdAt is string && data.createdAt.size() <= 50;
-    }
-
-    function isValidExpense(data) {
-      return data.keys().hasAll(['category', 'amount', 'createdAt']) &&
-        data.category in ['rent', 'transport', 'restock', 'council_fee', 'helper_wage', 'other'] &&
-        data.amount is number && data.amount > 0 &&
-        data.createdAt is string && data.createdAt.size() <= 50;
-    }
-
-    // Test connection doc used for client connectivity verification
+    // Connectivity probe used by the app on start. It is read-only: nothing in
+    // the app writes it, so writing is denied rather than left open to any
+    // signed-in device.
     match /test/connection {
       allow read: if true;
-      allow write: if isSignedIn();
+      allow write: if false;
     }
 
-    // Platform Admins Registry
+    // Admins registry — the only grant of platform-owner access.
+    // A device may only ask "am I an admin?" about itself; it may not read or
+    // list the registry, which would hand out the owner's uid to any user.
     match /admins/{adminId} {
-      allow read: if isSignedIn();
+      allow get: if isSignedIn() && request.auth.uid == adminId;
+      allow list: if isPlatformAdmin();
       allow write: if isPlatformAdmin();
     }
 
-    // Shops Collection
+    // Shops
     match /shops/{shopId} {
-      allow get: if isValidId(shopId) && (isShopOwner(shopId) || isPlatformAdmin());
+      // Platform admin can read all shops; shop owner can read their own shop
+      allow get: if isShopOwner(shopId) || isPlatformAdmin();
       allow list: if isPlatformAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
 
-      allow create: if isValidId(shopId) && isSignedIn() && isValidShop(incoming()) && (
-        incoming().ownerUid == request.auth.uid || isPlatformAdmin()
-      );
-
-      allow update: if isValidId(shopId) && (
+      // Create: a new shop belongs to the device that created it, holds a 4-digit
+      // PIN, and starts on the free trial. It cannot be created already paid,
+      // already deactivated, or with the trial end and plan expiry disagreeing.
+      allow create: if isSignedIn() && (
         isPlatformAdmin() || (
-          isShopOwner(shopId) &&
-          incoming().ownerUid == existing().ownerUid &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'name', 'ownerPhone', 'ownerEmail', 'pin', 'planStatus', 'planType',
-            'trialEndsAt', 'planExpiryDate', 'isDeactivated', 'updatedAt', 'currency'
-          ])
+          request.resource.data.ownerUid == request.auth.uid &&
+          isFourDigitPin(request.resource.data.pin) &&
+          request.resource.data.planStatus == 'trial' &&
+          request.resource.data.planType == 'trial' &&
+          request.resource.data.isDeactivated == false &&
+          request.resource.data.planExpiryDate == request.resource.data.trialEndsAt
         )
       );
 
-      allow delete: if isValidId(shopId) && isPlatformAdmin();
+      // Update: a shop may change nothing about itself except its PIN. Plan
+      // status, plan expiry and the deactivation flag belong to the platform
+      // owner, so a shop cannot extend its own subscription or un-suspend itself
+      // from the browser console. Everything else (records, credit balances) is
+      // stored in the subcollections below.
+      allow update: if isPlatformAdmin() || (
+        isShopOwner(shopId) &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        isFourDigitPin(request.resource.data.pin) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pin'])
+      );
 
-      // Subcollection: Items
+      // Delete: the shop owner can permanently delete their own shop and records
+      // (backs the deletion right promised in the Privacy Policy).
+      allow delete: if isShopOwner(shopId) || isPlatformAdmin();
+
+      // Subcollections
       match /items/{itemId} {
-        allow get, list: if isValidId(shopId) && (isShopOwner(shopId) || isPlatformAdmin());
-        allow create: if isValidId(shopId) && isValidId(itemId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidItem(incoming());
-        allow update: if isValidId(shopId) && isValidId(itemId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidItem(incoming());
-        allow delete: if isValidId(shopId) && isValidId(itemId) && (isShopOwner(shopId) || isPlatformAdmin());
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
       }
 
-      // Subcollection: Sales
       match /sales/{saleId} {
-        allow get, list: if isValidId(shopId) && (isShopOwner(shopId) || isPlatformAdmin());
-        allow create: if isValidId(shopId) && isValidId(saleId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidSale(incoming());
-        allow update: if isValidId(shopId) && isValidId(saleId) && isPlatformAdmin();
-        allow delete: if isValidId(shopId) && isValidId(saleId) && isPlatformAdmin();
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
       }
 
-      // Subcollection: Customers
       match /customers/{customerId} {
-        allow get, list: if isValidId(shopId) && (isShopOwner(shopId) || isPlatformAdmin());
-        allow create: if isValidId(shopId) && isValidId(customerId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidCustomer(incoming());
-        allow update: if isValidId(shopId) && isValidId(customerId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidCustomer(incoming());
-        allow delete: if isValidId(shopId) && isValidId(customerId) && (isShopOwner(shopId) || isPlatformAdmin());
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
       }
 
-      // Subcollection: Credit Payments
       match /credit_payments/{paymentId} {
-        allow get, list: if isValidId(shopId) && (isShopOwner(shopId) || isPlatformAdmin());
-        allow create: if isValidId(shopId) && isValidId(paymentId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidCreditPayment(incoming());
-        allow update: if isValidId(shopId) && isValidId(paymentId) && isPlatformAdmin();
-        allow delete: if isValidId(shopId) && isValidId(paymentId) && isPlatformAdmin();
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
       }
 
-      // Subcollection: Expenses
       match /expenses/{expenseId} {
-        allow get, list: if isValidId(shopId) && (isShopOwner(shopId) || isPlatformAdmin());
-        allow create: if isValidId(shopId) && isValidId(expenseId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidExpense(incoming());
-        allow update: if isValidId(shopId) && isValidId(expenseId) && (isShopOwner(shopId) || isPlatformAdmin()) && isValidExpense(incoming());
-        allow delete: if isValidId(shopId) && isValidId(expenseId) && (isShopOwner(shopId) || isPlatformAdmin());
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
       }
     }
   }

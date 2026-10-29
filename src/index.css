@@ -1,8 +1,12 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @layer base {
   body {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    font-family:
+      'Plus Jakarta Sans',
+      system-ui,
+      -apple-system,
+      sans-serif;
   }
 }
 
@@ -13,11 +17,81 @@
 
 /* Hide scrollbar for IE, Edge and Firefox */
 .no-scrollbar {
-  -ms-overflow-style: none;  /* IE and Edge */
-  scrollbar-width: none;  /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
 }
 
 /* Number display polish */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------
+ * Entrance animations.
+ * These mirror the classes emitted by `tailwindcss-animate`
+ * (animate-in / fade-in / zoom-in-95 / slide-in-from-top-2)
+ * so modal/overlay entrances work without the extra plugin.
+ * ----------------------------------------------------------- */
+@keyframes countup-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes countup-slide-top {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-in {
+  animation: countup-pop 0.2s ease-out both;
+}
+/* `fade-in` and `zoom-in-95` are covered by `.animate-in` above. */
+.fade-in,
+.zoom-in-95 {
+  /* intentionally empty – combined pop animation handles them */
+}
+.slide-in-from-top-2 {
+  animation: countup-slide-top 0.25s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in,
+  .slide-in-from-top-2 {
+    animation: none;
+  }
+}
+
+/* Professional, accessible focus states for keyboard users */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid #059669;
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* Subtle, refined scrollbars to match the app's calm aesthetic */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(203 213 225);
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(148 163 184);
 }
