@@ -8,6 +8,7 @@
         "id": { "type": "string" },
         "name": { "type": "string", "maxLength": 100 },
         "ownerPhone": { "type": "string", "maxLength": 20 },
+        "ownerEmail": { "type": "string", "maxLength": 100 },
         "ownerUid": { "type": "string", "maxLength": 128 },
         "planStatus": { "type": "string", "enum": ["trial", "active", "grace", "expired"] },
         "planType": { "type": "string", "enum": ["monthly", "quarterly", "biannual", "trial"] },

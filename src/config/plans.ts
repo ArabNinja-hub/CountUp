@@ -41,16 +41,25 @@ export const SUBSCRIPTION_PLANS: Record<string, PlanConfig> = {
   },
 };
 
+export interface SubscriptionInfo {
+  daysRemaining: number;
+  graceDaysRemaining: number;
+  effectiveExpiry: Date;
+  status: 'trial' | 'active' | 'grace' | 'expired';
+  isWarningPeriod: boolean;
+  canRecordSales: boolean;
+}
+
 /**
  * Helper to calculate subscription status and days remaining
  * Currently configured for free / unlocked full access ("for now remove the paying thing")
  */
-export function getSubscriptionInfo(createdAt: string, expiryDate?: string, currentStatus?: string) {
+export function getSubscriptionInfo(createdAt: string, expiryDate?: string, currentStatus?: string): SubscriptionInfo {
   return {
     daysRemaining: 365,
     graceDaysRemaining: 0,
     effectiveExpiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-    status: 'active' as const,
+    status: 'active',
     isWarningPeriod: false,
     canRecordSales: true, // Always allow recording sales with full access
   };
