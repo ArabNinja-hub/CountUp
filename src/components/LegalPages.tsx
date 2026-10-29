@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
+import { SUPPORT_CONTACT } from '../config/support';
 
 interface LegalPageProps {
   onClose: () => void;
@@ -98,7 +99,8 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Contact',
         content: [
-          'Data Protection Officer: ronisherbwalya@gmail.com',
+          `Data Protection Officer: ${SUPPORT_CONTACT.supportEmail}`,
+          `Phone / WhatsApp: ${SUPPORT_CONTACT.phoneDisplay}`,
           'For Zambian regulatory inquiries: We comply with the Data Protection Act No. 3 of 2021.',
         ],
       },
@@ -181,8 +183,8 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Contact',
         content: [
-          'Support: ronisherbwalya@gmail.com',
-          'Legal: ronisherbwalya@gmail.com',
+          `Support: ${SUPPORT_CONTACT.phoneDisplay} (call or WhatsApp)`,
+          `Email: ${SUPPORT_CONTACT.supportEmail} (support, payments and legal)`,
           'Physical: Countup Zambia, Lusaka, Zambia',
         ],
       },
@@ -258,7 +260,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Incident Response',
         content: [
-          'If you suspect unauthorized access: Change PIN immediately, log out all sessions, contact ronisherbwalya@gmail.com.',
+          `If you suspect unauthorized access: Change PIN immediately, log out all sessions, then contact ${SUPPORT_CONTACT.supportEmail} or call ${SUPPORT_CONTACT.phoneDisplay}.`,
           'We notify affected users within 72 hours of any confirmed data breach per Zambia Data Protection Act.',
           'Access to the platform-owner admin console is limited to the owner account, and Google Cloud keeps API-level audit logs.',
         ],

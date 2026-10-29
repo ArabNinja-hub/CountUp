@@ -29,16 +29,25 @@ service cloud.firestore {
       );
     }
 
-    // Test connection doc used for client connectivity verification
+    // A PIN is the only credential a shop has, so it is always exactly 4 digits.
+    function isFourDigitPin(value) {
+      return value is string && value.matches('^[0-9]{4}$');
+    }
+
+    // Connectivity probe used by the app on start. It is read-only: nothing in
+    // the app writes it, so writing is denied rather than left open to any
+    // signed-in device.
     match /test/connection {
       allow read: if true;
-      allow write: if isSignedIn();
+      allow write: if false;
     }
 
     // Admins registry — the only grant of platform-owner access.
-    // Read is required so the app can ask "am I an admin?" after sign-in.
+    // A device may only ask "am I an admin?" about itself; it may not read or
+    // list the registry, which would hand out the owner's uid to any user.
     match /admins/{adminId} {
-      allow read: if isSignedIn();
+      allow get: if isSignedIn() && request.auth.uid == adminId;
+      allow list: if isPlatformAdmin();
       allow write: if isPlatformAdmin();
     }
 
@@ -48,15 +57,30 @@ service cloud.firestore {
       allow get: if isShopOwner(shopId) || isPlatformAdmin();
       allow list: if isPlatformAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
 
-      // Create: User can create a shop with themselves as owner
+      // Create: a new shop belongs to the device that created it, holds a 4-digit
+      // PIN, and starts on the free trial. It cannot be created already paid,
+      // already deactivated, or with the trial end and plan expiry disagreeing.
       allow create: if isSignedIn() && (
-        request.resource.data.ownerUid == request.auth.uid || isPlatformAdmin()
+        isPlatformAdmin() || (
+          request.resource.data.ownerUid == request.auth.uid &&
+          isFourDigitPin(request.resource.data.pin) &&
+          request.resource.data.planStatus == 'trial' &&
+          request.resource.data.planType == 'trial' &&
+          request.resource.data.isDeactivated == false &&
+          request.resource.data.planExpiryDate == request.resource.data.trialEndsAt
+        )
       );
 
-      // Update: Shop owner can update basic info; platform admin can update any fields (extend/deactivate)
+      // Update: a shop may change nothing about itself except its PIN. Plan
+      // status, plan expiry and the deactivation flag belong to the platform
+      // owner, so a shop cannot extend its own subscription or un-suspend itself
+      // from the browser console. Everything else (records, credit balances) is
+      // stored in the subcollections below.
       allow update: if isPlatformAdmin() || (
         isShopOwner(shopId) &&
-        request.resource.data.ownerUid == resource.data.ownerUid
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        isFourDigitPin(request.resource.data.pin) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pin'])
       );
 
       // Delete: the shop owner can permanently delete their own shop and records

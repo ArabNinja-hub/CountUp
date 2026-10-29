@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShop } from '../context/ShopContext';
+import { SUPPORT_CONTACT } from '../config/support';
 import {
   Search,
   Plus,
@@ -549,8 +550,22 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           <div className="text-xs">
             <p className="font-bold">This shop has been deactivated</p>
             <p className="text-rose-700">
-              New sales are locked. Your records are safe and can still be viewed and exported.
-              Contact support to reactivate your shop.
+              New sales are locked. Your records are safe and can still be viewed and exported. To
+              reactivate your shop, contact support on{' '}
+              <a
+                href={`tel:${SUPPORT_CONTACT.phoneDial}`}
+                className="font-bold underline decoration-rose-400 underline-offset-2"
+              >
+                {SUPPORT_CONTACT.phoneDisplay}
+              </a>{' '}
+              or email{' '}
+              <a
+                href={`mailto:${SUPPORT_CONTACT.supportEmail}`}
+                className="font-bold underline decoration-rose-400 underline-offset-2"
+              >
+                {SUPPORT_CONTACT.supportEmail}
+              </a>
+              .
             </p>
           </div>
         </div>

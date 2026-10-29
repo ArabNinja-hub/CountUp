@@ -295,10 +295,15 @@ export const ReportsScreen: React.FC = () => {
       s.customerName || 'Walk-in',
     ]);
 
-    // Quote every field so item names containing commas cannot break the columns.
-    const csv = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-      .join('\r\n');
+    // Quote every field so item names containing commas cannot break the columns,
+    // and defuse spreadsheet formulas: a customer or item saved as `=CMD(...)`
+    // would otherwise be executed when the CSV is opened in Excel.
+    const safeCell = (cell: unknown) => {
+      const text = String(cell);
+      const neutralised = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+      return `"${neutralised.replace(/"/g, '""')}"`;
+    };
+    const csv = [headers, ...rows].map((row) => row.map(safeCell).join(',')).join('\r\n');
 
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);

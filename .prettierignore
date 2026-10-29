@@ -7,3 +7,4 @@ server.js
 *.md
 firebase-blueprint.json
 firebase-applet-config.json
+firestore.rules

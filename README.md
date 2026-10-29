@@ -149,6 +149,52 @@ document `admins/<uid>` for the owner's account. `firestore.rules` gates every a
 read and write on that document, and the app reveals the admin console only when it
 can read `admins/<own uid>`. Delete the document to revoke access.
 
+### Security model (what the rules enforce)
+
+`firestore.rules` is the only thing standing between one shop's records and every other
+device on the internet, so it is deliberately strict:
+
+- **Default deny.** Everything not explicitly allowed is refused.
+- **One shop sees one shop.** A shop document and its `items`, `sales`, `customers`,
+  `credit_payments` and `expenses` are readable and writable only by the device that
+  created them, plus the platform owner.
+- **A shop cannot pay itself.** A shop may change *only* its PIN after creation. Plan
+  status, plan expiry, the trial dates and the "deactivated" flag can only be written
+  by the platform owner — the browser console can no longer be used to grant free
+  premium or to lift a suspension.
+- **A new shop starts on the trial.** Creating a shop with `planStatus: active` (or with
+  the trial end and the plan expiry disagreeing) is refused by the rules.
+- **The admin registry is not browsable.** A device may only ask "is my own uid an
+  admin?", never list the admins.
+- **PINs are always four digits**, on create and on change.
+- **The connectivity probe is read-only.** Nothing needs to write `test/connection`.
+
+**Known limits — read these before launch:**
+
+1. **The PIN is stored as plain text** in `shops/<shopId>.pin` and in the phone's local
+   cache. The rules stop other shops from reading it, but anyone with Firebase console
+   access (or the phone itself) can see it, and four digits are easy to guess if the
+   database ever leaks. Moving to a salted hash is the next security step; it needs a
+   migration path for shops that already have a plain-text PIN.
+2. **Plan expiry is trusted from the document.** The rules block the *app's* path to
+   self-upgrading, but a determined person editing their own shop document by hand can
+   still write trial dates in the future. Real enforcement needs a Cloud Function or the
+   Firebase console (Extend plan) to be the only writer of those dates.
+3. **There is no rate limit on PIN attempts.** A 4-digit PIN has 10,000 combinations;
+   add a short lockout if these shops ever hold money belonging to someone else.
+4. **A forgotten PIN cannot be recovered in-app.** Logging in needs the PIN and the
+   device that created the shop, so support has to delete and re-register the shop (its
+   records are exported from Settings → Export My Data before doing that).
+5. **Admin rights are bound to the device, not to a password.** `admins/<uid>` is keyed
+   by the phone's anonymous Firebase uid, and logging out does **not** sign that session
+   out (signing out would change the uid and detach the shop from its own records). So
+   anyone who can unlock the owner's phone could register a throwaway shop and reach the
+   admin console. Treat the owner's phone like the master key: keep the screen lock on,
+   and delete `admins/<uid>` from Firestore before the phone changes hands.
+6. **No Content-Security-Policy is set.** It is worth adding one after testing sign-in
+   (Firebase Auth needs `frame-src` for its auth domain); the fonts are loaded from
+   Google Fonts, which is the only third-party request the app makes.
+
 ---
 
 ## Deployment
