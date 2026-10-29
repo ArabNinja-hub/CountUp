@@ -75,7 +75,10 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="current-pin">
+            <label
+              className="block text-[11px] font-bold text-slate-700 mb-1"
+              htmlFor="current-pin"
+            >
               Current PIN
             </label>
             <input
@@ -107,7 +110,10 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
             />
           </div>
           <div>
-            <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="confirm-pin">
+            <label
+              className="block text-[11px] font-bold text-slate-700 mb-1"
+              htmlFor="confirm-pin"
+            >
               Repeat new PIN
             </label>
             <input

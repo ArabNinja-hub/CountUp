@@ -82,7 +82,10 @@ export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => 
           </p>
 
           <div>
-            <label className="block text-[11px] font-bold text-slate-700 mb-1" htmlFor="delete-confirm">
+            <label
+              className="block text-[11px] font-bold text-slate-700 mb-1"
+              htmlFor="delete-confirm"
+            >
               Type <span className="font-mono">{shop?.name}</span> to confirm
             </label>
             <input
@@ -115,7 +118,11 @@ export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => 
               disabled={!matches || isDeleting}
               className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              {isDeleting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Trash2 className="w-4 h-4" />
+              )}
               <span>{isDeleting ? 'Deleting…' : 'Delete forever'}</span>
             </button>
           </div>

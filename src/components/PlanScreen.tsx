@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
   CreditCard,
@@ -46,9 +46,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
               <CreditCard className="w-5 h-5 text-emerald-800" />
               <span>{t.planTitle}</span>
             </h2>
-            <p className="text-xs text-slate-500">
-              Countup subscription plans for Zambian kiosks
-            </p>
+            <p className="text-xs text-slate-500">Countup subscription plans for Zambian kiosks</p>
           </div>
         </div>
 
@@ -66,10 +64,10 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           subscription.status === 'expired'
             ? 'bg-rose-50 border-rose-200 text-rose-950'
             : subscription.status === 'grace'
-            ? 'bg-amber-50 border-amber-200 text-amber-950'
-            : subscription.isWarningPeriod
-            ? 'bg-amber-50/70 border-amber-200 text-amber-950'
-            : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+              ? 'bg-amber-50 border-amber-200 text-amber-950'
+              : subscription.isWarningPeriod
+                ? 'bg-amber-50/70 border-amber-200 text-amber-950'
+                : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
         }`}
       >
         <div className="flex items-start justify-between">
@@ -79,37 +77,37 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
                 subscription.status === 'trial'
                   ? 'bg-emerald-200 text-emerald-900'
                   : subscription.status === 'active'
-                  ? 'bg-emerald-800 text-white'
-                  : subscription.status === 'grace'
-                  ? 'bg-amber-600 text-white'
-                  : 'bg-rose-700 text-white'
+                    ? 'bg-emerald-800 text-white'
+                    : subscription.status === 'grace'
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-rose-700 text-white'
               }`}
             >
               {subscription.status === 'trial'
                 ? t.trialBadge
                 : subscription.status === 'active'
-                ? 'Active Subscription'
-                : subscription.status === 'grace'
-                ? 'Grace Period'
-                : t.planExpired}
+                  ? 'Active Subscription'
+                  : subscription.status === 'grace'
+                    ? 'Grace Period'
+                    : t.planExpired}
             </span>
 
             <h3 className="font-black text-slate-900 text-lg mt-2 tracking-tight">
               {subscription.daysRemaining > 0
                 ? `${subscription.daysRemaining} ${t.daysRemaining}`
                 : subscription.status === 'grace'
-                ? `${subscription.graceDaysRemaining} days remaining in grace period`
-                : t.planExpired}
+                  ? `${subscription.graceDaysRemaining} days remaining in grace period`
+                  : t.planExpired}
             </h3>
 
             <p className="text-xs text-slate-600 mt-1 max-w-xl">
               {subscription.status === 'trial'
                 ? 'Every new Zambian kiosk starts with 30 days of full access. After trial, subscribe to continue recording sales.'
                 : subscription.status === 'grace'
-                ? `You have a ${GRACE_PERIOD_DAYS}-day grace period to renew before new sales are locked.`
-                : subscription.status === 'expired'
-                ? t.planExpiredNotice
-                : 'Your shop is fully unlocked for sales.'}
+                  ? `You have a ${GRACE_PERIOD_DAYS}-day grace period to renew before new sales are locked.`
+                  : subscription.status === 'expired'
+                    ? t.planExpiredNotice
+                    : 'Your shop is fully unlocked for sales.'}
             </p>
           </div>
 
@@ -154,9 +152,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
               >
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-black text-sm text-slate-900">
-                      {plan.name}
-                    </span>
+                    <span className="font-black text-sm text-slate-900">{plan.name}</span>
                     {plan.discountBadge && (
                       <span className="text-[10px] font-bold bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md">
                         {plan.discountBadge}
@@ -190,13 +186,17 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
         </h4>
 
         <p className="text-xs text-slate-600 mb-4">
-          To activate your {selectedPlan.name} plan (K {selectedPlan.priceKwacha}), please contact us via one of the methods below. 
-          We'll send you a Mobile Money prompt (Airtel/MTN/Zamtel) or provide bank details.
+          To activate your {selectedPlan.name} plan (K {selectedPlan.priceKwacha}), please contact
+          us via one of the methods below. We'll send you a Mobile Money prompt (Airtel/MTN/Zamtel)
+          or provide bank details.
         </p>
 
         <div className="grid grid-cols-3 gap-3 mb-4">
           <button
-            onClick={() => { setContactMethod('whatsapp'); setShowContactModal(true); }}
+            onClick={() => {
+              setContactMethod('whatsapp');
+              setShowContactModal(true);
+            }}
             className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-green-50 border-green-200 text-green-800 hover:bg-green-100"
           >
             <MessageSquare className="w-5 h-5 mb-1" />
@@ -205,7 +205,10 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           </button>
 
           <button
-            onClick={() => { setContactMethod('phone'); setShowContactModal(true); }}
+            onClick={() => {
+              setContactMethod('phone');
+              setShowContactModal(true);
+            }}
             className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100"
           >
             <Phone className="w-5 h-5 mb-1" />
@@ -214,7 +217,10 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           </button>
 
           <button
-            onClick={() => { setContactMethod('email'); setShowContactModal(true); }}
+            onClick={() => {
+              setContactMethod('email');
+              setShowContactModal(true);
+            }}
             className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-purple-50 border-purple-200 text-purple-800 hover:bg-purple-100"
           >
             <Mail className="w-5 h-5 mb-1" />
@@ -239,7 +245,9 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           </ol>
           <p className="text-[10px] text-slate-500">
             Quote this shop ID so we credit the right shop:{' '}
-            <code className="font-mono bg-slate-200 px-1 rounded">{shop?.id || 'your-shop-id'}</code>
+            <code className="font-mono bg-slate-200 px-1 rounded">
+              {shop?.id || 'your-shop-id'}
+            </code>
           </p>
         </div>
       </div>
@@ -268,18 +276,26 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center space-x-2">
-                <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${
-                  contactMethod === 'whatsapp' ? 'bg-green-100 text-green-800' :
-                  contactMethod === 'phone' ? 'bg-blue-100 text-blue-800' :
-                  'bg-purple-100 text-purple-800'
-                }`}>
+                <div
+                  className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                    contactMethod === 'whatsapp'
+                      ? 'bg-green-100 text-green-800'
+                      : contactMethod === 'phone'
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-purple-100 text-purple-800'
+                  }`}
+                >
                   {contactMethod === 'whatsapp' && <MessageSquare className="w-4 h-4" />}
                   {contactMethod === 'phone' && <Phone className="w-4 h-4" />}
                   {contactMethod === 'email' && <Mail className="w-4 h-4" />}
                 </div>
                 <div>
                   <h3 className="font-extrabold text-sm text-slate-900">
-                    {contactMethod === 'whatsapp' ? 'WhatsApp Us' : contactMethod === 'phone' ? 'Call / SMS' : 'Email Us'}
+                    {contactMethod === 'whatsapp'
+                      ? 'WhatsApp Us'
+                      : contactMethod === 'phone'
+                        ? 'Call / SMS'
+                        : 'Email Us'}
                   </h3>
                   <p className="text-[10px] text-slate-500">
                     {contactMethod === 'whatsapp' && SUPPORT_CONTACT.phoneDisplay}
@@ -298,8 +314,10 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
 
             <div className="mt-3 text-xs text-slate-700 space-y-3">
               <p className="text-slate-600 leading-relaxed">
-                Ready to subscribe to <strong className="text-emerald-800">{selectedPlan.name}</strong> (K {selectedPlan.priceKwacha})?
-                Contact us and we'll send a Mobile Money prompt or provide payment details.
+                Ready to subscribe to{' '}
+                <strong className="text-emerald-800">{selectedPlan.name}</strong> (K{' '}
+                {selectedPlan.priceKwacha})? Contact us and we'll send a Mobile Money prompt or
+                provide payment details.
               </p>
 
               <div className="bg-slate-50 p-3 rounded-xl space-y-2">
@@ -308,7 +326,9 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
                   <li>Your shop name</li>
                   <li>Your phone number (for Mobile Money prompt)</li>
                   <li>Preferred operator: Airtel / MTN / Zamtel</li>
-                  <li>Reference: <code className="font-mono bg-white px-1 rounded">{shop?.id}</code></li>
+                  <li>
+                    Reference: <code className="font-mono bg-white px-1 rounded">{shop?.id}</code>
+                  </li>
                 </ul>
               </div>
 

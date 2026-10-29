@@ -84,7 +84,8 @@ export interface CreditPayment {
   createdAt: string;
 }
 
-export type ExpenseCategory = 'rent' | 'transport' | 'restock' | 'council_fee' | 'helper_wage' | 'other';
+export type ExpenseCategory =
+  'rent' | 'transport' | 'restock' | 'council_fee' | 'helper_wage' | 'other';
 
 export interface Expense {
   id: string;

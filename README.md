@@ -89,10 +89,22 @@ npm run preview    # Vite preview server
 npm run deploy     # publish dist/ to the gh-pages branch (see Deployment)
 ```
 
-### Type-check
+### Checks
 ```bash
-npm run lint       # tsc --noEmit
+npm run typecheck   # tsc --noEmit
+npm run lint        # ESLint (React + TypeScript rules)
+npm run format      # Prettier — rewrite files in place
+npm run format:check # Prettier — report only (used by CI)
+npm test            # Vitest, one run
+npm run test:watch  # Vitest in watch mode while you work
+npm run check       # typecheck + lint + tests in one go
 ```
+
+The test suite covers the parts where a silent mistake costs money or data:
+`getSubscriptionInfo()` in `src/config/plans.ts` (trial / active / grace / expired and
+the boundary days), the input sanitizers in `src/utils/format.ts` (money, quantity,
+phone number), and `reconcile()` in `src/utils/sync.ts` (which local, not-yet-synced
+records are kept on screen next to the server's copy).
 
 ---
 
@@ -113,11 +125,17 @@ apart. Set it to `/` when hosting a custom domain from the site root.
 ### Support & payment contacts
 `src/config/support.ts` is the single source of truth for the WhatsApp number, phone
 number, and email addresses used by the Plan screen and the legal pages. Change them
-there — never inline.
+there — never inline. Current values: **+260 96 283 8581** and
+**ronisherbwalya@gmail.com** (the same mailbox is used for support, payments and legal
+mail, because there is no separate department yet).
+
+The legal pages in `src/components/LegalPages.tsx` repeat the email inside their text,
+so update that file too if the address ever changes.
 
 ### Firebase
 `firebase-applet-config.json` holds the web app credentials. Security rules live in
-`firestore.rules`.
+`firestore.rules`. `firebase.json` + `.firebaserc` tell the Firebase CLI which project
+and which (non-default) database those rules belong to.
 
 **Sign-in is a phone number + 4-digit PIN — nothing else.** There is no Google button,
 no email login, and no password. Each device holds a Firebase *anonymous* session
@@ -170,6 +188,53 @@ replace the publish step in the workflow with `actions/upload-pages-artifact` +
 
 ---
 
+## Deploying the Firestore rules
+
+Rules are **not** part of the Pages build. Pages only publishes files; the security
+rules live in Firebase and only change when you (or CI) deploy them. There are three
+ways, easiest first.
+
+### 1. Automatic from GitHub (set up once)
+
+`.github/workflows/firestore-rules.yml` deploys `firestore.rules` whenever that file
+changes on `main`. It needs one repository secret:
+
+1. On a computer with the repo checked out, run `npx firebase login:ci` and sign in with
+   the Google account that owns the Firebase project.
+2. Copy the token it prints (a long string starting with `1//`).
+3. In GitHub: **Settings → Secrets and variables → Actions → New repository secret**.
+   Name it exactly `FIREBASE_TOKEN`, paste the token, save.
+4. Re-run the **Deploy Firestore rules** workflow (Actions → the workflow → *Run
+   workflow*).
+
+Until the secret exists the workflow does not fail — it prints a warning saying the
+rules were not deployed.
+
+### 2. By hand with the CLI
+
+```bash
+npx firebase login                     # once per computer
+npm run deploy:rules                    # npx firebase deploy --only firestore:rules
+```
+
+This uses `firebase.json` (rules file + which database) and `.firebaserc` (project id),
+so there is nothing to type by hand.
+
+### 3. By hand in the browser (no tooling at all)
+
+1. Open [console.firebase.google.com](https://console.firebase.google.com) and pick the
+   project.
+2. **Firestore Database → Rules**.
+3. Select the database named `ai-studio-6763e195-ebd5-4984-ba25-2f9dabfe7719` (the app
+   uses this named database, not `(default)`).
+4. Open `firestore.rules` from the repository, copy **all** of it, paste it over the
+   editor contents, and press **Publish**.
+
+If you paste only part of the file, or publish to `(default)`, the app keeps working
+from its local cache but every cloud read and write is denied.
+
+---
+
 ## Project Structure
 
 ```
@@ -179,7 +244,13 @@ CountUp/
 ├── index.html               # App shell + fonts + meta
 ├── vite.config.ts           # base + spaFallback() emit of 404.html
 ├── public/                  # Copied verbatim into dist/ (.nojekyll, brand images)
-├── .github/workflows/deploy-pages.yml  # main -> build -> verify -> gh-pages
+├── .github/workflows/deploy-pages.yml  # main -> typecheck/lint/test -> build -> gh-pages
+├── .github/workflows/firestore-rules.yml # firestore.rules -> live rules (needs FIREBASE_TOKEN)
+├── eslint.config.js          # ESLint 9 flat config (React + TypeScript)
+├── .prettierrc               # Prettier formatting rules
+├── vitest.config.ts          # Test runner config (src/**/*.test.ts)
+├── firebase.json             # Firebase CLI: which rules file, which database
+├── .firebaserc               # Firebase CLI: which project
 ├── firebase-applet-config.json
 ├── firestore.rules
 └── src/
@@ -191,7 +262,8 @@ CountUp/
     ├── context/            # ShopProvider (state, auth, sync)
     ├── firebase/           # Firebase init + helpers
     ├── i18n/               # EN / BEM / NYA translations
-    └── types/              # Shared TypeScript types
+    ├── types/              # Shared TypeScript types
+    └── utils/              # format.ts (money/quantity/phone), sync.ts (offline merge) + their tests
 ```
 
 ---
@@ -201,15 +273,16 @@ CountUp/
 Things a deploy does **not** do for you:
 
 1. **Publish the Firestore rules.** `firestore.rules` is the only thing enforcing
-   per-shop data isolation — rules must be live before real shops register:
-   `firebase deploy --only firestore:rules --project <project-id>`.
+   per-shop data isolation — rules must be live before real shops register. See
+   [Deploying the Firestore rules](#deploying-the-firestore-rules) below.
 2. **Enable Anonymous sign-in.** Authentication → Sign-in method → *Anonymous* must be
    on; it is the only method the app uses. (Leave Google, email and phone-provider
    sign-in switched off — nothing in the app calls them.)
 3. **Grant yourself admin.** After your first sign-in, copy your UID from
    Authentication → Users and create the document `admins/<uid>` in Firestore.
 4. **Confirm the contact details** in `src/config/support.ts` (WhatsApp, phone, payment
-   email). These are the channels customers are told to pay through.
+   email). These are the channels customers are told to pay through. They are already
+   set to +260 96 283 8581 and ronisherbwalya@gmail.com.
 5. **Plan activation is manual.** Payment happens off-app (WhatsApp / call / email), and
    the owner activates the shop with the admin console's “+30 / +90 days” action. There
    is no automated Mobile Money callback in the static build.

@@ -33,17 +33,8 @@ interface SellScreenProps {
 }
 
 export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock }) => {
-  const {
-    items,
-    customers,
-    addCustomer,
-    recordSale,
-    t,
-    subscription,
-    isShopDeactivated,
-    shop,
-    sales,
-  } = useShop();
+  const { items, customers, addCustomer, recordSale, t, subscription, isShopDeactivated, sales } =
+    useShop();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -110,7 +101,10 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     const inCart = cart.find((ci) => ci.item.id === item.id);
     const current = inCart?.quantity ?? 0;
     if (item.quantity <= 0) {
-      notify(`${item.name} is out of stock`, { kind: 'error', detail: 'Restock it in the Stock tab first.' });
+      notify(`${item.name} is out of stock`, {
+        kind: 'error',
+        detail: 'Restock it in the Stock tab first.',
+      });
       return;
     }
     if (current >= item.quantity) {
@@ -243,8 +237,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           paymentType === 'credit'
             ? `Added to ${customerObj?.name}'s credit balance`
             : paymentType === 'momo'
-            ? `Recorded as Mobile Money (${momoOperator})`
-            : 'Recorded as cash in hand',
+              ? `Recorded as Mobile Money (${momoOperator})`
+              : 'Recorded as cash in hand',
       });
 
       // Reset cart immediately
@@ -276,7 +270,10 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
-            onClick={() => { setPaymentType('cash'); setCreditError(''); }}
+            onClick={() => {
+              setPaymentType('cash');
+              setCreditError('');
+            }}
             aria-pressed={paymentType === 'cash'}
             className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 border ${
               paymentType === 'cash'
@@ -284,13 +281,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <Banknote className={`w-4 h-4 ${paymentType === 'cash' ? 'text-emerald-300' : 'text-emerald-600'}`} />
+            <Banknote
+              className={`w-4 h-4 ${paymentType === 'cash' ? 'text-emerald-300' : 'text-emerald-600'}`}
+            />
             <span>{t.paidCash}</span>
           </button>
 
           <button
             type="button"
-            onClick={() => { setPaymentType('momo'); setCreditError(''); }}
+            onClick={() => {
+              setPaymentType('momo');
+              setCreditError('');
+            }}
             aria-pressed={paymentType === 'momo'}
             className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 border ${
               paymentType === 'momo'
@@ -298,13 +300,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <Smartphone className={`w-4 h-4 ${paymentType === 'momo' ? 'text-sky-300' : 'text-sky-600'}`} />
+            <Smartphone
+              className={`w-4 h-4 ${paymentType === 'momo' ? 'text-sky-300' : 'text-sky-600'}`}
+            />
             <span>{t.paidMomo}</span>
           </button>
 
           <button
             type="button"
-            onClick={() => { setPaymentType('credit'); setCreditError(''); }}
+            onClick={() => {
+              setPaymentType('credit');
+              setCreditError('');
+            }}
             aria-pressed={paymentType === 'credit'}
             className={`min-h-[44px] py-2 px-2 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 border ${
               paymentType === 'credit'
@@ -312,14 +319,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            <HandCoins className={`w-4 h-4 ${paymentType === 'credit' ? 'text-amber-300' : 'text-amber-600'}`} />
+            <HandCoins
+              className={`w-4 h-4 ${paymentType === 'credit' ? 'text-amber-300' : 'text-amber-600'}`}
+            />
             <span>{t.onCredit}</span>
           </button>
         </div>
         <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
           {paymentType === 'cash' && 'Money received now, in hand.'}
-          {paymentType === 'momo' && `Money received now via ${momoOperator === 'mtn' ? 'MTN MoMo' : momoOperator === 'zamtel' ? 'Zamtel Kwacha' : 'Airtel Money'}.`}
-          {paymentType === 'credit' && 'Nothing received now — the balance is added to the customer’s credit book.'}
+          {paymentType === 'momo' &&
+            `Money received now via ${momoOperator === 'mtn' ? 'MTN MoMo' : momoOperator === 'zamtel' ? 'Zamtel Kwacha' : 'Airtel Money'}.`}
+          {paymentType === 'credit' &&
+            'Nothing received now — the balance is added to the customer’s credit book.'}
         </p>
       </div>
 
@@ -330,11 +341,21 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             Which network sent the money?
           </span>
           <div className="grid grid-cols-3 gap-2">
-            {([
-              { id: 'airtel', label: 'Airtel', active: 'bg-red-700 border-red-700 text-white' },
-              { id: 'mtn', label: 'MTN MoMo', active: 'bg-amber-500 border-amber-500 text-slate-950' },
-              { id: 'zamtel', label: 'Zamtel', active: 'bg-emerald-700 border-emerald-700 text-white' },
-            ] as const).map((op) => (
+            {(
+              [
+                { id: 'airtel', label: 'Airtel', active: 'bg-red-700 border-red-700 text-white' },
+                {
+                  id: 'mtn',
+                  label: 'MTN MoMo',
+                  active: 'bg-amber-500 border-amber-500 text-slate-950',
+                },
+                {
+                  id: 'zamtel',
+                  label: 'Zamtel',
+                  active: 'bg-emerald-700 border-emerald-700 text-white',
+                },
+              ] as const
+            ).map((op) => (
               <button
                 key={op.id}
                 type="button"
@@ -363,7 +384,10 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             </span>
             <button
               type="button"
-              onClick={() => { setIsAddingNewCustomer(!isAddingNewCustomer); setCreditError(''); }}
+              onClick={() => {
+                setIsAddingNewCustomer(!isAddingNewCustomer);
+                setCreditError('');
+              }}
               className="text-[11px] text-amber-900 font-bold hover:underline flex items-center space-x-1 shrink-0"
             >
               <UserPlus className="w-3.5 h-3.5" />
@@ -377,7 +401,10 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 type="text"
                 placeholder="Customer name (required)"
                 value={newCustName}
-                onChange={(e) => { setNewCustName(e.target.value); setCreditError(''); }}
+                onChange={(e) => {
+                  setNewCustName(e.target.value);
+                  setCreditError('');
+                }}
                 autoComplete="off"
                 className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-600"
               />
@@ -400,8 +427,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 return (
                   <div className="bg-white border border-amber-300 rounded-lg p-2 text-[11px] text-amber-900 leading-snug">
                     <strong>{existing.name}</strong> is already in your credit book
-                    {existing.totalOwed > 0 ? ` and owes ${formatKwacha(existing.totalOwed)}` : ''}. Add
-                    this sale to that account instead of starting a second one.
+                    {existing.totalOwed > 0 ? ` and owes ${formatKwacha(existing.totalOwed)}` : ''}.
+                    Add this sale to that account instead of starting a second one.
                     <button
                       type="button"
                       onClick={() => {
@@ -421,8 +448,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             </div>
           ) : customers.length === 0 ? (
             <p className="text-[11px] text-amber-900 bg-white border border-amber-200 rounded-lg p-2.5 leading-snug">
-              No credit customers yet. Tap <strong>New customer</strong> above and enter their name —
-              it takes a few seconds.
+              No credit customers yet. Tap <strong>New customer</strong> above and enter their name
+              — it takes a few seconds.
             </p>
           ) : (
             <div className="space-y-2">
@@ -449,17 +476,28 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                       <button
                         key={c.id}
                         type="button"
-                        onClick={() => { setSelectedCustomerId(c.id); setCreditError(''); }}
+                        onClick={() => {
+                          setSelectedCustomerId(c.id);
+                          setCreditError('');
+                        }}
                         aria-pressed={isPicked}
                         className={`w-full flex items-center justify-between px-2.5 py-2 text-left transition-colors ${
                           isPicked ? 'bg-amber-100' : 'hover:bg-amber-50'
                         }`}
                       >
                         <span className="min-w-0">
-                          <span className="block text-xs font-bold text-slate-900 truncate">{c.name}</span>
-                          {c.phone && <span className="block text-[10px] text-slate-500 font-mono">{c.phone}</span>}
+                          <span className="block text-xs font-bold text-slate-900 truncate">
+                            {c.name}
+                          </span>
+                          {c.phone && (
+                            <span className="block text-[10px] text-slate-500 font-mono">
+                              {c.phone}
+                            </span>
+                          )}
                         </span>
-                        <span className={`text-[11px] font-bold tabular-nums shrink-0 ${c.totalOwed > 0 ? 'text-amber-900' : 'text-emerald-700'}`}>
+                        <span
+                          className={`text-[11px] font-bold tabular-nums shrink-0 ${c.totalOwed > 0 ? 'text-amber-900' : 'text-emerald-700'}`}
+                        >
                           {c.totalOwed > 0 ? `owes ${formatKwachaCompact(c.totalOwed)}` : 'cleared'}
                         </span>
                       </button>
@@ -496,8 +534,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         {cart.length === 0
           ? 'Add an item to start a sale.'
           : paymentType === 'credit' && !selectedCustomerId && !newCustName.trim()
-          ? 'Choose who is buying on credit above to save this sale.'
-          : 'Saves instantly — works offline, syncs when you have network.'}
+            ? 'Choose who is buying on credit above to save this sale.'
+            : 'Saves instantly — works offline, syncs when you have network.'}
       </p>
     </div>
   );
@@ -540,7 +578,9 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       {/* Live "today" strip — updates the moment a sale is recorded */}
       <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Today</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            Today
+          </span>
           <p className="text-sm font-black text-slate-900 tabular-nums leading-tight">
             {formatKwacha(today.total)}
           </p>
@@ -549,21 +589,27 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           </span>
         </div>
         <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Cash & MoMo</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            Cash & MoMo
+          </span>
           <p className="text-sm font-black text-emerald-800 tabular-nums leading-tight">
             {formatKwacha(today.cash)}
           </p>
           <span className="text-[10px] text-slate-500">Money in hand</span>
         </div>
         <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">On credit</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            On credit
+          </span>
           <p className="text-sm font-black text-amber-800 tabular-nums leading-tight">
             {formatKwacha(today.credit)}
           </p>
           <span className="text-[10px] text-slate-500">Still to be paid</span>
         </div>
         <div className="bg-emerald-900 border border-emerald-800 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Profit</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+            Profit
+          </span>
           <p className="text-sm font-black text-white tabular-nums leading-tight">
             {formatKwacha(today.profit)}
           </p>
@@ -584,14 +630,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery(''); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setSearchQuery('');
+                }}
                 placeholder="Search your items by name…"
                 autoComplete="off"
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-16 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white transition-all"
               />
               {searchQuery && (
                 <button
-                  onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+                  onClick={() => {
+                    setSearchQuery('');
+                    searchRef.current?.focus();
+                  }}
                   className="absolute right-2.5 top-2 text-xs font-bold text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-md px-2 py-1"
                 >
                   Clear
@@ -631,11 +682,14 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 Nothing matches “{searchQuery.trim()}”
               </p>
               <p className="text-xs text-slate-500 mb-4">
-                {items.length} {items.length === 1 ? 'item is' : 'items are'} in your stock book — try a
-                shorter word, or check the spelling.
+                {items.length} {items.length === 1 ? 'item is' : 'items are'} in your stock book —
+                try a shorter word, or check the spelling.
               </p>
               <button
-                onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+                onClick={() => {
+                  setSearchQuery('');
+                  searchRef.current?.focus();
+                }}
                 className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2.5 rounded-xl transition-colors cursor-pointer"
               >
                 Show all items
@@ -656,8 +710,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                       isOutOfStock
                         ? 'bg-slate-50 border-slate-200 opacity-60 cursor-not-allowed'
                         : inCart
-                        ? 'bg-emerald-50/70 border-emerald-600 shadow-xs ring-1 ring-emerald-600'
-                        : 'bg-white border-slate-200/90 hover:border-emerald-300 hover:shadow-xs cursor-pointer'
+                          ? 'bg-emerald-50/70 border-emerald-600 shadow-xs ring-1 ring-emerald-600'
+                          : 'bg-white border-slate-200/90 hover:border-emerald-300 hover:shadow-xs cursor-pointer'
                     }`}
                   >
                     <div>
@@ -755,14 +809,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
               <div className="py-12 text-center text-slate-400">
                 <ShoppingBag className="w-10 h-10 mx-auto mb-2 opacity-40 text-slate-400" />
                 <p className="text-xs font-semibold text-slate-600">Cart is empty</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">Tap any item from the catalog to add</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Tap any item from the catalog to add
+                </p>
               </div>
             ) : (
               <>
                 {/* Itemized Cart List */}
                 <div className="max-h-56 overflow-y-auto space-y-2 pr-1 divide-y divide-slate-100">
                   {cart.map((ci) => (
-                    <div key={ci.item.id} className="pt-2 first:pt-0 flex items-center justify-between text-xs">
+                    <div
+                      key={ci.item.id}
+                      className="pt-2 first:pt-0 flex items-center justify-between text-xs"
+                    >
                       <div className="min-w-0 flex-1 pr-2">
                         <p className="font-semibold text-slate-900 truncate">{ci.item.name}</p>
                         <p className="text-[11px] text-slate-400 tabular-nums">
@@ -899,7 +958,10 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           }
           confirmLabel="Clear sale"
           onCancel={() => setShowClearConfirm(false)}
-          onConfirm={() => { setCart([]); setShowClearConfirm(false); }}
+          onConfirm={() => {
+            setCart([]);
+            setShowClearConfirm(false);
+          }}
         />
       )}
 
@@ -910,9 +972,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto mb-3">
               <CheckCircle2 className="w-8 h-8" />
             </div>
-            <h3 className="text-lg font-black text-slate-900 tracking-tight">
-              Sale Recorded!
-            </h3>
+            <h3 className="text-lg font-black text-slate-900 tracking-tight">Sale Recorded!</h3>
             <p className="text-2xl font-black text-emerald-800 my-1 tabular-nums">
               {formatKwacha(lastCompletedSale.total)}
             </p>
@@ -920,8 +980,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
               {lastCompletedSale.paymentType === 'cash'
                 ? 'Paid in Cash (In Hand)'
                 : lastCompletedSale.paymentType === 'momo'
-                ? `Received via Mobile Money (${lastCompletedSale.momoOperator?.toUpperCase()})`
-                : `Recorded on Credit for ${lastCompletedSale.customerName || 'customer'}`}
+                  ? `Received via Mobile Money (${lastCompletedSale.momoOperator?.toUpperCase()})`
+                  : `Recorded on Credit for ${lastCompletedSale.customerName || 'customer'}`}
             </p>
 
             <button

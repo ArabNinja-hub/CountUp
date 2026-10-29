@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { useShop } from '../context/ShopContext';
 import {
   Wifi,
@@ -25,11 +24,8 @@ import { DeleteShopModal } from './DeleteShopModal';
 import { ChangePinModal } from './ChangePinModal';
 import icon from '/brand/icon.png';
 
-interface HeaderProps {
-  // No more onOpenPlan/onOpenAdmin - those are in Settings now
-}
-
-export const Header: React.FC<HeaderProps> = () => {
+// Header takes no props; the plan and admin screens live in Settings now.
+export const Header: React.FC = () => {
   const {
     shop,
     t,
@@ -106,8 +102,8 @@ export const Header: React.FC<HeaderProps> = () => {
               !isOnline
                 ? 'bg-amber-950/80 text-amber-200 border-amber-600/60'
                 : pendingSyncCount > 0
-                ? 'bg-sky-950/80 text-sky-200 border-sky-600/60'
-                : 'bg-emerald-800/60 text-emerald-200 border-emerald-700/60 hover:bg-emerald-800'
+                  ? 'bg-sky-950/80 text-sky-200 border-sky-600/60'
+                  : 'bg-emerald-800/60 text-emerald-200 border-emerald-700/60 hover:bg-emerald-800'
             }`}
           >
             {isSyncing ? (
@@ -118,7 +114,11 @@ export const Header: React.FC<HeaderProps> = () => {
               <Wifi className="w-3.5 h-3.5 text-emerald-400" />
             )}
             <span className="hidden sm:inline text-[11px]">
-              {!isOnline ? 'Offline' : pendingSyncCount > 0 ? `${pendingSyncCount} unsynced` : 'Synced'}
+              {!isOnline
+                ? 'Offline'
+                : pendingSyncCount > 0
+                  ? `${pendingSyncCount} unsynced`
+                  : 'Synced'}
             </span>
           </button>
 
@@ -157,7 +157,9 @@ export const Header: React.FC<HeaderProps> = () => {
                     }`}
                   >
                     <span>{langNames[langKey].label}</span>
-                    <span className="text-[10px] text-slate-400 uppercase font-mono">{langKey}</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-mono">
+                      {langKey}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -187,7 +189,10 @@ export const Header: React.FC<HeaderProps> = () => {
                 <div className="py-1">
                   {/* Subscription / Plan */}
                   <button
-                    onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('open-plan')); }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      window.dispatchEvent(new CustomEvent('open-plan'));
+                    }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <Store className="w-4 h-4 text-emerald-600" />
@@ -199,7 +204,10 @@ export const Header: React.FC<HeaderProps> = () => {
 
                   {/* Legal */}
                   <button
-                    onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('open-legal', { detail: 'privacy' })); }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      window.dispatchEvent(new CustomEvent('open-legal', { detail: 'privacy' }));
+                    }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <FileText className="w-4 h-4 text-slate-500" />
@@ -207,7 +215,10 @@ export const Header: React.FC<HeaderProps> = () => {
                   </button>
 
                   <button
-                    onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('open-legal', { detail: 'terms' })); }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      window.dispatchEvent(new CustomEvent('open-legal', { detail: 'terms' }));
+                    }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <Shield className="w-4 h-4 text-slate-500" />
@@ -215,7 +226,10 @@ export const Header: React.FC<HeaderProps> = () => {
                   </button>
 
                   <button
-                    onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('open-legal', { detail: 'security' })); }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      window.dispatchEvent(new CustomEvent('open-legal', { detail: 'security' }));
+                    }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <Lock className="w-4 h-4 text-slate-500" />
@@ -224,7 +238,10 @@ export const Header: React.FC<HeaderProps> = () => {
 
                   {isAdmin && (
                     <button
-                      onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('open-admin')); }}
+                      onClick={() => {
+                        setShowSettingsMenu(false);
+                        window.dispatchEvent(new CustomEvent('open-admin'));
+                      }}
                       className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                     >
                       <ShieldCheck className="w-4 h-4 text-emerald-700" />
@@ -237,7 +254,10 @@ export const Header: React.FC<HeaderProps> = () => {
 
                   {/* Change PIN */}
                   <button
-                    onClick={() => { setShowSettingsMenu(false); setShowPinModal(true); }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      setShowPinModal(true);
+                    }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <KeyRound className="w-4 h-4 text-slate-500" />
@@ -246,7 +266,10 @@ export const Header: React.FC<HeaderProps> = () => {
 
                   {/* Export Data */}
                   <button
-                    onClick={() => { setShowSettingsMenu(false); window.dispatchEvent(new CustomEvent('export-data')); }}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      window.dispatchEvent(new CustomEvent('export-data'));
+                    }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <Download className="w-4 h-4 text-slate-500" />
@@ -290,13 +313,17 @@ export const Header: React.FC<HeaderProps> = () => {
             {lowStockCount > 0 && (
               <span className="flex items-center space-x-1 text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
                 <AlertTriangle className="w-3 h-3" />
-                <span>{lowStockCount} item{lowStockCount > 1 ? 's' : ''} low on stock</span>
+                <span>
+                  {lowStockCount} item{lowStockCount > 1 ? 's' : ''} low on stock
+                </span>
               </span>
             )}
             {debtCustomerCount > 0 && (
               <span className="flex items-center space-x-1 text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
                 <BookUser className="w-3 h-3" />
-                <span>{debtCustomerCount} customer{debtCustomerCount > 1 ? 's' : ''} owe you money</span>
+                <span>
+                  {debtCustomerCount} customer{debtCustomerCount > 1 ? 's' : ''} owe you money
+                </span>
               </span>
             )}
           </div>

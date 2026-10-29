@@ -19,7 +19,10 @@ export interface Toast {
 
 interface ToastContextValue {
   toasts: Toast[];
-  notify: (message: string, options?: { kind?: ToastKind; detail?: string; action?: ToastAction }) => number;
+  notify: (
+    message: string,
+    options?: { kind?: ToastKind; detail?: string; action?: ToastAction }
+  ) => number;
   dismiss: (id: number) => void;
 }
 
@@ -70,7 +73,10 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setToasts((prev) => [...prev.slice(-2), toast]);
       // Errors and toasts with an action stay longer so they cannot be missed.
       const ttl = toast.kind === 'error' ? 7000 : toast.action ? 8000 : 3200;
-      timers.current.set(id, setTimeout(() => dismiss(id), ttl));
+      timers.current.set(
+        id,
+        setTimeout(() => dismiss(id), ttl)
+      );
       return id;
     },
     [dismiss]
@@ -136,6 +142,8 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 };
 
+// The provider and its hook intentionally live together.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useToast = (): ToastContextValue => {
   const ctx = useContext(ToastContext);
   if (!ctx) throw new Error('useToast must be used inside <ToastProvider>');

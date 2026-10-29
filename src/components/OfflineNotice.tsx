@@ -3,7 +3,8 @@ import { useShop } from '../context/ShopContext';
 import { WifiOff, RefreshCw, X } from 'lucide-react';
 
 export const OfflineNotice: React.FC = () => {
-  const { lastOfflineNotice, clearOfflineNotice, isOnline, pendingSyncCount, syncNow, isSyncing } = useShop();
+  const { lastOfflineNotice, clearOfflineNotice, isOnline, pendingSyncCount, syncNow, isSyncing } =
+    useShop();
 
   if (!lastOfflineNotice && (isOnline || pendingSyncCount === 0)) return null;
 

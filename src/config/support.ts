@@ -11,15 +11,15 @@
  * tel: links.
  */
 export const SUPPORT_CONTACT = {
-  /** WhatsApp number in international format, digits only (e.g. 260977123456). */
-  whatsapp: '260977123456',
+  /** WhatsApp number in international format, digits only (e.g. 260962838581). */
+  whatsapp: '260962838581',
   /** Human-readable version of the same number, shown in the UI. */
-  phoneDisplay: '+260 97 712 3456',
+  phoneDisplay: '+260 96 283 8581',
   /** Dialable number for tel: links (E.164). */
-  phoneDial: '+260977123456',
-  supportEmail: 'support@countup.app',
-  paymentsEmail: 'payments@countup.app',
-  legalEmail: 'legal@countup.app',
+  phoneDial: '+260962838581',
+  supportEmail: 'ronisherbwalya@gmail.com',
+  paymentsEmail: 'ronisherbwalya@gmail.com',
+  legalEmail: 'ronisherbwalya@gmail.com',
 } as const;
 
 /*

@@ -1,37 +1,15 @@
 import React from 'react';
 import { useShop } from '../context/ShopContext';
-import {
-  ShoppingBag,
-  Boxes,
-  BookUser,
-  BarChart3,
-  Wifi,
-  WifiOff,
-  AlertTriangle,
-  BookUser as BookUserIcon,
-} from 'lucide-react';
+import { ShoppingBag, Boxes, BookUser, BarChart3, Wifi, WifiOff } from 'lucide-react';
 import { ActiveTab } from '../types';
 import icon from '/brand/icon.png';
 
-interface SidebarProps {
-  // No more onOpenPlan - it's in Settings menu now
-}
+// Sidebar takes no props; the plan screen lives in the Settings menu now.
+export const Sidebar: React.FC = () => {
+  const { t, activeTab, setActiveTab, isOnline, pendingSyncCount, items, customers, subscription } =
+    useShop();
 
-export const Sidebar: React.FC<SidebarProps> = () => {
-  const {
-    t,
-    activeTab,
-    setActiveTab,
-    isOnline,
-    pendingSyncCount,
-    items,
-    customers,
-    subscription,
-  } = useShop();
-
-  const lowStockCount = items.filter(
-    (i) => i.quantity <= i.lowStockThreshold
-  ).length;
+  const lowStockCount = items.filter((i) => i.quantity <= i.lowStockThreshold).length;
   const debtCustomerCount = customers.filter((c) => c.totalOwed > 0).length;
 
   const navItems: {
@@ -41,16 +19,26 @@ export const Sidebar: React.FC<SidebarProps> = () => {
     badge?: number;
   }[] = [
     { id: 'sell', label: t.tabSell, icon: ShoppingBag },
-    { id: 'stock', label: t.tabStock, icon: Boxes, badge: lowStockCount > 0 ? lowStockCount : undefined },
-    { id: 'credit', label: t.tabCredit, icon: BookUser, badge: debtCustomerCount > 0 ? debtCustomerCount : undefined },
+    {
+      id: 'stock',
+      label: t.tabStock,
+      icon: Boxes,
+      badge: lowStockCount > 0 ? lowStockCount : undefined,
+    },
+    {
+      id: 'credit',
+      label: t.tabCredit,
+      icon: BookUser,
+      badge: debtCustomerCount > 0 ? debtCustomerCount : undefined,
+    },
     { id: 'reports', label: t.tabReports, icon: BarChart3 },
   ];
 
   const syncLabel = !isOnline
     ? 'Offline — saved locally'
     : pendingSyncCount > 0
-    ? `${pendingSyncCount} pending sync`
-    : 'Online & synced';
+      ? `${pendingSyncCount} pending sync`
+      : 'Online & synced';
 
   return (
     <aside className="hidden md:flex md:flex-col md:w-64 lg:w-72 shrink-0 border-r border-slate-200 bg-white sticky top-0 h-screen">
@@ -60,9 +48,7 @@ export const Sidebar: React.FC<SidebarProps> = () => {
           <img src={icon} alt="Countup" className="w-7 h-7 object-contain" />
         </div>
         <div className="min-w-0">
-          <p className="font-black text-slate-900 text-[15px] leading-tight truncate">
-            Countup
-          </p>
+          <p className="font-black text-slate-900 text-[15px] leading-tight truncate">Countup</p>
           <p className="text-[11px] text-emerald-700 font-semibold tracking-wide uppercase">
             Kiosk POS
           </p>
@@ -123,16 +109,24 @@ export const Sidebar: React.FC<SidebarProps> = () => {
         <div className="mt-2 px-3 py-2 rounded-xl text-xs font-medium bg-slate-50 text-slate-600">
           <div className="flex items-center justify-between">
             <span>Plan</span>
-            <span className={`font-semibold px-2 py-0.5 rounded text-[10px] ${
-              subscription.status === 'expired' ? 'bg-rose-100 text-rose-700' :
-              subscription.status === 'grace' ? 'bg-amber-100 text-amber-700' :
-              subscription.status === 'trial' ? 'bg-emerald-100 text-emerald-700' :
-              'bg-slate-100 text-slate-700'
-            }`}>
-              {subscription.status === 'trial' ? `${subscription.daysRemaining}d trial` :
-               subscription.status === 'active' ? 'Active' :
-               subscription.status === 'grace' ? `${subscription.graceDaysRemaining}d grace` :
-               'Expired'}
+            <span
+              className={`font-semibold px-2 py-0.5 rounded text-[10px] ${
+                subscription.status === 'expired'
+                  ? 'bg-rose-100 text-rose-700'
+                  : subscription.status === 'grace'
+                    ? 'bg-amber-100 text-amber-700'
+                    : subscription.status === 'trial'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-slate-100 text-slate-700'
+              }`}
+            >
+              {subscription.status === 'trial'
+                ? `${subscription.daysRemaining}d trial`
+                : subscription.status === 'active'
+                  ? 'Active'
+                  : subscription.status === 'grace'
+                    ? `${subscription.graceDaysRemaining}d grace`
+                    : 'Expired'}
             </span>
           </div>
         </div>

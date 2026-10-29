@@ -1,18 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import {
-  Shop,
-  Item,
-  Sale,
-  Customer,
-  CreditPayment,
-  Expense,
-  Language,
-  ActiveTab,
-} from '../types';
+import { Shop, Item, Sale, Customer, CreditPayment, Expense, Language, ActiveTab } from '../types';
 import { translations, Translations } from '../i18n/translations';
 import { getSubscriptionInfo } from '../config/plans';
 import { auth, db, testConnection } from '../firebase/config';
 import { useToast } from '../components/Toast';
+import { reconcile } from '../utils/sync';
 import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import {
   doc,
@@ -24,13 +16,21 @@ import {
   onSnapshot,
   query,
   getDocs,
+  DocumentData,
 } from 'firebase/firestore';
+
+/**
+ * Payload of a queued write. The concrete shape depends on `type` (a Sale, an
+ * Item, a partial patch…), so the queue only promises that it is a plain object
+ * and Firestore is given it as `DocumentData` at write time.
+ */
+type QueuePayload = object;
 
 interface PendingSyncAction {
   id: string;
   type: 'sale' | 'item' | 'customer' | 'payment' | 'expense' | 'stock_update';
   path: string;
-  data: any;
+  data: QueuePayload;
   timestamp: number;
 }
 
@@ -108,32 +108,6 @@ function isTodayIso(iso: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toDateString() === new Date().toDateString();
 }
 
-/**
- * Merge a server snapshot with writes that are still waiting in the offline queue.
- *
- * Firestore only knows about documents that reached it. Anything queued while the
- * phone was offline exists solely in local state, so a naive `setState(remote)`
- * makes a just-recorded sale vanish from the screen until it syncs. Keep exactly
- * those not-yet-pushed documents on top of the server truth; everything else comes
- * from the server, so edits and deletions made elsewhere are reflected immediately.
- */
-function reconcile<T extends { id: string }>(
-  remote: T[],
-  local: T[],
-  queue: PendingSyncAction[],
-  collectionPath: string
-): T[] {
-  const unsynced = new Set(
-    queue.filter((a) => a.path.startsWith(`${collectionPath}/`)).map((a) => a.path)
-  );
-  if (unsynced.size === 0) return remote;
-  const remoteIds = new Set(remote.map((r) => r.id));
-  const unsyncedLocal = local.filter(
-    (l) => !remoteIds.has(l.id) && unsynced.has(`${collectionPath}/${l.id}`)
-  );
-  return unsyncedLocal.length === 0 ? remote : [...remote, ...unsyncedLocal];
-}
-
 export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { notify } = useToast();
   const [user, setUser] = useState<User | null>(null);
@@ -142,7 +116,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return cached ? JSON.parse(cached) : null;
   });
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  
+
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [language, setLanguageState] = useState<Language>(() => {
     const saved = localStorage.getItem('countup_language') as Language;
@@ -213,6 +187,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
+    // Only the offline notice text is a real dependency: re-running on every
+    // render would re-attach the listeners on each keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t.offlineSaved]);
 
   // Save current shop state to local storage for instant offline recovery
@@ -356,7 +333,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = d.data() as Sale & { isDeleted?: boolean };
           if (!data.isDeleted) remote.push(data);
         });
-        const merged = reconcile(remote, salesRef.current, queueRef.current, `shops/${shopId}/sales`);
+        const merged = reconcile(
+          remote,
+          salesRef.current,
+          queueRef.current,
+          `shops/${shopId}/sales`
+        );
         merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         setSales(merged);
       },
@@ -454,7 +436,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     for (const action of queued) {
       try {
-        await setDoc(doc(db, action.path), action.data, { merge: true });
+        await setDoc(doc(db, action.path), action.data as DocumentData, { merge: true });
       } catch (err) {
         console.warn('Sync failed for action, keeping in queue:', action.id, err);
         remaining.push(action);
@@ -468,9 +450,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (remaining.length === 0) {
       setLastOfflineNotice(null);
-      notify(`All ${queued.length} saved ${queued.length === 1 ? 'entry' : 'entries'} synced to the cloud`, {
-        kind: 'success',
-      });
+      notify(
+        `All ${queued.length} saved ${queued.length === 1 ? 'entry' : 'entries'} synced to the cloud`,
+        {
+          kind: 'success',
+        }
+      );
     } else if (navigator.onLine) {
       setLastOfflineNotice(
         `${remaining.length} ${remaining.length === 1 ? 'entry' : 'entries'} could not sync yet. Tap Sync to retry.`
@@ -483,7 +468,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [notify]);
 
   const queueAction = useCallback(
-    (type: PendingSyncAction['type'], path: string, data: any) => {
+    (type: PendingSyncAction['type'], path: string, data: QueuePayload) => {
       const action: PendingSyncAction = {
         id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         type,
@@ -511,9 +496,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const cred = await signInAnonymously(auth);
       return cred.user;
-    } catch (err: any) {
+    } catch (err) {
       // Anonymous authentication can be enabled in Firebase console under Auth > Sign-in method
-      console.warn('Anonymous auth note (can be enabled in Firebase console):', err?.message);
+      console.warn(
+        'Anonymous auth note (can be enabled in Firebase console):',
+        err instanceof Error ? err.message : err
+      );
       return null;
     }
   };
@@ -526,7 +514,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const shopId = `shop_${cleanPhone}`;
 
       // Ensure an authenticated Firebase session exists if enabled
-      let currentUser = await ensureFirebaseAuth();
+      const currentUser = await ensureFirebaseAuth();
 
       // Check remote Firestore first if online
       if (navigator.onLine && currentUser) {
@@ -670,7 +658,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (navigator.onLine && auth.currentUser) {
       try {
         await setDoc(doc(db, 'shops', shop.id), { pin: newPin }, { merge: true });
-      } catch (e) {
+      } catch {
         queueAction('item', `shops/${shop.id}`, { pin: newPin });
       }
     } else {
@@ -908,9 +896,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Optimistic local state first — the shopkeeper sees the correction instantly.
     setSales((prev) => prev.filter((s) => s.id !== saleId));
-    setItems((prev) =>
-      prev.map((i) => restoredItems.find((r) => r.id === i.id) ?? i)
-    );
+    setItems((prev) => prev.map((i) => restoredItems.find((r) => r.id === i.id) ?? i));
     if (creditCustomer && restoredOwed !== undefined) {
       setCustomers((prev) =>
         prev.map((c) =>
@@ -976,7 +962,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (navigator.onLine && auth.currentUser) {
       try {
         await setDoc(doc(db, path), newItem);
-      } catch (e) {
+      } catch {
         queueAction('item', path, newItem);
       }
     } else {
@@ -1001,7 +987,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (navigator.onLine && auth.currentUser) {
         try {
           await setDoc(doc(db, path), merged, { merge: true });
-        } catch (e) {
+        } catch {
           queueAction('item', path, merged);
         }
       } else {
@@ -1076,7 +1062,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (navigator.onLine && auth.currentUser) {
       try {
         await setDoc(doc(db, path), newCustomer);
-      } catch (e) {
+      } catch {
         queueAction('customer', path, newCustomer);
       }
     } else {
@@ -1145,7 +1131,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           { merge: true }
         );
         await batch.commit();
-      } catch (e) {
+      } catch {
         queueAction('payment', paymentPath, newPayment);
         queueAction('customer', customerPath, { totalOwed: newTotalOwed, updatedAt: nowIso });
       }
@@ -1158,11 +1144,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Add Expense
-  const addExpense = async (
-    category: Expense['category'],
-    amount: number,
-    note?: string
-  ) => {
+  const addExpense = async (category: Expense['category'], amount: number, note?: string) => {
     if (!shop) return;
     const expenseId = `exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const nowIso = new Date().toISOString();
@@ -1182,7 +1164,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (navigator.onLine && auth.currentUser) {
       try {
         await setDoc(doc(db, path), newExpense);
-      } catch (e) {
+      } catch {
         queueAction('expense', path, newExpense);
       }
     } else {
@@ -1229,7 +1211,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const targetShop = allShops.find((s) => s.id === shopId) || (shop?.id === shopId ? shop : null);
     if (!targetShop) return;
 
-    const currentExpiry = targetShop.planExpiryDate ? new Date(targetShop.planExpiryDate) : new Date();
+    const currentExpiry = targetShop.planExpiryDate
+      ? new Date(targetShop.planExpiryDate)
+      : new Date();
     const base = currentExpiry.getTime() > Date.now() ? currentExpiry : new Date();
     const newExpiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 
@@ -1242,9 +1226,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setShop((prev) => (prev ? { ...prev, ...patched } : null));
     }
 
-    setAllShops((prev) =>
-      prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s))
-    );
+    setAllShops((prev) => prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s)));
 
     if (navigator.onLine) {
       await setDoc(doc(db, 'shops', shopId), patched, { merge: true });
@@ -1262,9 +1244,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setShop((prev) => (prev ? { ...prev, ...patched } : null));
     }
 
-    setAllShops((prev) =>
-      prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s))
-    );
+    setAllShops((prev) => prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s)));
 
     if (navigator.onLine) {
       await setDoc(doc(db, 'shops', shopId), patched, { merge: true });
@@ -1323,6 +1303,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 };
 
+// The provider and its hook intentionally live together.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useShop = () => {
   const context = useContext(ShopContext);
   if (!context) {

@@ -35,8 +35,18 @@ jobs:
         run: npm ci
 
       # Gate the publish on the checks that would otherwise ship a broken site.
+      # Any failure in this block stops the workflow, so a red check never ships.
       - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
         run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build

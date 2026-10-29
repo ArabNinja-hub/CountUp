@@ -1,21 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
-  BarChart3,
   TrendingUp,
   Receipt,
   Download,
   Share2,
-  Calendar,
-  Check,
   ShoppingBag,
   Trash2,
   ArrowUpRight,
   Plus,
   Banknote,
   Smartphone,
-  CreditCard,
-  Copy,
   Activity,
 } from 'lucide-react';
 import { ExpensesModal } from './ExpensesModal';
@@ -26,8 +21,17 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { formatKwacha, formatKwachaCompact, formatWhen, isToday } from '../utils/format';
 
 export const ReportsScreen: React.FC = () => {
-  const { sales, creditPayments, expenses, deleteExpense, restoreExpense, voidSale, t, shop, items } =
-    useShop();
+  const {
+    sales,
+    creditPayments,
+    expenses,
+    deleteExpense,
+    restoreExpense,
+    voidSale,
+    t,
+    shop,
+    items,
+  } = useShop();
   const { notify } = useToast();
 
   const [timeView, setTimeView] = useState<'day' | 'week' | 'month'>('day');
@@ -61,12 +65,8 @@ export const ReportsScreen: React.FC = () => {
     const startTime = startDate.getTime();
 
     const fSales = sales.filter((s) => new Date(s.createdAt).getTime() >= startTime);
-    const fPayments = creditPayments.filter(
-      (p) => new Date(p.createdAt).getTime() >= startTime
-    );
-    const fExpenses = expenses.filter(
-      (e) => new Date(e.createdAt).getTime() >= startTime
-    );
+    const fPayments = creditPayments.filter((p) => new Date(p.createdAt).getTime() >= startTime);
+    const fExpenses = expenses.filter((e) => new Date(e.createdAt).getTime() >= startTime);
 
     return {
       filteredSales: fSales,
@@ -112,10 +112,6 @@ export const ReportsScreen: React.FC = () => {
     .filter((s) => s.paymentType === 'credit')
     .reduce((sum, s) => sum + s.totalAmount, 0);
 
-  // Compact currency formatting for axis/legends
-  const formatK = (v: number) =>
-    v >= 1000 ? `K ${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : Math.round(v).toString();
-
   // ---- Business Health score -------------------------------------------------
   const health = useMemo(() => {
     const count = filteredSales.length;
@@ -123,16 +119,23 @@ export const ReportsScreen: React.FC = () => {
     const salesScore = count === 0 ? 0 : Math.min(100, Math.round((count / target) * 100));
 
     const margin = totalSalesAmount > 0 ? grossProfit / totalSalesAmount : 0;
-    const profitScore = totalSalesAmount === 0 ? 0 : Math.max(0, Math.min(100, Math.round((margin / 0.35) * 100)));
+    const profitScore =
+      totalSalesAmount === 0 ? 0 : Math.max(0, Math.min(100, Math.round((margin / 0.35) * 100)));
 
     const creditRatio = totalSalesAmount > 0 ? creditSalesGiven / totalSalesAmount : 0;
-    const cashScore = totalSalesAmount === 0 ? 100 : Math.max(0, Math.min(100, Math.round((1 - creditRatio) * 100)));
+    const cashScore =
+      totalSalesAmount === 0
+        ? 100
+        : Math.max(0, Math.min(100, Math.round((1 - creditRatio) * 100)));
 
     const totalItems = items.length;
     const lowItems = items.filter((i) => i.quantity <= i.lowStockThreshold).length;
-    const stockScore = totalItems === 0 ? 70 : Math.round(((totalItems - lowItems) / totalItems) * 100);
+    const stockScore =
+      totalItems === 0 ? 70 : Math.round(((totalItems - lowItems) / totalItems) * 100);
 
-    const overall = Math.round(salesScore * 0.3 + profitScore * 0.25 + cashScore * 0.25 + stockScore * 0.2);
+    const overall = Math.round(
+      salesScore * 0.3 + profitScore * 0.25 + cashScore * 0.25 + stockScore * 0.2
+    );
     return {
       salesScore,
       profitScore,
@@ -168,7 +171,9 @@ export const ReportsScreen: React.FC = () => {
       const arr = labels.map((label) => ({ label, sales: 0, profit: 0 }));
       filteredSales.forEach((s) => {
         const d = new Date(s.createdAt);
-        const idx = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - base) / 86400000);
+        const idx = Math.floor(
+          (new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - base) / 86400000
+        );
         if (idx >= 0 && idx < 7) {
           arr[idx].sales += s.totalAmount;
           arr[idx].profit += s.profit;
@@ -181,7 +186,11 @@ export const ReportsScreen: React.FC = () => {
     const year = now.getFullYear();
     const month = now.getMonth();
     const days = new Date(year, month + 1, 0).getDate();
-    const arr = Array.from({ length: days }, (_, i) => ({ label: `${i + 1}`, sales: 0, profit: 0 }));
+    const arr = Array.from({ length: days }, (_, i) => ({
+      label: `${i + 1}`,
+      sales: 0,
+      profit: 0,
+    }));
     filteredSales.forEach((s) => {
       const d = new Date(s.createdAt);
       if (d.getMonth() === month && d.getFullYear() === year) {
@@ -195,10 +204,31 @@ export const ReportsScreen: React.FC = () => {
   // Health rating label + colour
   const healthMeta =
     health.overall >= 70
-      ? { label: 'Healthy', color: 'emerald', ring: '#059669', text: 'text-emerald-700', bg: 'bg-emerald-50', bar: 'bg-emerald-500' }
+      ? {
+          label: 'Healthy',
+          color: 'emerald',
+          ring: '#059669',
+          text: 'text-emerald-700',
+          bg: 'bg-emerald-50',
+          bar: 'bg-emerald-500',
+        }
       : health.overall >= 40
-      ? { label: 'Needs Attention', color: 'amber', ring: '#d97706', text: 'text-amber-700', bg: 'bg-amber-50', bar: 'bg-amber-500' }
-      : { label: 'At Risk', color: 'rose', ring: '#e11d48', text: 'text-rose-700', bg: 'bg-rose-50', bar: 'bg-rose-500' };
+        ? {
+            label: 'Needs Attention',
+            color: 'amber',
+            ring: '#d97706',
+            text: 'text-amber-700',
+            bg: 'bg-amber-50',
+            bar: 'bg-amber-500',
+          }
+        : {
+            label: 'At Risk',
+            color: 'rose',
+            ring: '#e11d48',
+            text: 'text-rose-700',
+            bg: 'bg-rose-50',
+            bar: 'bg-rose-500',
+          };
 
   const healthBars = [
     { key: 'sales', label: 'Sales Activity', value: health.salesScore },
@@ -421,7 +451,9 @@ _Recorded with Countup Zambia_`;
               <Activity className="w-4 h-4 text-emerald-700" />
               <h3 className="font-bold text-sm text-slate-900">Business Health</h3>
             </div>
-            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${healthMeta.bg} ${healthMeta.text}`}>
+            <span
+              className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${healthMeta.bg} ${healthMeta.text}`}
+            >
               {healthMeta.label}
             </span>
           </div>
@@ -444,7 +476,9 @@ _Recorded with Countup Zambia_`;
                 />
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">{health.overall}</span>
+                <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">
+                  {health.overall}
+                </span>
                 <span className="text-[10px] text-slate-400 font-semibold">/ 100</span>
               </div>
             </div>
@@ -460,7 +494,11 @@ _Recorded with Countup Zambia_`;
                   <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
                     <div
                       className={`h-full rounded-full ${
-                        b.value >= 70 ? 'bg-emerald-500' : b.value >= 40 ? 'bg-amber-500' : 'bg-rose-500'
+                        b.value >= 70
+                          ? 'bg-emerald-500'
+                          : b.value >= 40
+                            ? 'bg-amber-500'
+                            : 'bg-rose-500'
                       }`}
                       style={{ width: `${b.value}%` }}
                     />
@@ -496,9 +534,7 @@ _Recorded with Countup Zambia_`;
         {/* Total Sales */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">
-              {t.totalSales}
-            </span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">{t.totalSales}</span>
             <TrendingUp className="w-4 h-4 text-emerald-700" />
           </div>
           <p className="text-2xl font-black text-slate-900 tracking-tight mt-1 tabular-nums">
@@ -528,33 +564,33 @@ _Recorded with Countup Zambia_`;
         {/* Cash in Hand */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">
-              Cash in Hand
-            </span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">Cash in Hand</span>
             <Banknote className="w-4 h-4 text-emerald-700" />
           </div>
           <p className="text-2xl font-black text-emerald-900 tracking-tight mt-1 tabular-nums">
-            K {totalCashInHand.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            K{' '}
+            {totalCashInHand.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
           </p>
-          <span className="text-xs text-slate-500 font-medium">
-            Physical cash in drawer
-          </span>
+          <span className="text-xs text-slate-500 font-medium">Physical cash in drawer</span>
         </div>
 
         {/* MoMo in Phone */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">
-              MoMo in Phone
-            </span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">MoMo in Phone</span>
             <Smartphone className="w-4 h-4 text-sky-600" />
           </div>
           <p className="text-2xl font-black text-sky-900 tracking-tight mt-1 tabular-nums">
-            K {totalMomoInWallet.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            K{' '}
+            {totalMomoInWallet.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
           </p>
-          <span className="text-xs text-slate-500 font-medium">
-            Airtel, MTN &amp; Zamtel SIM
-          </span>
+          <span className="text-xs text-slate-500 font-medium">Airtel, MTN &amp; Zamtel SIM</span>
         </div>
       </div>
 
@@ -566,12 +602,14 @@ _Recorded with Countup Zambia_`;
               New Credit Given Out
             </span>
             <p className="text-xl font-black text-amber-950 mt-0.5 tabular-nums">
-              K {creditSalesGiven.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              K{' '}
+              {creditSalesGiven.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
             </p>
           </div>
-          <span className="text-xs font-semibold text-amber-800">
-            Added to Credit Book
-          </span>
+          <span className="text-xs font-semibold text-amber-800">Added to Credit Book</span>
         </div>
 
         <div className="bg-rose-50/70 border border-rose-200/90 rounded-2xl p-3.5 shadow-xs flex items-center justify-between">
@@ -580,7 +618,11 @@ _Recorded with Countup Zambia_`;
               Recorded Expenses
             </span>
             <p className="text-xl font-black text-rose-950 mt-0.5 tabular-nums">
-              K {totalExpensesAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              K{' '}
+              {totalExpensesAmount.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
             </p>
           </div>
           <button
@@ -653,7 +695,10 @@ _Recorded with Countup Zambia_`;
               {filteredSales.map((sale) => {
                 const canUndo = isToday(sale.createdAt);
                 return (
-                  <div key={sale.id} className="py-2.5 flex items-start justify-between gap-3 text-xs">
+                  <div
+                    key={sale.id}
+                    className="py-2.5 flex items-start justify-between gap-3 text-xs"
+                  >
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span
@@ -661,17 +706,19 @@ _Recorded with Countup Zambia_`;
                             sale.paymentType === 'cash'
                               ? 'bg-emerald-100 text-emerald-800'
                               : sale.paymentType === 'momo'
-                              ? 'bg-sky-100 text-sky-800'
-                              : 'bg-amber-100 text-amber-900'
+                                ? 'bg-sky-100 text-sky-800'
+                                : 'bg-amber-100 text-amber-900'
                           }`}
                         >
                           {sale.paymentType === 'cash'
                             ? 'Cash'
                             : sale.paymentType === 'momo'
-                            ? `MoMo${sale.momoOperator ? ` · ${sale.momoOperator}` : ''}`
-                            : `Credit${sale.customerName ? ` · ${sale.customerName}` : ''}`}
+                              ? `MoMo${sale.momoOperator ? ` · ${sale.momoOperator}` : ''}`
+                              : `Credit${sale.customerName ? ` · ${sale.customerName}` : ''}`}
                         </span>
-                        <span className="text-[10px] text-slate-400">{formatWhen(sale.createdAt)}</span>
+                        <span className="text-[10px] text-slate-400">
+                          {formatWhen(sale.createdAt)}
+                        </span>
                       </div>
                       <p className="text-[11px] text-slate-600 mt-1 truncate">
                         {sale.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}
@@ -727,9 +774,7 @@ _Recorded with Countup Zambia_`;
                     <span className="font-bold text-slate-900 capitalize">
                       {expense.category.replace('_', ' ')}
                     </span>
-                    {expense.note && (
-                      <p className="text-[11px] text-slate-500">{expense.note}</p>
-                    )}
+                    {expense.note && <p className="text-[11px] text-slate-500">{expense.note}</p>}
                     <span className="text-[10px] text-slate-400">
                       {formatWhen(expense.createdAt)}
                     </span>
@@ -756,17 +801,16 @@ _Recorded with Countup Zambia_`;
       </div>
 
       {/* Expenses Modal */}
-      <ExpensesModal
-        isOpen={isExpenseModalOpen}
-        onClose={() => setIsExpenseModalOpen(false)}
-      />
+      <ExpensesModal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} />
 
       {saleToVoid && (
         <ConfirmDialog
           title={`Undo this ${formatKwacha(saleToVoid.totalAmount)} sale?`}
           description={
             <>
-              <p className="text-[11px] text-slate-600">{saleToVoid.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}</p>
+              <p className="text-[11px] text-slate-600">
+                {saleToVoid.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}
+              </p>
               <p>The stock goes back on the shelf.</p>
               {saleToVoid.paymentType === 'credit' && saleToVoid.customerName && (
                 <p>
@@ -790,8 +834,8 @@ _Recorded with Countup Zambia_`;
           description={
             <>
               <p>
-                <strong className="capitalize">{expenseToDelete.category.replace('_', ' ')}</strong> —{' '}
-                {formatKwacha(expenseToDelete.amount)}
+                <strong className="capitalize">{expenseToDelete.category.replace('_', ' ')}</strong>{' '}
+                — {formatKwacha(expenseToDelete.amount)}
                 {expenseToDelete.note ? ` (${expenseToDelete.note})` : ''}
               </p>
               <p className="text-slate-500">

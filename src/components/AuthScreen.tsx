@@ -19,14 +19,7 @@ import logo from '/brand/logo.png';
 import { LegalPages } from './LegalPages';
 
 export const AuthScreen: React.FC = () => {
-  const {
-    loginWithPhoneAndPin,
-    registerNewShop,
-    isLoading,
-    t,
-    language,
-    setLanguage,
-  } = useShop();
+  const { loginWithPhoneAndPin, registerNewShop, isLoading, t, language, setLanguage } = useShop();
 
   const [mode, setMode] = useState<'login' | 'register'>('register'); // Default to register for new users
   const [shopName, setShopName] = useState('');
@@ -43,7 +36,7 @@ export const AuthScreen: React.FC = () => {
     const cleanPhone = phone.trim();
     const cleanPin = pin.trim();
 
-    // Accept 0977 123 456, 260977123456 and everything in between; reject anything
+    // Accept 0962 838 581, 260962838581 and everything in between; reject anything
     // that is not a Zambian mobile number so a typo cannot create a second shop.
     const phoneDigits = cleanPhone.replace(/\D/g, '');
     const national = phoneDigits.startsWith('260') ? `0${phoneDigits.slice(3)}` : phoneDigits;
@@ -83,9 +76,7 @@ export const AuthScreen: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex flex-col justify-between py-6 px-4 sm:px-6">
       {/* Legal Modal Overlay */}
-      {showLegal && (
-        <LegalPages onClose={() => setShowLegal(null)} />
-      )}
+      {showLegal && <LegalPages onClose={() => setShowLegal(null)} />}
 
       <div className="max-w-md w-full mx-auto space-y-5">
         {/* Top bar: language switch */}
@@ -214,7 +205,13 @@ export const AuthScreen: React.FC = () => {
               disabled={isLoading}
               className="w-full min-h-[48px] mt-2 bg-emerald-900 hover:bg-emerald-950 active:scale-[0.99] text-white py-3 px-4 rounded-xl font-bold text-sm flex items-center justify-center space-x-2 shadow-xs disabled:opacity-50 transition-all cursor-pointer"
             >
-              <span>{isLoading ? 'Connecting...' : mode === 'login' ? 'Log In' : 'Create Shop & Start Trial'}</span>
+              <span>
+                {isLoading
+                  ? 'Connecting...'
+                  : mode === 'login'
+                    ? 'Log In'
+                    : 'Create Shop & Start Trial'}
+              </span>
               {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
               {!isLoading && <ArrowRight className="w-4 h-4" />}
             </button>
@@ -227,7 +224,10 @@ export const AuthScreen: React.FC = () => {
                 Don&apos;t have a shop?{' '}
                 <button
                   type="button"
-                  onClick={() => { setMode('register'); setErrorMessage(''); }}
+                  onClick={() => {
+                    setMode('register');
+                    setErrorMessage('');
+                  }}
                   className="text-emerald-700 font-bold underline hover:text-emerald-900"
                 >
                   Create New Shop
@@ -238,7 +238,10 @@ export const AuthScreen: React.FC = () => {
                 Already have a shop?{' '}
                 <button
                   type="button"
-                  onClick={() => { setMode('login'); setErrorMessage(''); }}
+                  onClick={() => {
+                    setMode('login');
+                    setErrorMessage('');
+                  }}
                   className="text-emerald-700 font-bold underline hover:text-emerald-900"
                 >
                   Log In
@@ -290,7 +293,8 @@ export const AuthScreen: React.FC = () => {
             </button>
           </div>
           <p className="text-[9px] text-slate-400">
-            By using Countup, you agree to our <span className="underline">Terms</span> and <span className="underline">Privacy Policy</span>.
+            By using Countup, you agree to our <span className="underline">Terms</span> and{' '}
+            <span className="underline">Privacy Policy</span>.
           </p>
         </div>
       </div>

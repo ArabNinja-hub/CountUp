@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
-import { useShop } from '../context/ShopContext';
-import { X, Shield, FileText, Lock, User, Mail, Phone, Globe, AlertCircle, CheckCircle, ChevronDown, ChevronUp } from 'lucide-react';
-import { Language } from '../types';
+import {
+  X,
+  Shield,
+  Lock,
+  User,
+  Globe,
+  AlertCircle,
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 
 interface LegalPageProps {
   onClose: () => void;
@@ -10,9 +18,7 @@ interface LegalPageProps {
 type LegalDocType = 'privacy' | 'terms' | 'security';
 
 /** A section is either a plain paragraph or an icon-led bullet. */
-type LegalItem =
-  | string
-  | { icon: React.ComponentType<{ className?: string }>; text: string };
+type LegalItem = string | { icon: React.ComponentType<{ className?: string }>; text: string };
 
 interface LegalDoc {
   title: string;
@@ -44,7 +50,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'Provide the Service: Enable offline-first sales recording, stock management, credit tracking, and reports.',
           'Sync & Backup: Securely sync your data to Firebase when online so you never lose records.',
           'Subscription Management: Track your trial/plan status and show in-app renewal reminders.',
-          
+
           'Legal Compliance: Respond to valid legal requests from Zambian authorities.',
         ],
       },
@@ -55,17 +61,16 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'Cloud Sync: When online, your records sync to Google Firebase (Google Cloud infrastructure). Firebase is SOC 2 and ISO 27001 certified.',
           'Encryption: Data in transit uses TLS 1.3. Data at rest encrypted by Firebase.',
           'Authentication: phone number + 4-digit PIN, and nothing else — Countup never asks for an email address, a Google account, or a password. Your PIN is stored with your shop record so you can log in; it is never displayed again after you set it.',
-          'Access Control: Every shop\'s records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. The single platform-owner account can access shop records only for support, billing, or legal compliance.',
+          "Access Control: Every shop's records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. The single platform-owner account can access shop records only for support, billing, or legal compliance.",
         ],
       },
       {
         title: 'Your Rights (Zambia Data Protection Act 2021)',
         content: [
-          'Access: Request a copy of all your data anytime via the app\'s Export feature.',
+          "Access: Request a copy of all your data anytime via the app's Export feature.",
           'Correction: Edit any item, sale, customer, or expense directly in the app.',
           'Deletion: Settings → Delete Shop & Data permanently removes your shop, stock, sales, credit and expense records. It is immediate and cannot be undone.',
           'Portability: Export your sales, stock, and customer data as CSV/JSON anytime.',
-          
         ],
       },
       {
@@ -85,7 +90,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         ],
       },
       {
-        title: 'Children\'s Privacy',
+        title: "Children's Privacy",
         content: [
           'Countup is for business use by adults (18+). We do not knowingly collect data from minors.',
         ],
@@ -93,7 +98,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Contact',
         content: [
-          'Data Protection Officer: privacy@countup.app',
+          'Data Protection Officer: ronisherbwalya@gmail.com',
           'For Zambian regulatory inquiries: We comply with the Data Protection Act No. 3 of 2021.',
         ],
       },
@@ -176,8 +181,8 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Contact',
         content: [
-          'Support: support@countup.app',
-          'Legal: legal@countup.app',
+          'Support: ronisherbwalya@gmail.com',
+          'Legal: ronisherbwalya@gmail.com',
           'Physical: Countup Zambia, Lusaka, Zambia',
         ],
       },
@@ -190,12 +195,30 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Security Measures',
         content: [
-          { icon: Lock, text: 'Encryption: Data is encrypted in transit (TLS 1.3) and at rest by Google Cloud. This is transport and storage encryption, not end-to-end encryption of your device.' },
-          { icon: Shield, text: 'Authentication: phone number + 4-digit PIN only. Behind the scenes the device holds an anonymous Firebase session (a random ID, no name or email) so your records can be scoped to your shop.' },
-          { icon: User, text: 'Data Isolation: Each shop\'s data is scoped to a unique shop ID. Shops cannot access each other\'s data.' },
-          { icon: CheckCircle, text: 'Offline-First Architecture: Your data never leaves your device until you\'re online and choose to sync.' },
-          { icon: AlertCircle, text: 'PIN Handling: Your 4-digit PIN is stored with your shop record and readable only by your account and the platform-owner account. Mobile Money PINs are never entered in Countup — they go straight into your operator\'s own prompt.' },
-          { icon: Globe, text: 'Firebase Security Rules: Firestore rules enforce shop-level data isolation at the database level.' },
+          {
+            icon: Lock,
+            text: 'Encryption: Data is encrypted in transit (TLS 1.3) and at rest by Google Cloud. This is transport and storage encryption, not end-to-end encryption of your device.',
+          },
+          {
+            icon: Shield,
+            text: 'Authentication: phone number + 4-digit PIN only. Behind the scenes the device holds an anonymous Firebase session (a random ID, no name or email) so your records can be scoped to your shop.',
+          },
+          {
+            icon: User,
+            text: "Data Isolation: Each shop's data is scoped to a unique shop ID. Shops cannot access each other's data.",
+          },
+          {
+            icon: CheckCircle,
+            text: "Offline-First Architecture: Your data never leaves your device until you're online and choose to sync.",
+          },
+          {
+            icon: AlertCircle,
+            text: "PIN Handling: Your 4-digit PIN is stored with your shop record and readable only by your account and the platform-owner account. Mobile Money PINs are never entered in Countup — they go straight into your operator's own prompt.",
+          },
+          {
+            icon: Globe,
+            text: 'Firebase Security Rules: Firestore rules enforce shop-level data isolation at the database level.',
+          },
         ],
       },
       {
@@ -235,7 +258,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Incident Response',
         content: [
-          'If you suspect unauthorized access: Change PIN immediately, log out all sessions, contact support@countup.app.',
+          'If you suspect unauthorized access: Change PIN immediately, log out all sessions, contact ronisherbwalya@gmail.com.',
           'We notify affected users within 72 hours of any confirmed data breach per Zambia Data Protection Act.',
           'Access to the platform-owner admin console is limited to the owner account, and Google Cloud keeps API-level audit logs.',
         ],
@@ -253,7 +276,6 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
 };
 
 export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
-  const { t, language } = useShop();
   const [activeDoc, setActiveDoc] = useState<LegalDocType>('privacy');
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
@@ -264,20 +286,34 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col" role="dialog" aria-modal="true" aria-labelledby="legal-title">
+    <div
+      className="fixed inset-0 z-50 bg-slate-50 flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="legal-title"
+    >
       {/* Header */}
       <header className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button onClick={onClose} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors" aria-label="Close">
+          <button
+            onClick={onClose}
+            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
+            aria-label="Close"
+          >
             <X className="w-5 h-5" />
           </button>
-          <h1 id="legal-title" className="font-bold text-slate-900 text-base">{doc.title}</h1>
+          <h1 id="legal-title" className="font-bold text-slate-900 text-base">
+            {doc.title}
+          </h1>
         </div>
         <span className="text-[10px] text-slate-400 font-mono">Updated: {doc.lastUpdated}</span>
       </header>
 
       {/* Tab Navigation */}
-      <nav className="sticky top-[52px] z-10 bg-white border-b border-slate-100 px-3 py-2 flex gap-2 overflow-x-auto" role="tablist">
+      <nav
+        className="sticky top-[52px] z-10 bg-white border-b border-slate-100 px-3 py-2 flex gap-2 overflow-x-auto"
+        role="tablist"
+      >
         {(['privacy', 'terms', 'security'] as LegalDocType[]).map((docKey) => {
           const Doc = legalContent[docKey];
           const isActive = activeDoc === docKey;
@@ -286,7 +322,10 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
               key={docKey}
               role="tab"
               aria-selected={isActive}
-              onClick={() => { setActiveDoc(docKey); setExpandedSections({}); }}
+              onClick={() => {
+                setActiveDoc(docKey);
+                setExpandedSections({});
+              }}
               className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
                 isActive
                   ? 'bg-emerald-900 text-white shadow-xs'
@@ -305,20 +344,31 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
           {doc.sections.map((section, idx) => {
             const isExpanded = expandedSections[section.title] !== false; // Default open
             return (
-              <section key={idx} className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+              <section
+                key={idx}
+                className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden"
+              >
                 <button
                   onClick={() => toggleSection(section.title)}
                   className="w-full px-4 py-3.5 flex items-center justify-between text-left"
                   aria-expanded={isExpanded}
                 >
                   <h2 className="font-bold text-slate-900 text-sm flex-1 pr-3">{section.title}</h2>
-                  {isExpanded ? <ChevronUp className="w-5 h-5 text-slate-400 shrink-0" /> : <ChevronDown className="w-5 h-5 text-slate-400 shrink-0" />}
+                  {isExpanded ? (
+                    <ChevronUp className="w-5 h-5 text-slate-400 shrink-0" />
+                  ) : (
+                    <ChevronDown className="w-5 h-5 text-slate-400 shrink-0" />
+                  )}
                 </button>
                 {isExpanded && (
                   <div className="px-4 pb-4 border-t border-slate-100 text-xs text-slate-700 leading-relaxed space-y-3">
                     {section.content.map((item, itemIdx) => {
                       if (typeof item === 'string') {
-                        return <p key={itemIdx} className="text-slate-700">{item}</p>;
+                        return (
+                          <p key={itemIdx} className="text-slate-700">
+                            {item}
+                          </p>
+                        );
                       }
                       return (
                         <div key={itemIdx} className="flex items-start gap-2 text-slate-700">
@@ -334,7 +384,9 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
           })}
         </div>
         <div className="mt-6 pt-4 border-t border-slate-200 text-center">
-          <p className="text-[10px] text-slate-400">Countup Zambia · Your data, your business, your control</p>
+          <p className="text-[10px] text-slate-400">
+            Countup Zambia · Your data, your business, your control
+          </p>
         </div>
       </main>
     </div>

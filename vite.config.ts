@@ -1,10 +1,10 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import {copyFile} from 'node:fs/promises';
+import { copyFile } from 'node:fs/promises';
 import path from 'node:path';
-import type {Plugin} from 'vite';
-import {defineConfig} from 'vite';
-import {BASE_PATH} from './base-path';
+import type { Plugin } from 'vite';
+import { defineConfig } from 'vite';
+import { BASE_PATH } from './base-path';
 
 /**
  * GitHub Pages has no SPA rewrite: any path it cannot resolve falls back to

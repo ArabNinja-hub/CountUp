@@ -21,10 +21,10 @@ import { LegalPages } from './components/LegalPages';
 import icon from '/brand/icon.png';
 
 const MainAppContent: React.FC = () => {
-  const { 
-    shop, 
-    activeTab, 
-    setActiveTab, 
+  const {
+    shop,
+    activeTab,
+    setActiveTab,
     isLoading,
     sales,
     items,
@@ -43,7 +43,8 @@ const MainAppContent: React.FC = () => {
   useEffect(() => {
     const handleOpenPlan = () => setIsPlanOpen(true);
     const handleOpenAdmin = () => setIsAdminOpen(true);
-    const handleOpenLegal = (e: CustomEvent) => setLegalPage(e.detail as 'privacy' | 'terms' | 'security');
+    const handleOpenLegal = (e: CustomEvent) =>
+      setLegalPage(e.detail as 'privacy' | 'terms' | 'security');
     const handleExportData = () => {
       // Export all data as JSON
       const exportData = {

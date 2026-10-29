@@ -58,7 +58,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(
-      `[Countup Server] Running on http://0.0.0.0:${PORT}${isProduction ? ` (serving ${BASE_PATH})` : ''}`,
+      `[Countup Server] Running on http://0.0.0.0:${PORT}${isProduction ? ` (serving ${BASE_PATH})` : ''}`
     );
   });
 }

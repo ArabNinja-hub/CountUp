@@ -1,13 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useShop } from '../context/ShopContext';
-import {
-  ShieldCheck,
-  Search,
-  CheckCircle,
-  Ban,
-  CalendarPlus,
-  ArrowLeft,
-} from 'lucide-react';
+import { ShieldCheck, Search, CheckCircle, Ban, CalendarPlus, ArrowLeft } from 'lucide-react';
 import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -99,12 +92,17 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
     setIsUpdating(shopId);
     try {
       await adminToggleDeactivate(shopId);
-      notify(willSuspend ? `${target?.name ?? 'Shop'} suspended` : `${target?.name ?? 'Shop'} reactivated`, {
-        kind: willSuspend ? 'info' : 'success',
-        detail: willSuspend
-          ? 'They can still view and export records, but cannot record new sales.'
-          : 'They can record sales again right away.',
-      });
+      notify(
+        willSuspend
+          ? `${target?.name ?? 'Shop'} suspended`
+          : `${target?.name ?? 'Shop'} reactivated`,
+        {
+          kind: willSuspend ? 'info' : 'success',
+          detail: willSuspend
+            ? 'They can still view and export records, but cannot record new sales.'
+            : 'They can record sales again right away.',
+        }
+      );
     } catch (err) {
       notify('Could not change that shop', {
         kind: 'error',
@@ -133,7 +131,8 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
               <span>Platform Owner Administration</span>
             </h2>
             <p className="text-xs text-slate-500">
-              Admin: <strong className="text-slate-800 font-mono">{user?.uid || 'not signed in'}</strong>
+              Admin:{' '}
+              <strong className="text-slate-800 font-mono">{user?.uid || 'not signed in'}</strong>
             </p>
           </div>
         </div>
@@ -182,7 +181,9 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
             Expiring &lt;5d / Grace
           </span>
-          <p className="text-2xl font-black text-amber-700 mt-1 tabular-nums">{stats.expiringSoon}</p>
+          <p className="text-2xl font-black text-amber-700 mt-1 tabular-nums">
+            {stats.expiringSoon}
+          </p>
           <span className="text-xs text-amber-700 font-semibold">Needs renewal</span>
         </div>
       </div>
@@ -216,15 +217,15 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
               <div
                 key={s.id}
                 className={`bg-white border rounded-2xl p-4 shadow-xs transition-all ${
-                  s.isDeactivated ? 'border-rose-200 bg-rose-50/20 opacity-75' : 'border-slate-200/90'
+                  s.isDeactivated
+                    ? 'border-rose-200 bg-rose-50/20 opacity-75'
+                    : 'border-slate-200/90'
                 }`}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="min-w-0 pr-2">
                     <div className="flex items-center space-x-2">
-                      <h3 className="font-bold text-base text-slate-900 truncate">
-                        {s.name}
-                      </h3>
+                      <h3 className="font-bold text-base text-slate-900 truncate">{s.name}</h3>
                       {s.isDeactivated && (
                         <span className="text-[10px] font-bold bg-rose-600 text-white px-1.5 py-0.5 rounded-md">
                           Deactivated
@@ -247,10 +248,10 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
                         sub.status === 'trial'
                           ? 'bg-sky-100 text-sky-800'
                           : sub.status === 'active'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : sub.status === 'grace'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-rose-100 text-rose-800'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : sub.status === 'grace'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-rose-100 text-rose-800'
                       }`}
                     >
                       {sub.status} ({sub.daysRemaining > 0 ? `${sub.daysRemaining}d` : 'Ended'})
@@ -284,7 +285,9 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
 
                   <button
                     disabled={isTargetUpdating}
-                    onClick={() => (s.isDeactivated ? handleToggleDeactivate(s.id) : setShopToToggle(s))}
+                    onClick={() =>
+                      s.isDeactivated ? handleToggleDeactivate(s.id) : setShopToToggle(s)
+                    }
                     className={`font-bold text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 border active:scale-95 transition-all ${
                       s.isDeactivated
                         ? 'bg-emerald-800 text-white border-emerald-800'
@@ -315,8 +318,8 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
           description={
             <>
               <p>
-                The shop can still open Countup, read its records and export them, but new sales will
-                be locked until you reactivate it.
+                The shop can still open Countup, read its records and export them, but new sales
+                will be locked until you reactivate it.
               </p>
               <p className="text-slate-500">Phone: {shopToToggle.ownerPhone}</p>
             </>

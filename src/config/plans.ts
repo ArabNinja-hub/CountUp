@@ -44,18 +44,23 @@ export const SUBSCRIPTION_PLANS: Record<string, PlanConfig> = {
 /**
  * Helper to calculate subscription status and days remaining
  */
-export function getSubscriptionInfo(createdAt: string, expiryDate?: string, currentStatus?: string) {
+export function getSubscriptionInfo(
+  createdAt: string,
+  expiryDate?: string,
+  currentStatus?: string
+) {
   const now = new Date();
-  
+
   // Use explicit expiryDate or default to 30 days from creation
-  const effectiveExpiry = expiryDate 
-    ? new Date(expiryDate) 
+  const effectiveExpiry = expiryDate
+    ? new Date(expiryDate)
     : new Date(new Date(createdAt).getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
 
   const diffMs = effectiveExpiry.getTime() - now.getTime();
   const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
-  const graceMs = effectiveExpiry.getTime() + (GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000) - now.getTime();
+  const graceMs =
+    effectiveExpiry.getTime() + GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000 - now.getTime();
   const graceDaysRemaining = Math.ceil(graceMs / (1000 * 60 * 60 * 24));
 
   let status: 'trial' | 'active' | 'grace' | 'expired' = 'active';

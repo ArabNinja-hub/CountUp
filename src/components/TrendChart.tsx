@@ -46,7 +46,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, height = 220 }) =>
   const innerH = Math.max(1, height - padT - padB);
   const n = data.length;
 
-  const { salesPath, profitPath, areaPath, points, niceMax, yTicks, labelStep } = useMemo(() => {
+  const { salesPath, profitPath, areaPath, points, yTicks, labelStep } = useMemo(() => {
     const maxVal = Math.max(1, ...data.map((d) => Math.max(d.sales, d.profit)));
     const niceMax = niceCeil(maxVal);
     const x = (i: number) => padL + (n <= 1 ? innerW / 2 : (i * innerW) / (n - 1));
@@ -79,8 +79,15 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, height = 220 }) =>
 
     const step = Math.max(1, Math.ceil(n / 6));
 
-    return { salesPath: sp, profitPath: pp, areaPath: ap, points: pts, niceMax, yTicks: ticks, labelStep: step };
-  }, [data, width, n, innerW, innerH]);
+    return {
+      salesPath: sp,
+      profitPath: pp,
+      areaPath: ap,
+      points: pts,
+      yTicks: ticks,
+      labelStep: step,
+    };
+  }, [data, n, innerW, innerH]);
 
   const active = hover != null && points[hover] ? points[hover] : null;
 
@@ -121,16 +128,34 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, height = 220 }) =>
                   strokeDasharray={i === 0 ? '0' : '3 3'}
                 />
                 <text x={padL + 2} y={t.y - 3} className="fill-slate-400" fontSize={9}>
-                  K {t.v >= 1000 ? `${(t.v / 1000).toFixed(t.v % 1000 === 0 ? 0 : 1)}k` : Math.round(t.v)}
+                  K{' '}
+                  {t.v >= 1000
+                    ? `${(t.v / 1000).toFixed(t.v % 1000 === 0 ? 0 : 1)}k`
+                    : Math.round(t.v)}
                 </text>
               </g>
             ))}
 
             {/* Sales area + line */}
             <path d={areaPath} fill="url(#trendArea)" />
-            <path d={salesPath} fill="none" stroke="#059669" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+            <path
+              d={salesPath}
+              fill="none"
+              stroke="#059669"
+              strokeWidth={2.5}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
             {/* Profit line */}
-            <path d={profitPath} fill="none" stroke="#d97706" strokeWidth={2} strokeDasharray="5 4" strokeLinejoin="round" strokeLinecap="round" />
+            <path
+              d={profitPath}
+              fill="none"
+              stroke="#d97706"
+              strokeWidth={2}
+              strokeDasharray="5 4"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
 
             {/* X labels */}
             {points.map((p, i) =>
@@ -151,9 +176,30 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, height = 220 }) =>
             {/* Hover guide */}
             {active && (
               <g>
-                <line x1={active.x} x2={active.x} y1={padT} y2={padT + innerH} stroke="#94a3b8" strokeWidth={1} />
-                <circle cx={active.x} cy={active.ySales} r={3.5} fill="#059669" stroke="#fff" strokeWidth={1.5} />
-                <circle cx={active.x} cy={active.yProfit} r={3.5} fill="#d97706" stroke="#fff" strokeWidth={1.5} />
+                <line
+                  x1={active.x}
+                  x2={active.x}
+                  y1={padT}
+                  y2={padT + innerH}
+                  stroke="#94a3b8"
+                  strokeWidth={1}
+                />
+                <circle
+                  cx={active.x}
+                  cy={active.ySales}
+                  r={3.5}
+                  fill="#059669"
+                  stroke="#fff"
+                  strokeWidth={1.5}
+                />
+                <circle
+                  cx={active.x}
+                  cy={active.yProfit}
+                  r={3.5}
+                  fill="#d97706"
+                  stroke="#fff"
+                  strokeWidth={1.5}
+                />
               </g>
             )}
 

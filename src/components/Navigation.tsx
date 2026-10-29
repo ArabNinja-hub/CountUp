@@ -7,14 +7,17 @@ export const Navigation: React.FC = () => {
   const { activeTab, setActiveTab, t, items, customers } = useShop();
 
   // Low stock counter
-  const lowStockCount = items.filter(
-    (i) => i.quantity <= i.lowStockThreshold
-  ).length;
+  const lowStockCount = items.filter((i) => i.quantity <= i.lowStockThreshold).length;
 
   // Customers with outstanding credit
   const debtCustomerCount = customers.filter((c) => c.totalOwed > 0).length;
 
-  const tabs: { id: ActiveTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }[] = [
+  const tabs: {
+    id: ActiveTab;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: number;
+  }[] = [
     {
       id: 'sell',
       label: t.tabSell,
@@ -76,9 +79,7 @@ export const Navigation: React.FC = () => {
                 )}
               </div>
 
-              <span className="text-[11px] mt-1 tracking-tight leading-none">
-                {tab.label}
-              </span>
+              <span className="text-[11px] mt-1 tracking-tight leading-none">{tab.label}</span>
 
               {/* Active Tab Indicator */}
               {isActive && (
