@@ -419,7 +419,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       creditTransactions: [],
     });
     await act(async () => {
-      await current.importShopBook(raw);
+      await current.importLegacyBackup(raw);
     });
     expect(fake.docs.get(`shops/${shop.id}/items/shopbook_p1`)).toMatchObject({
       name: 'Tea',
@@ -428,7 +428,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     });
     expect(current.items.some((item) => item.id === 'shopbook_p1')).toBe(true);
     const before = [...fake.docs.entries()];
-    await expect(current.importShopBook(raw)).rejects.toThrow(/already/);
+    await expect(current.importLegacyBackup(raw)).rejects.toThrow(/already/);
     expect([...fake.docs.entries()]).toEqual(before);
   });
 
@@ -640,7 +640,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await mount();
     fake.auth.currentUser = { uid: 'other', isAnonymous: false, email: 'other@example.com' };
     const before = [...fake.docs.entries()];
-    await expect(current.importShopBook('{}')).rejects.toThrow(/owner/);
+    await expect(current.importLegacyBackup('{}')).rejects.toThrow(/owner/);
     expect([...fake.docs.entries()]).toEqual(before);
   });
 });

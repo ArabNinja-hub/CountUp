@@ -1,6 +1,6 @@
 /** Exact money arithmetic at the edges of CountUp's existing Kwacha schema.
- * ShopBook used integer ngwee; CountUp records continue to use Kwacha so old
- * Firestore documents need no destructive migration. Calculations use ngwee.
+ * The legacy backup format uses integer ngwee; Firestore records remain in Kwacha
+ * so existing documents need no destructive migration. Calculations use ngwee.
  */
 export function parseKwachaToNgwee(raw: string, allowZero = false): number {
   const cleaned = raw.trim().replace(/^K\s*/i, '').replace(/,/g, '');

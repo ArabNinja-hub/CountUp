@@ -123,9 +123,9 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
               Your shop PIN is preserved. After logging out, use email and password to sign back in.
             </p>
             <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 p-3 rounded-xl">
-              This is a new CountUp account, not a ShopBook login. ShopBook passwords and recovery
-              keys cannot be transferred. Firebase email/password sign-in must be enabled by the
-              project administrator.
+              Choose an email and password for this shop. Passwords and recovery keys from earlier
+              accounts are not transferred automatically. Email/password sign-in must be enabled by
+              the project administrator.
             </p>
             <form onSubmit={submit} className="space-y-3">
               <label className="block text-xs font-bold text-slate-700">
@@ -320,8 +320,8 @@ export const EmailLoginPanel: React.FC<{ onBack: () => void }> = ({ onBack }) =>
             </p>
           )}
           <p className="text-[11px] text-slate-500">
-            ShopBook passwords and recovery keys do not sign in to CountUp. First enable CountUp
-            email access in your shop, then import a ShopBook backup.
+            Use the email and password enabled for this shop. Passwords and recovery keys from
+            earlier accounts are not transferred automatically.
           </p>
         </div>
       </div>

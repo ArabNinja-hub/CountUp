@@ -67,7 +67,7 @@ export interface Sale {
   customerId?: string;
   customerName?: string;
   customerPhone?: string;
-  /** Imported ShopBook receipts keep their original reference. New references use the sale ID. */
+  /** Imported receipts keep their original reference. New references use the sale ID. */
   receiptNumber?: string;
   paymentReference?: string;
   note?: string;
