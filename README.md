@@ -10,6 +10,11 @@ Email access, backup import and account deletion require an internet connection.
 
 ---
 
+## Instruction manual
+
+Open **Help** on the sign-in page or the **?** button in your shop for the built-in,
+offline guide. The complete step-by-step manual is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
 ## Features
 
 - **Quick Sell** — tap items, choose Cash / Mobile Money / Credit, done in ~15s.
@@ -163,10 +168,27 @@ accounts are not transferred automatically; enable email access for your shop an
 any supported legacy backup separately.
 
 ### Platform owner access
-Owner access is granted by data, not by an email in the source: create the Firestore
-document `admins/<uid>` for the owner's account. `firestore.rules` gates every admin
-read and write on that document, and the app reveals the admin console only when it
-can read `admins/<own uid>`. Delete the document to revoke access.
+
+Admin access is granted to a Firebase **UID**, never to a phone number or a hardcoded
+email. There is no default admin account or password.
+
+1. Enable **Email/Password** in Firebase Authentication if the admin will sign in
+   from the sign-in page. Create an email/password account in Firebase or use an
+   existing linked account, and copy its UID from **Authentication → Users**.
+2. In the app's configured Firestore database, create `admins/<uid>` for that exact
+   UID. The document's existence is the grant. `firestore.rules` independently
+   checks it for every privileged read and write. Delete the document to revoke it.
+3. On the CountUp sign-in page choose **Admin sign in**, then sign in with that
+   account's email and password. A shop is not required. CountUp checks the registry
+   from the server, and signing out of this standalone console ends the email session.
+4. If the admin grant belongs to an existing anonymous shop identity, do not replace
+   that identity: sign in with its shop PIN on the original device and open
+   **Settings → Platform Admin**. To use the new email entry for that same UID, first
+   sync and link email under **Settings → Account & cloud access**.
+
+Admin sign-in and administrative changes require a connection. Account switching is
+blocked when it would discard pending entries or an unlinked anonymous shop identity.
+A local UI check does not replace the Firestore rules; deploy the rules before launch.
 
 ### Security model (what the rules enforce)
 

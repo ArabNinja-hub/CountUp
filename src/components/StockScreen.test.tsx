@@ -62,6 +62,76 @@ describe('Stock failure handling', () => {
     expect(screen.getByRole('button', { name: 'Remove Tea' })).toBeTruthy();
   });
 
+  it('adds a product with the simple form and a default low-stock alert', async () => {
+    const addItem = vi.fn().mockResolvedValue('item-new');
+    vi.mocked(useShop).mockReturnValue({ ...vi.mocked(useShop)(), addItem });
+    render(<StockScreen />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add New Item' }));
+    const form = screen.getByRole('dialog', { name: 'Add product' });
+    const options = within(form)
+      .getByText(/More options: pack size/)
+      .closest('details')!;
+    expect(options.open).toBe(false);
+    fireEvent.change(within(form).getByLabelText(/Item Name/i), { target: { value: 'Rice' } });
+    fireEvent.change(within(form).getByLabelText(/Selling Price/i), { target: { value: '25' } });
+    fireEvent.change(within(form).getByLabelText(/Current Stock/i), { target: { value: '12' } });
+    fireEvent.click(within(form).getByRole('button', { name: /Add New Item/i }));
+    await waitFor(() =>
+      expect(addItem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Rice',
+          sellingPrice: 25,
+          buyingPriceKnown: false,
+          quantity: 12,
+          lowStockThreshold: 5,
+        })
+      )
+    );
+  });
+
+  it('keeps pack size and low-stock options available while editing', async () => {
+    const updateItem = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(useShop).mockReturnValue({ ...vi.mocked(useShop)(), updateItem });
+    render(<StockScreen />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Tea' }));
+    const form = screen.getByRole('dialog', { name: 'Edit product' });
+    fireEvent.click(within(form).getByText(/More options: pack size/));
+    fireEvent.change(within(form).getByLabelText(/Unit or pack size/), {
+      target: { value: '1kg' },
+    });
+    fireEvent.change(within(form).getByLabelText(/Low-stock alert/), { target: { value: '2' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() =>
+      expect(updateItem).toHaveBeenCalledWith(
+        'tea',
+        expect.objectContaining({
+          unitLabel: '1kg',
+          lowStockThreshold: 2,
+        })
+      )
+    );
+  });
+
+  it('opens the extra options when a hidden low-stock alert needs correcting', async () => {
+    const updateItem = vi.fn();
+    vi.mocked(useShop).mockReturnValue({ ...vi.mocked(useShop)(), updateItem });
+    render(<StockScreen />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Tea' }));
+    const form = screen.getByRole('dialog', { name: 'Edit product' });
+    const summary = within(form).getByText(/More options: pack size/);
+    const options = summary.closest('details')!;
+    fireEvent.click(summary);
+    fireEvent.change(within(form).getByLabelText(/Low-stock alert/), { target: { value: '' } });
+    fireEvent.click(summary);
+    expect(options.open).toBe(false);
+    fireEvent.click(within(form).getByRole('button', { name: 'Save Changes' }));
+    expect((await within(form).findByRole('alert')).textContent).toMatch(
+      /whole low-stock warning/i
+    );
+    expect(options.open).toBe(true);
+    expect(updateItem).not.toHaveBeenCalled();
+  });
+
   it('reports failed restores and restocks instead of leaving unhandled rejections', async () => {
     restoreItem.mockRejectedValueOnce(new Error('Restore failed'));
     quickRestock.mockRejectedValueOnce(new Error('Restock failed'));

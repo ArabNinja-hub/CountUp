@@ -6,11 +6,11 @@ export const OfflineNotice: React.FC = () => {
   const { lastOfflineNotice, clearOfflineNotice, isOnline, pendingSyncCount, syncNow, isSyncing } =
     useShop();
 
-  if (!lastOfflineNotice && (isOnline || pendingSyncCount === 0)) return null;
+  if (pendingSyncCount === 0 && (isOnline || !lastOfflineNotice)) return null;
 
   return (
-    <div className="fixed top-14 left-0 right-0 z-50 px-3 max-w-lg mx-auto pointer-events-none animate-in slide-in-from-top-2">
-      <div className="bg-slate-900/95 backdrop-blur-md text-white rounded-2xl p-3 shadow-xl border border-slate-800 flex items-center justify-between pointer-events-auto">
+    <div className="w-full max-w-5xl mx-auto px-3 sm:px-6 pt-3" role="status">
+      <div className="bg-slate-900 text-white rounded-2xl p-3 border border-slate-800 flex items-center justify-between">
         <div className="flex items-center space-x-2.5 min-w-0 pr-2">
           {!isOnline ? (
             <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
@@ -25,15 +25,17 @@ export const OfflineNotice: React.FC = () => {
           <div className="min-w-0 text-xs">
             <p className="font-bold text-slate-100">
               {!isOnline
-                ? 'Saved offline on phone'
+                ? `Offline${pendingSyncCount ? ` · ${pendingSyncCount} waiting to sync` : ''}`
                 : `${pendingSyncCount} ${pendingSyncCount === 1 ? 'entry' : 'entries'} waiting to sync`}
             </p>
             <p className="text-[11px] text-slate-400 break-words">
               {!isOnline
-                ? 'Keep this browser’s data until your entries sync.'
-                : lastOfflineNotice && !isSyncing
-                  ? lastOfflineNotice
-                  : 'Sending your saved entries now.'}
+                ? pendingSyncCount > 0
+                  ? 'Keep this browser’s data until your entries sync.'
+                  : 'New entries stay on this device until they sync.'
+                : isSyncing
+                  ? 'Sending your saved entries now.'
+                  : lastOfflineNotice || 'Keep this browser’s data until your entries sync.'}
             </p>
           </div>
         </div>
@@ -49,12 +51,15 @@ export const OfflineNotice: React.FC = () => {
             </button>
           )}
 
-          <button
-            onClick={clearOfflineNotice}
-            className="w-6 h-6 rounded-full hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+          {pendingSyncCount === 0 && (
+            <button
+              onClick={clearOfflineNotice}
+              aria-label="Dismiss sync notice"
+              className="w-8 h-8 rounded-full hover:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </div>

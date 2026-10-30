@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ToastProvider } from '../components/Toast';
 import { Shop } from '../types';
 
@@ -19,6 +19,8 @@ const fake = vi.hoisted(() => {
     authListeners: [] as ((user: unknown) => void)[],
     accounts: new Map<string, { uid: string; password: string }>(),
     resets: [] as string[],
+    failAdminRead: false,
+    failWrite: false,
   };
   return state;
 });
@@ -88,6 +90,11 @@ vi.mock('firebase/firestore', () => {
     query: (ref: unknown) => ref,
     where: () => ({}),
     getDoc: async (ref: { path: string }) => snapshot(ref.path),
+    getDocFromServer: async (ref: { path: string }) => {
+      if (fake.failAdminRead && ref.path.startsWith('admins/'))
+        throw Object.assign(new Error('Server unavailable'), { code: 'unavailable' });
+      return snapshot(ref.path);
+    },
     getDocs: async (ref: { path: string }) => {
       const result = collectionSnapshot(ref.path);
       if (ref.path === 'shops')
@@ -99,6 +106,7 @@ vi.mock('firebase/firestore', () => {
       data: Record<string, unknown>,
       options?: { merge: boolean }
     ) => {
+      if (fake.failWrite) throw new Error('Write rejected');
       write(ref.path, data, Boolean(options?.merge));
       emit();
     },
@@ -142,6 +150,7 @@ vi.mock('firebase/firestore', () => {
   };
 });
 import { ShopProvider, useShop } from './ShopContext';
+import App from '../App';
 
 let current: ReturnType<typeof useShop>;
 function Capture() {
@@ -182,6 +191,8 @@ beforeEach(() => {
   fake.authListeners = [];
   fake.accounts.clear();
   fake.resets = [];
+  fake.failAdminRead = false;
+  fake.failWrite = false;
   fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
   online(false);
   localStorage.setItem('countup_active_shop', JSON.stringify(shop));
@@ -633,6 +644,153 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       expect(await current.loginWithPhoneAndPin('0977 000 000', '1234')).toBe(true);
     });
     expect(current.shop?.id).toBe(legacyShop.id);
+  });
+
+  it('opens the real admin screen from the sign-in form and signs out on exit', async () => {
+    online(true);
+    localStorage.removeItem('countup_active_shop');
+    fake.auth.currentUser = null;
+    fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
+    fake.docs.set('admins/admin-1', {});
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Admin sign in' }));
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'admin@example.com' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'strongpass123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open admin console' }));
+    expect(await screen.findByRole('heading', { name: 'Admin console' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(shop.name)).toBeTruthy());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Sign out' }).at(-1)!);
+    await waitFor(() => expect(fake.auth.currentUser).toBeNull());
+    expect(await screen.findByRole('heading', { name: 'Create your shop' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Admin console' })).toBeNull();
+  });
+
+  it('signs a registered admin into the console without requiring a shop and signs out on exit', async () => {
+    online(true);
+    localStorage.removeItem('countup_active_shop');
+    fake.auth.currentUser = null;
+    fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
+    fake.docs.set('admins/admin-1', {});
+    await mount();
+    await act(async () => {
+      await current.loginAsAdmin(' admin@example.com ', 'strongpass123');
+    });
+    await waitFor(() => expect(current.isAdmin).toBe(true));
+    await waitFor(() => expect(current.allShops.some((entry) => entry.id === shop.id)).toBe(true));
+    expect(current.shop).toBeNull();
+    await act(async () => {
+      await current.cancelEmailLogin();
+    });
+    expect(fake.auth.currentUser).toBeNull();
+    expect(current.isAdmin).toBe(false);
+    expect(current.allShops).toEqual([]);
+  });
+
+  it('rejects non-admin and unverifiable accounts and does not leave them signed in', async () => {
+    online(true);
+    localStorage.removeItem('countup_active_shop');
+    fake.auth.currentUser = null;
+    fake.accounts.set('user@example.com', { uid: 'user-1', password: 'strongpass123' });
+    await mount();
+    await act(async () => {
+      await expect(current.loginAsAdmin('user@example.com', 'strongpass123')).rejects.toThrow(
+        /does not have admin access/
+      );
+    });
+    expect(fake.auth.currentUser).toBeNull();
+    expect(current.isAdmin).toBe(false);
+    fake.docs.set('admins/user-1', {});
+    fake.failAdminRead = true;
+    await act(async () => {
+      await expect(current.loginAsAdmin('user@example.com', 'strongpass123')).rejects.toThrow(
+        /Server unavailable/
+      );
+    });
+    expect(fake.auth.currentUser).toBeNull();
+    expect(current.isAdmin).toBe(false);
+  });
+
+  it('protects the anonymous shop identity and pending queue when entering admin sign-in', async () => {
+    localStorage.removeItem('countup_active_shop');
+    localStorage.setItem('countup_legacy_uid', 'owner-1');
+    await mount();
+    online(true);
+    await expect(current.loginAsAdmin('admin@example.com', 'password')).rejects.toThrow(
+      /anonymous identity is not lost/
+    );
+    expect(fake.auth.currentUser?.uid).toBe('owner-1');
+    localStorage.removeItem('countup_legacy_uid');
+    online(false);
+    // An offline pending queue must also block a switch, even without a shop.
+    cleanup();
+    fake.auth.currentUser = null;
+    localStorage.setItem(
+      'countup_pending_queue',
+      JSON.stringify([
+        { id: 'pending', type: 'item', path: 'shops/a/items/b', data: {}, timestamp: 1 },
+      ])
+    );
+    await mount();
+    online(true);
+    await expect(current.loginAsAdmin('admin@example.com', 'password')).rejects.toThrow(
+      /Sync pending entries/
+    );
+    expect(fake.auth.currentUser).toBeNull();
+  });
+
+  it('requires a live admin grant for changes and never reports failed or offline writes as saved', async () => {
+    online(true);
+    localStorage.removeItem('countup_active_shop');
+    fake.auth.currentUser = null;
+    fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
+    fake.docs.set('admins/admin-1', {});
+    await mount();
+    await act(async () => {
+      await current.loginAsAdmin('admin@example.com', 'strongpass123');
+    });
+    await waitFor(() => expect(current.allShops).toHaveLength(1));
+    const before = { ...fake.docs.get(`shops/${shop.id}`) };
+    fake.failWrite = true;
+    await act(async () => {
+      await expect(current.adminExtendShop(shop.id, 30)).rejects.toThrow(/Write rejected/);
+    });
+    expect(fake.docs.get(`shops/${shop.id}`)).toEqual(before);
+    expect(current.allShops[0].planStatus).toBe('trial');
+    fake.failWrite = false;
+    await act(async () => {
+      await current.adminExtendShop(shop.id, 30);
+      await current.adminToggleDeactivate(shop.id);
+    });
+    expect(fake.docs.get(`shops/${shop.id}`)).toMatchObject({
+      planStatus: 'active',
+      isDeactivated: true,
+    });
+    online(false);
+    await expect(current.adminToggleDeactivate(shop.id)).rejects.toThrow(/internet/);
+    expect(fake.docs.get(`shops/${shop.id}`)?.isDeactivated).toBe(true);
+  });
+
+  it('does not carry an admin grant to a different Firebase user', async () => {
+    online(true);
+    localStorage.removeItem('countup_active_shop');
+    fake.auth.currentUser = null;
+    fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
+    fake.docs.set('admins/admin-1', {});
+    await mount();
+    await act(async () => {
+      await current.loginAsAdmin('admin@example.com', 'strongpass123');
+    });
+    await waitFor(() => expect(current.isAdmin).toBe(true));
+    await act(async () => {
+      fake.auth.currentUser = {
+        uid: 'ordinary-user',
+        isAnonymous: false,
+        email: 'user@example.com',
+      };
+      fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
+    });
+    expect(current.isAdmin).toBe(false);
+    await expect(current.adminToggleDeactivate(shop.id)).rejects.toThrow(/Admin access/);
   });
 
   it('refuses an import from a non-owner and makes no writes', async () => {

@@ -12,11 +12,12 @@ import {
 } from 'lucide-react';
 import { SUPPORT_CONTACT } from '../config/support';
 
+type LegalDocType = 'privacy' | 'terms' | 'security';
+
 interface LegalPageProps {
   onClose: () => void;
+  initialDoc?: LegalDocType;
 }
-
-type LegalDocType = 'privacy' | 'terms' | 'security';
 
 /** A section is either a plain paragraph or an icon-led bullet. */
 type LegalItem = string | { icon: React.ComponentType<{ className?: string }>; text: string };
@@ -49,7 +50,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         title: 'How We Use Your Data',
         content: [
           'Provide the Service: Enable offline-first sales recording, stock management, credit tracking, and reports.',
-          'Sync & Backup: Securely sync your data to Firebase when online so you never lose records.',
+          'Sync & Backup: Entries saved offline remain on the device until they sync to Firebase. Keep your browser data until sync completes.',
           'Subscription Management: Track your trial/plan status and show in-app renewal reminders.',
 
           'Legal Compliance: Respond to valid legal requests from Zambian authorities.',
@@ -58,11 +59,11 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Data Storage & Security',
         content: [
-          'Local-First: All data lives on your phone first (IndexedDB/localStorage). Works fully offline.',
+          'Local-First: Shop entries can be saved on this device offline and synced later. Account access, imports and administration require a connection.',
           'Cloud Sync: When online, your records sync to Google Firebase (Google Cloud infrastructure). Firebase is SOC 2 and ISO 27001 certified.',
           'Encryption: Data in transit uses TLS 1.3. Data at rest encrypted by Firebase.',
-          'Authentication: phone number + 4-digit PIN, and nothing else — Countup never asks for an email address, a Google account, or a password. Your PIN is stored with your shop record so you can log in; it is never displayed again after you set it.',
-          "Access Control: Every shop's records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. The single platform-owner account can access shop records only for support, billing, or legal compliance.",
+          'Authentication: A shop can use a phone number and 4-digit PIN on its original device. Email and password access is optional; administrators can also sign in with an authorized email account. Your shop PIN is stored with the shop record.',
+          "Access Control: Every shop's records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. Authorized platform administrators can access shop records for support, billing, or legal compliance.",
         ],
       },
       {
@@ -203,7 +204,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           },
           {
             icon: Shield,
-            text: 'Authentication: phone number + 4-digit PIN only. Behind the scenes the device holds an anonymous Firebase session (a random ID, no name or email) so your records can be scoped to your shop.',
+            text: 'Authentication: phone and PIN access uses an anonymous Firebase session. You may link email and password to that same session to sign in on another device; admin access requires a separate authorization grant.',
           },
           {
             icon: User,
@@ -211,11 +212,11 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           },
           {
             icon: CheckCircle,
-            text: "Offline-First Architecture: Your data never leaves your device until you're online and choose to sync.",
+            text: 'Offline-First Architecture: Offline entries stay on the device and are queued to sync when a connection is available.',
           },
           {
             icon: AlertCircle,
-            text: "PIN Handling: Your 4-digit PIN is stored with your shop record and readable only by your account and the platform-owner account. Mobile Money PINs are never entered in Countup — they go straight into your operator's own prompt.",
+            text: "PIN Handling: Your 4-digit PIN is stored with your shop record and readable by your account and authorized platform administrators. Mobile Money PINs are never entered in Countup — they go straight into your operator's own prompt.",
           },
           {
             icon: Globe,
@@ -277,8 +278,8 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
   },
 };
 
-export const LegalPages: React.FC<LegalPageProps> = ({ onClose }) => {
-  const [activeDoc, setActiveDoc] = useState<LegalDocType>('privacy');
+export const LegalPages: React.FC<LegalPageProps> = ({ onClose, initialDoc = 'privacy' }) => {
+  const [activeDoc, setActiveDoc] = useState<LegalDocType>(initialDoc);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
 
   const doc = legalContent[activeDoc];
@@ -401,9 +402,9 @@ export const PrivacyPolicy: React.FC<LegalPageProps> = ({ onClose }) => (
 );
 
 export const TermsOfService: React.FC<LegalPageProps> = ({ onClose }) => (
-  <LegalPages onClose={onClose} />
+  <LegalPages onClose={onClose} initialDoc="terms" />
 );
 
 export const SecurityPage: React.FC<LegalPageProps> = ({ onClose }) => (
-  <LegalPages onClose={onClose} />
+  <LegalPages onClose={onClose} initialDoc="security" />
 );

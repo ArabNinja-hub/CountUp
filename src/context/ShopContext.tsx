@@ -34,6 +34,7 @@ import {
   setDoc,
   writeBatch,
   getDoc,
+  getDocFromServer,
   deleteDoc,
   collection,
   onSnapshot,
@@ -86,6 +87,7 @@ interface ShopContextType {
   registerNewShop: (name: string, phone: string, pin: string) => Promise<boolean>;
   linkEmailAccount: (email: string, password: string) => Promise<void>;
   loginWithEmail: (email: string, password: string) => Promise<Shop[]>;
+  loginAsAdmin: (email: string, password: string) => Promise<void>;
   cancelEmailLogin: () => Promise<void>;
   selectEmailShop: (shop: Shop) => void;
   resetEmailPassword: (email: string) => Promise<void>;
@@ -228,7 +230,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [shop, setShop] = useState<Shop | null>(initial.shop);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  // Associate the grant with a UID, so a change of Firebase account can never
+  // inherit the previous account's admin state for even one render.
+  const [adminUid, setAdminUid] = useState<string | null>(null);
   const [language, setLanguageState] = useState<Language>(() => {
     const saved = localStorage.getItem('countup_language') as Language;
     return saved === 'bem' || saved === 'nya' ? saved : 'en';
@@ -249,6 +253,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Offline queue
   const [pendingQueue, setPendingQueue] = useState<PendingSyncAction[]>(initial.queue);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
+  const isAdmin = Boolean(user && isOnline && adminUid === user.uid);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [lastOfflineNotice, setLastOfflineNotice] = useState<string | null>(null);
 
@@ -267,6 +272,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
+      setLastOfflineNotice(null);
       void ensureFirebaseAuth().then(() => syncNow());
     };
     const handleOffline = () => {
@@ -334,11 +340,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('countup_pending_queue', JSON.stringify(pendingQueue));
   }, [pendingQueue]);
 
-  // Auth state listener.
-  //
-  // Sign-in to Countup is phone + PIN only. Behind the scenes each device holds a
-  // Firebase *anonymous* session (created on register/login) so that Firestore can
-  // scope shop records to this device's uid — it carries no name, email or phone.
+  // Firebase scopes shop records to a device's anonymous UID or to its linked
+  // email account. An admin grant is checked separately against Firestore.
   useEffect(() => {
     let mounted = true;
 
@@ -362,29 +365,28 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [shop, user]);
 
-  // Platform-owner detection: the `admins` collection is the only source of truth
-  // (see firestore.rules). Grant access by creating admins/<uid> in the Firebase
-  // console — never by a hardcoded email or phone number in the client.
+  // The admins registry is the only grant (also enforced in Firestore rules).
+  // A server read avoids granting access from a stale offline cache.
   useEffect(() => {
     let cancelled = false;
     const uid = user?.uid;
-    if (!uid || !navigator.onLine) {
-      setIsAdmin(false);
+    if (!uid || !isOnline) {
+      setAdminUid(null);
       return;
     }
-    setIsAdmin(false);
+    setAdminUid(null);
     void (async () => {
       try {
-        const snap = await getDoc(doc(db, 'admins', uid));
-        if (!cancelled) setIsAdmin(snap.exists());
+        const snap = await getDocFromServer(doc(db, 'admins', uid));
+        if (!cancelled) setAdminUid(snap.exists() ? uid : null);
       } catch {
-        if (!cancelled) setIsAdmin(false);
+        if (!cancelled) setAdminUid(null);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, isOnline]);
 
   // Keep the latest state reachable from long-lived listeners without making them
   // re-subscribe on every change (a re-subscribe per sale drops real-time updates).
@@ -1038,8 +1040,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('countup_legacy_uid');
   };
 
-  const loginWithEmail = async (email: string, password: string): Promise<Shop[]> => {
+  const checkAccountSwitch = () => {
     if (!navigator.onLine) throw new Error('Email sign-in needs an internet connection.');
+    if (shop) throw new Error('Sign out of your shop before switching accounts.');
     if (queueRef.current.length || syncingRef.current)
       throw new Error('Sync pending entries before switching accounts.');
     if (
@@ -1050,6 +1053,10 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'This device owns a phone-and-PIN shop. Log in to that shop and enable email access before switching accounts, so its anonymous identity is not lost.'
       );
     }
+  };
+
+  const loginWithEmail = async (email: string, password: string): Promise<Shop[]> => {
+    checkAccountSwitch();
     const result = await signInWithEmailAndPassword(auth, email.trim(), password);
     try {
       const snapshot = await getDocs(
@@ -1063,6 +1070,24 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return owned;
     } catch (error) {
       await signOut(auth);
+      throw error;
+    }
+  };
+  const loginAsAdmin = async (email: string, password: string): Promise<void> => {
+    checkAccountSwitch();
+    const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+    try {
+      // An admin need not own a shop, but must have a current server-side grant.
+      const grant = await getDocFromServer(doc(db, 'admins', result.user.uid));
+      if (!grant.exists()) throw new Error('This account does not have admin access.');
+      if (auth.currentUser?.uid !== result.user.uid)
+        throw new Error('The account changed during sign-in. Please try again.');
+      setUser(result.user);
+      setAdminUid(result.user.uid);
+    } catch (error) {
+      // Do not leave a failed or unverifiable admin account signed in. Avoid
+      // signing out a different user if the account changed during the lookup.
+      if (auth.currentUser?.uid === result.user.uid) await signOut(auth);
       throw error;
     }
   };
@@ -1897,49 +1922,38 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return prepared;
   };
 
-  // Admin Controls
+  // Admin changes are never queued or reported as successful offline. Firestore
+  // rules independently enforce the registry grant on every write.
+  const adminTarget = (shopId: string) => {
+    if (!navigator.onLine) throw new Error('Connect to the internet to manage shops.');
+    if (!isAdmin || !user || auth.currentUser?.uid !== user.uid)
+      throw new Error('Admin access is required. Sign in again.');
+    const target = allShops.find((s) => s.id === shopId) || (shop?.id === shopId ? shop : null);
+    if (!target) throw new Error('Shop not found. Refresh the list and try again.');
+    return target;
+  };
+  const applyAdminPatch = async (shopId: string, patched: Partial<Shop>) => {
+    await setDoc(doc(db, 'shops', shopId), patched, { merge: true });
+    if (shop?.id === shopId) setShop((prev) => (prev ? { ...prev, ...patched } : null));
+    setAllShops((prev) => prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s)));
+  };
   const adminExtendShop = async (shopId: string, days: number) => {
-    const targetShop = allShops.find((s) => s.id === shopId) || (shop?.id === shopId ? shop : null);
-    if (!targetShop) return;
-
+    const targetShop = adminTarget(shopId);
+    if (!Number.isInteger(days) || days <= 0) throw new Error('Enter a valid number of days.');
     const currentExpiry = targetShop.planExpiryDate
       ? new Date(targetShop.planExpiryDate)
       : new Date();
     const base = currentExpiry.getTime() > Date.now() ? currentExpiry : new Date();
     const newExpiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
-
-    const patched: Partial<Shop> = {
+    await applyAdminPatch(shopId, {
       planStatus: 'active',
       planExpiryDate: newExpiry.toISOString(),
-    };
-
-    if (shop?.id === shopId) {
-      setShop((prev) => (prev ? { ...prev, ...patched } : null));
-    }
-
-    setAllShops((prev) => prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s)));
-
-    if (navigator.onLine) {
-      await setDoc(doc(db, 'shops', shopId), patched, { merge: true });
-    }
+    });
   };
 
   const adminToggleDeactivate = async (shopId: string) => {
-    const targetShop = allShops.find((s) => s.id === shopId) || (shop?.id === shopId ? shop : null);
-    if (!targetShop) return;
-
-    const newStatus = !targetShop.isDeactivated;
-    const patched: Partial<Shop> = { isDeactivated: newStatus };
-
-    if (shop?.id === shopId) {
-      setShop((prev) => (prev ? { ...prev, ...patched } : null));
-    }
-
-    setAllShops((prev) => prev.map((s) => (s.id === shopId ? { ...s, ...patched } : s)));
-
-    if (navigator.onLine) {
-      await setDoc(doc(db, 'shops', shopId), patched, { merge: true });
-    }
+    const targetShop = adminTarget(shopId);
+    await applyAdminPatch(shopId, { isDeactivated: !targetShop.isDeactivated });
   };
 
   return (
@@ -1953,6 +1967,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerNewShop,
         linkEmailAccount,
         loginWithEmail,
+        loginAsAdmin,
         cancelEmailLogin,
         selectEmailShop,
         resetEmailPassword,
