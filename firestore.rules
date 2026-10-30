@@ -12,10 +12,9 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Sign-in is phone + PIN only, which gives every device an anonymous Firebase
-    // session (no email claim). Platform ownership is therefore granted by the
-    // `admins` registry: create admins/<uid> for the owner account in the Firebase
-    // console. Nothing is granted by email or phone number.
+    // Firebase Auth uses an anonymous session, optionally linked to email/password.
+    // Platform ownership is granted only by the `admins` registry: create
+    // admins/<uid> in the Firebase console. No email or phone grants admin access.
     function isPlatformAdmin() {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/admins/$(request.auth.uid));
@@ -29,7 +28,7 @@ service cloud.firestore {
       );
     }
 
-    // A PIN is the only credential a shop has, so it is always exactly 4 digits.
+    // The legacy shop PIN must always be exactly 4 digits.
     function isFourDigitPin(value) {
       return value is string && value.matches('^[0-9]{4}$');
     }
@@ -105,6 +104,18 @@ service cloud.firestore {
       }
 
       match /expenses/{expenseId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+
+      // Additive ShopBook ledger features. Existing collections and documents
+      // stay unchanged; these are isolated by the same owner/admin rule.
+      match /stock_movements/{movementId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+      match /stock_conflicts/{conflictId} {
+        allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
+      }
+      match /sync_operations/{operationId} {
         allow read, write: if isShopOwner(shopId) || isPlatformAdmin();
       }
     }

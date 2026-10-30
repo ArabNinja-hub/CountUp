@@ -27,8 +27,14 @@ export interface Item {
   id: string;
   shopId: string;
   name: string;
-  buyingPrice: number; // in Kwacha
+  buyingPrice: number; // in Kwacha; 0 when the cost is unknown
+  /** Absent on older CountUp records, whose cost prices were always recorded. */
+  buyingPriceKnown?: boolean;
   sellingPrice: number; // in Kwacha
+  unitLabel?: string;
+  /** Existing CountUp soft deletes are treated as reversible archives. */
+  isDeleted?: boolean;
+  isDemo?: boolean;
   quantity: number;
   lowStockThreshold: number; // e.g. 5
   lastSoldAt?: string; // ISO string for quick-sorting most recently sold items
@@ -41,7 +47,9 @@ export interface SaleItem {
   name: string;
   quantity: number;
   buyingPrice: number;
+  buyingPriceKnown?: boolean;
   sellingPrice: number;
+  unitLabel?: string;
 }
 
 export type PaymentType = 'cash' | 'momo' | 'credit';
@@ -59,6 +67,14 @@ export interface Sale {
   customerId?: string;
   customerName?: string;
   customerPhone?: string;
+  /** Imported ShopBook receipts keep their original reference. New references use the sale ID. */
+  receiptNumber?: string;
+  paymentReference?: string;
+  note?: string;
+  localDate?: string;
+  /** Revenue excluded from profit because the cost at the time of sale was unknown. */
+  missingCostRevenue?: number;
+  isDemo?: boolean;
   createdAt: string;
   isOfflineSync?: boolean;
 }
@@ -68,6 +84,8 @@ export interface Customer {
   shopId: string;
   name: string;
   phone?: string;
+  notes?: string;
+  isDemo?: boolean;
   totalOwed: number; // in Kwacha
   createdAt: string;
   updatedAt: string;
@@ -79,9 +97,40 @@ export interface CreditPayment {
   customerId: string;
   customerName: string;
   amount: number; // in Kwacha
-  paymentMethod?: 'cash' | 'momo';
+  paymentMethod?: 'cash' | 'momo'; // absent in legacy records means cash
   note?: string;
+  localDate?: string;
+  isDemo?: boolean;
   createdAt: string;
+}
+
+export type StockMovementType = 'initial' | 'sale' | 'restock' | 'adjustment' | 'void';
+
+export interface StockMovement {
+  id: string;
+  shopId: string;
+  itemId: string;
+  itemName: string;
+  type: StockMovementType;
+  delta: number;
+  previousQuantity: number;
+  newQuantity: number;
+  reason: string;
+  relatedSaleId?: string;
+  isDemo?: boolean;
+  createdAt: string;
+}
+
+export interface StockConflict {
+  id: string;
+  itemId: string;
+  itemName: string;
+  requested: number;
+  available: number;
+  shortfall: number;
+  relatedSaleId?: string;
+  createdAt: string;
+  resolved: boolean;
 }
 
 export type ExpenseCategory =
@@ -106,4 +155,4 @@ export interface PlanConfig {
   description: string;
 }
 
-export type ActiveTab = 'sell' | 'stock' | 'credit' | 'reports';
+export type ActiveTab = 'home' | 'sell' | 'stock' | 'credit' | 'reports';

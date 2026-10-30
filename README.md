@@ -2,7 +2,8 @@
 
 **Countup** is a mobile-first Point-of-Sale and shop-management web app built for
 Zambian kiosks, market stalls, and small shops. It works in **Zambian Kwacha (K)**,
-runs fully **offline** on a phone, and syncs to the cloud when a connection returns.
+saves ordinary shop entries offline on a phone, and queues them for cloud sync.
+Email access, backup import and account deletion require an internet connection.
 
 > Record a sale in seconds, track credit customers, manage stock, log expenses, and
 > see your daily profit — all in English, Bemba, or Nyanja.
@@ -12,13 +13,14 @@ runs fully **offline** on a phone, and syncs to the cloud when a connection retu
 ## Features
 
 - **Quick Sell** — tap items, choose Cash / Mobile Money / Credit, done in ~15s.
-- **Stock Book** — add/edit items with buying & selling prices, low-stock warnings, one-tap restock.
-- **Credit Book** — customer ledger, balance tracking, and polite **WhatsApp** reminders in 3 languages.
-- **Reports** — daily / weekly / monthly sales, net profit, cash vs. MoMo, top sellers, expenses. CSV export + shareable summary.
+- **Stock Book** — add/edit products, optional cost prices, low-stock warnings, stock movements, adjustments and reversible archives.
+- **Credit Book** — customer statements, balance tracking, cash/Mobile Money repayments and polite **WhatsApp** reminders in 3 languages.
+- **Reports** — daily / weekly / monthly sales, known-cost profit, cash vs. Mobile Money received (including repayments), top sellers and expenses.
+- **Data tools** — JSON and CSV exports, plus an additive import for ShopBook v1 backups.
 - **Subscriptions** — 30-day free trial, then monthly / 3-month / 6-month plans paid by
   Mobile Money (Airtel, MTN, Zamtel) through the contact channels in the Plan screen.
-- **Offline-first** — every action is saved locally and queued for background sync.
-- **Localized** — full UI in English, Ichibemba, and Chinyanja.
+- **Offline-first** — ordinary entries are saved locally and queued for sync; unresolved conflicts can stop the queue.
+- **Localized** — existing navigation and reminders support English, Ichibemba, and Chinyanja; some newer screens are currently English-only.
 - **Platform admin** — the owner account can see every shop, extend plans, and suspend
   a shop. A suspended shop keeps its records (viewable and exportable) but cannot record
   new sales.
@@ -31,19 +33,18 @@ There is no sample data, demo shop, or pre-filled inventory anywhere in the app.
 - **Real-time everywhere.** Sales, stock, credit balances, expenses, the plan expiry
   and the admin shop list are all backed by live Firestore listeners. A sale shows up
   in Today's totals, Reports and the credit book immediately, with no reload.
-- **One write, one truth.** A sale is committed as a single atomic batch with its
-  stock changes and credit balance, so a dropped connection can never leave a sale
-  recorded against stock that never went down.
-- **Offline is normal, not an error.** Every action is saved locally and queued; the
-  header shows how many entries are waiting, and the queued entries stay on screen
-  while they sync.
-- **Nothing can be entered by accident.** Quantities cannot exceed the stock on hand,
-  a credit sale cannot be saved without naming the customer, a credit payment cannot
-  exceed the balance, prices accept digits only, and "no search results" is never
-  confused with "no items".
-- **Everything is reversible.** Undo a sale recorded today from Reports (stock and
-  credit are restored), undo a deleted item or expense from the toast that follows,
-  and confirm before anything destructive happens. No `alert()` or `confirm()` boxes.
+- **Grouped sync.** A queued sale and its stock and credit changes are committed in a
+  Firestore transaction with an operation marker for safe retries. If another device
+  has sold the same stock, a shortfall is flagged for a physical recount.
+- **Offline entries are queued.** The header shows how many are waiting; keep the
+  browser data until they sync. If a repayment or void conflicts with a newer server
+  balance, the queue stops and shows the reason; an in-app resolution flow is not yet
+  available.
+- **Validation.** A sale cannot exceed the local stock on hand, credit sales require
+  a customer and repayments cannot exceed the local balance.
+- **Reversal.** Today's eligible sales can be undone in Reports; a partly repaid credit
+  sale cannot be voided. Archived products can be restored, and deleted expenses have
+  a short-lived Undo action.
 
 ---
 
@@ -66,7 +67,7 @@ There is no sample data, demo shop, or pre-filled inventory anywhere in the app.
 ## Getting Started
 
 ### Prerequisites
-- **Node.js** 22+ (the Firebase SDK targets Node 24; warnings on 22 are non-blocking)
+- **Node.js** 24.12+ recommended (some Firebase packages warn on Node 22)
 - npm (this repo ships `package-lock.json`; use `npm ci` in CI)
 
 ### Install
@@ -100,11 +101,22 @@ npm run test:watch  # Vitest in watch mode while you work
 npm run check       # typecheck + lint + tests in one go
 ```
 
-The test suite covers the parts where a silent mistake costs money or data:
-`getSubscriptionInfo()` in `src/config/plans.ts` (trial / active / grace / expired and
-the boundary days), the input sanitizers in `src/utils/format.ts` (money, quantity,
-phone number), and `reconcile()` in `src/utils/sync.ts` (which local, not-yet-synced
-records are kept on screen next to the server's copy).
+Tests cover plans, money and ledger calculations, queue reconciliation and recovery,
+ShopBook conversion, CSV escaping, mocked authentication/transactions and screen
+behavior. The mock tests are not a substitute for testing a real Firebase project.
+
+To exercise Firestore authorization locally, install Java and the Firebase CLI's
+Firestore emulator, then start it with this repository's `firebase.json` and rules:
+
+```bash
+npx firebase emulators:start --project demo-countup --only firestore
+# In another terminal:
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 GCLOUD_PROJECT=demo-countup npm run test:rules
+```
+
+Use the actual emulator port if different. `test:rules` only accepts a local host and
+`demo-*` project, and uses a named database. These tests do not deploy rules or verify
+the live project.
 
 ---
 
@@ -137,11 +149,17 @@ so update that file too if the address ever changes.
 `firestore.rules`. `firebase.json` + `.firebaserc` tell the Firebase CLI which project
 and which (non-default) database those rules belong to.
 
-**Sign-in is a phone number + 4-digit PIN — nothing else.** There is no Google button,
-no email login, and no password. Each device holds a Firebase *anonymous* session
-(a random uid with no personal details) so Firestore can scope records to it, which
-means the only sign-in method that must be enabled in the Firebase console is
-**Anonymous**.
+Enable **Anonymous** under Firebase Authentication → Sign-in method for the existing
+phone-and-PIN flow. To use optional account access, also enable **Email/Password**.
+While signed in on the existing phone, open Settings → Account & cloud access and link an
+email and password. Linking retains the existing Firebase UID and therefore the shop
+ownership and any admin grant. A linked account can sign in on another device and
+request a password reset by email.
+
+Phone/PIN-only shops remain bound to their original anonymous Firebase identity; a
+PIN alone does not authorize a new device. Do not clear that identity before linking.
+Email access and cloud operations require connectivity. ShopBook credentials are not
+transferred: create/link CountUp access separately, then import a ShopBook backup.
 
 ### Platform owner access
 Owner access is granted by data, not by an email in the source: create the Firestore
@@ -155,17 +173,17 @@ can read `admins/<own uid>`. Delete the document to revoke access.
 device on the internet, so it is deliberately strict:
 
 - **Default deny.** Everything not explicitly allowed is refused.
-- **One shop sees one shop.** A shop document and its `items`, `sales`, `customers`,
-  `credit_payments` and `expenses` are readable and writable only by the device that
-  created them, plus the platform owner.
+- **One shop sees one shop.** The shop document, `items`, `sales`, `customers`,
+  `credit_payments`, `expenses`, `stock_movements`, `stock_conflicts` and
+  `sync_operations` are restricted to the owner Firebase UID and platform admins.
 - **A shop cannot pay itself.** A shop may change *only* its PIN after creation. Plan
   status, plan expiry, the trial dates and the "deactivated" flag can only be written
   by the platform owner — the browser console can no longer be used to grant free
   premium or to lift a suspension.
 - **A new shop starts on the trial.** Creating a shop with `planStatus: active` (or with
   the trial end and the plan expiry disagreeing) is refused by the rules.
-- **The admin registry is not browsable.** A device may only ask "is my own uid an
-  admin?", never list the admins.
+- **The admin registry is restricted.** Non-admins can check only their own UID and
+  cannot list or change the registry.
 - **PINs are always four digits**, on create and on change.
 - **The connectivity probe is read-only.** Nothing needs to write `test/connection`.
 
@@ -176,24 +194,45 @@ device on the internet, so it is deliberately strict:
    access (or the phone itself) can see it, and four digits are easy to guess if the
    database ever leaks. Moving to a salted hash is the next security step; it needs a
    migration path for shops that already have a plain-text PIN.
-2. **Plan expiry is trusted from the document.** The rules block the *app's* path to
-   self-upgrading, but a determined person editing their own shop document by hand can
-   still write trial dates in the future. Real enforcement needs a Cloud Function or the
-   Firebase console (Extend plan) to be the only writer of those dates.
+2. **Trial dates are client-supplied on creation.** Rules stop an owner changing plan
+   fields afterward, but do not enforce a server-calculated 30-day trial at creation.
+   Stronger enforcement needs a trusted backend.
 3. **There is no rate limit on PIN attempts.** A 4-digit PIN has 10,000 combinations;
    add a short lockout if these shops ever hold money belonging to someone else.
-4. **A forgotten PIN cannot be recovered in-app.** Logging in needs the PIN and the
-   device that created the shop, so support has to delete and re-register the shop (its
-   records are exported from Settings → Export My Data before doing that).
-5. **Admin rights are bound to the device, not to a password.** `admins/<uid>` is keyed
-   by the phone's anonymous Firebase uid, and logging out does **not** sign that session
-   out (signing out would change the uid and detach the shop from its own records). So
-   anyone who can unlock the owner's phone could register a throwaway shop and reach the
-   admin console. Treat the owner's phone like the master key: keep the screen lock on,
-   and delete `admins/<uid>` from Firestore before the phone changes hands.
+4. **A forgotten shop PIN has no direct reset flow.** A previously linked email account
+   can sign in and reset its email password, but the PIN-change screen still requires
+   the old PIN. Do not delete a shop as a recovery shortcut: its data would be lost.
+5. **Admin rights are bound to a Firebase UID.** Anonymous sessions remain on the
+   device after logging out; an email link retains that same UID. Anyone with access to
+   an authenticated admin device/account may reach the admin console. Protect the
+   device and remove `admins/<uid>` when revoking access.
 6. **No Content-Security-Policy is set.** It is worth adding one after testing sign-in
    (Firebase Auth needs `frame-src` for its auth domain); the fonts are loaded from
    Google Fonts, which is the only third-party request the app makes.
+
+---
+
+## ShopBook migration and data exports
+
+1. In ShopBook, export the **full JSON backup** (`shopbook-backup-v1`) and keep the
+   original file safe. ShopBook accounts, credentials, roles, settings and sync queue
+   are not transferred.
+2. Sign in to the target CountUp shop as its Firebase owner, connect to the internet
+   and sync all pending CountUp entries.
+3. Open Settings → **Data & backups** → **Choose ShopBook JSON**. Review the preview,
+   then import. Products (including archives), sales and line snapshots, customers,
+   repayments and stock movements are converted; balances are checked from the credit
+   ledger. Prices with unknown costs remain unknown.
+4. Imports are additive and atomic, and duplicate IDs are refused without overwriting
+   existing records. The file must be at most 5 MB and produce at most 400 CountUp
+   documents. Invalid references or inconsistent totals are rejected. Larger files
+   require a separate migration strategy; do not split them without checking links.
+
+Settings also exports CountUp JSON and CSV files. The JSON export omits the PIN, but
+contains sensitive business/customer data; store it securely. **There is not yet an
+in-app restore for CountUp JSON**, and the export does not include the pending sync
+queue. It is not a substitute for keeping the original browser data until it syncs.
+CountUp currently has no separate owner/cashier role system.
 
 ---
 
@@ -321,9 +360,8 @@ Things a deploy does **not** do for you:
 1. **Publish the Firestore rules.** `firestore.rules` is the only thing enforcing
    per-shop data isolation — rules must be live before real shops register. See
    [Deploying the Firestore rules](#deploying-the-firestore-rules) below.
-2. **Enable Anonymous sign-in.** Authentication → Sign-in method → *Anonymous* must be
-   on; it is the only method the app uses. (Leave Google, email and phone-provider
-   sign-in switched off — nothing in the app calls them.)
+2. **Enable sign-in providers.** Authentication → Sign-in method → *Anonymous* must
+   be on; enable *Email/Password* as well for optional linked account access.
 3. **Grant yourself admin.** After your first sign-in, copy your UID from
    Authentication → Users and create the document `admins/<uid>` in Firestore.
 4. **Confirm the contact details** in `src/config/support.ts` (WhatsApp, phone, payment
@@ -333,18 +371,13 @@ Things a deploy does **not** do for you:
    the owner activates the shop with the admin console's “+30 / +90 days” action. There
    is no automated Mobile Money callback in the static build.
 
-### Known limitations of the phone-only auth model
+### Known limitations of phone-only access
 
-- **A shop is bound to the device that created it.** The PIN is verified against the
-  shop document, which only that device's anonymous session is allowed to read. On a
-  different phone the app cannot see the shop document, so it cannot verify the PIN.
-  Opening one shop on several devices/phones therefore needs a backend (a Cloud
-  Function that verifies the PIN and mints a session) — it cannot be done safely from
-  the browser alone, because letting any anonymous session read a shop document would
-  expose every shop's records to anyone who guesses a phone number.
-- **Clearing browser data signs the shop out for good** (the anonymous session and the
-  local cache both go). Export a JSON backup from Settings → Export My Data.
-- Data isolation relies entirely on `firestore.rules`; there is no server between the
+- A shop that has not linked email remains bound to its original anonymous Firebase
+  session. Another device cannot open it using only the phone and PIN.
+- Clearing browser data can permanently lose that anonymous identity and any unsynced
+  entries. Link email and sync first; the JSON export currently has no in-app restore.
+- Data isolation relies on deployed `firestore.rules`; there is no server between the
   browser and Firestore.
 
 ## License

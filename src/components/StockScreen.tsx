@@ -1,18 +1,39 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useShop } from '../context/ShopContext';
-import { Boxes, Plus, AlertTriangle, Search, Edit2, Trash2, X, PackagePlus } from 'lucide-react';
+import {
+  Boxes,
+  Plus,
+  AlertTriangle,
+  Search,
+  Edit2,
+  Trash2,
+  X,
+  PackagePlus,
+  SlidersHorizontal,
+  RotateCcw,
+} from 'lucide-react';
 import { Item } from '../types';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
 import { formatKwacha, sanitizeIntegerInput, sanitizeMoneyInput } from '../utils/format';
+import { parseKwachaToNgwee } from '../utils/money';
+import { StockTools } from './StockTools';
 
-export const StockScreen: React.FC = () => {
-  const { items, addItem, updateItem, quickRestock, deleteItem, restoreItem, t } = useShop();
+export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?: () => void }> = ({
+  initialAdd,
+  onConsumedInitialAdd,
+}) => {
+  const { items, archivedItems, addItem, updateItem, quickRestock, deleteItem, restoreItem, t } =
+    useShop();
   const { notify } = useToast();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeSubTab, setActiveSubTab] = useState<'all' | 'low'>('all');
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [activeSubTab, setActiveSubTab] = useState<'all' | 'low' | 'archived'>('all');
+  const [adjustingItem, setAdjustingItem] = useState<Item | null>(null);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(Boolean(initialAdd));
+  useEffect(() => {
+    if (initialAdd) onConsumedInitialAdd?.();
+  }, [initialAdd, onConsumedInitialAdd]);
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState('');
@@ -22,6 +43,7 @@ export const StockScreen: React.FC = () => {
   // Form states
   const [formData, setFormData] = useState({
     name: '',
+    unitLabel: '',
     buyingPrice: '',
     sellingPrice: '',
     quantity: '',
@@ -42,19 +64,21 @@ export const StockScreen: React.FC = () => {
   }, [items]);
 
   const filteredItems = useMemo(() => {
-    let result = activeSubTab === 'low' ? lowStockItems : items;
+    let result =
+      activeSubTab === 'archived' ? archivedItems : activeSubTab === 'low' ? lowStockItems : items;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter((i) => i.name.toLowerCase().includes(q));
     }
     return result;
-  }, [items, lowStockItems, activeSubTab, searchQuery]);
+  }, [items, archivedItems, lowStockItems, activeSubTab, searchQuery]);
 
   // Open add modal
   const handleOpenAdd = () => {
     setEditingItem(null);
     setFormData({
       name: '',
+      unitLabel: '',
       buyingPrice: '',
       sellingPrice: '',
       quantity: '',
@@ -68,7 +92,8 @@ export const StockScreen: React.FC = () => {
     setEditingItem(item);
     setFormData({
       name: item.name,
-      buyingPrice: item.buyingPrice.toString(),
+      unitLabel: item.unitLabel || '',
+      buyingPrice: item.buyingPriceKnown === false ? '' : item.buyingPrice.toString(),
       sellingPrice: item.sellingPrice.toString(),
       quantity: item.quantity.toString(),
       lowStockThreshold: item.lowStockThreshold.toString(),
@@ -83,31 +108,34 @@ export const StockScreen: React.FC = () => {
     setFormError('');
 
     const name = formData.name.trim();
-    const buyingPrice = parseFloat(formData.buyingPrice);
-    const sellingPrice = parseFloat(formData.sellingPrice);
-    const quantity = parseInt(formData.quantity, 10);
-    const lowStockThreshold = parseInt(formData.lowStockThreshold, 10);
-
-    // A blank price parses to NaN — treat it as "not filled in" rather than 0.
-    const buying = Number.isFinite(buyingPrice) ? buyingPrice : 0;
-    const selling = Number.isFinite(sellingPrice) ? sellingPrice : 0;
-    const qty = Number.isFinite(quantity) ? quantity : 0;
-    const threshold = Number.isFinite(lowStockThreshold) ? lowStockThreshold : 5;
-
+    let buying: number;
+    let selling: number;
+    try {
+      buying = formData.buyingPrice.trim()
+        ? parseKwachaToNgwee(formData.buyingPrice, true) / 100
+        : 0;
+      selling = parseKwachaToNgwee(formData.sellingPrice) / 100;
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Enter valid prices.');
+      return;
+    }
+    const qty = Number(formData.quantity);
+    const threshold = Number(formData.lowStockThreshold);
     if (!name) {
       setFormError('Give the item a name — e.g. “Sugar 1kg”.');
       return;
     }
-    if (!formData.sellingPrice.trim() || selling <= 0) {
-      setFormError('Enter the selling price in Kwacha. It must be more than K 0.');
+    if (!formData.quantity.trim() || !Number.isSafeInteger(qty) || qty < 0 || qty > 1_000_000) {
+      setFormError('Enter a whole stock quantity between 0 and 1,000,000.');
       return;
     }
-    if (!formData.quantity.trim()) {
-      setFormError('Enter how many you have in stock. Use 0 if it has run out.');
-      return;
-    }
-    if (threshold < 0) {
-      setFormError('The low-stock warning has to be 0 or more.');
+    if (
+      !formData.lowStockThreshold.trim() ||
+      !Number.isSafeInteger(threshold) ||
+      threshold < 0 ||
+      threshold > 1_000_000
+    ) {
+      setFormError('Enter a whole low-stock warning between 0 and 1,000,000.');
       return;
     }
 
@@ -116,7 +144,9 @@ export const StockScreen: React.FC = () => {
       if (editingItem) {
         await updateItem(editingItem.id, {
           name,
+          unitLabel: formData.unitLabel.trim(),
           buyingPrice: buying,
+          buyingPriceKnown: Boolean(formData.buyingPrice.trim()),
           sellingPrice: selling,
           quantity: qty,
           lowStockThreshold: threshold,
@@ -128,7 +158,9 @@ export const StockScreen: React.FC = () => {
       } else {
         await addItem({
           name,
+          unitLabel: formData.unitLabel.trim(),
           buyingPrice: buying,
+          buyingPriceKnown: Boolean(formData.buyingPrice.trim()),
           sellingPrice: selling,
           quantity: qty,
           lowStockThreshold: threshold,
@@ -149,34 +181,62 @@ export const StockScreen: React.FC = () => {
     }
   };
 
+  const handleRestore = async (item: Item) => {
+    try {
+      await restoreItem(item);
+      notify(`${item.name} restored to stock`);
+    } catch (err) {
+      notify('Could not restore this item', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
+    }
+  };
+
   // Delete with an undo, so a mis-tap cannot lose a product and its prices
   const handleConfirmDelete = async () => {
     if (!itemToDelete) return;
     setIsDeleting(true);
     const removed = itemToDelete;
-    await deleteItem(removed.id);
-    setIsDeleting(false);
-    setItemToDelete(null);
-    notify(`${removed.name} removed from stock`, {
-      kind: 'info',
-      detail: 'Past sales that include it are kept for your reports.',
-      action: { label: 'Undo', onClick: () => void restoreItem(removed) },
-    });
+    try {
+      await deleteItem(removed.id);
+      setItemToDelete(null);
+      notify(`${removed.name} removed from stock`, {
+        kind: 'info',
+        detail: 'Past sales that include it are kept for your reports.',
+        action: { label: 'Undo', onClick: () => void handleRestore(removed) },
+      });
+    } catch (err) {
+      setItemToDelete(null);
+      notify('Could not remove this item', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const handleRestock = async (item: Item, amount: number) => {
-    await quickRestock(item.id, amount);
-    notify(`${item.name} restocked +${amount}`, {
-      kind: 'success',
-      detail: `Now ${item.quantity + amount} in stock`,
-    });
+    try {
+      await quickRestock(item.id, amount);
+      notify(`${item.name} restocked +${amount}`, {
+        kind: 'success',
+        detail: `Now ${item.quantity + amount} in stock`,
+      });
+    } catch (err) {
+      notify('Could not restock this item', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
+    }
   };
 
   const previewMargin = useMemo(() => {
     const buy = parseFloat(formData.buyingPrice);
     const sell = parseFloat(formData.sellingPrice);
-    if (!Number.isFinite(sell) || sell <= 0) return null;
-    const cost = Number.isFinite(buy) ? buy : 0;
+    if (!Number.isFinite(sell) || sell <= 0 || !Number.isFinite(buy)) return null;
+    const cost = buy;
     const profit = sell - cost;
     const pct = cost > 0 ? Math.round((profit / cost) * 100).toString() : '—';
     return { profit, pct, isLoss: profit < 0, missingCost: !Number.isFinite(buy) };
@@ -185,7 +245,7 @@ export const StockScreen: React.FC = () => {
   return (
     <div className="w-full space-y-4">
       {/* Top Metric Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {/* Retail Value */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -206,7 +266,9 @@ export const StockScreen: React.FC = () => {
             K {totalCostValue.toLocaleString()}
           </p>
           <span className="text-xs text-emerald-700 font-semibold">
-            Potential Profit: K {(totalStockValue - totalCostValue).toLocaleString()}
+            {items.some((item) => item.buyingPriceKnown === false)
+              ? 'Some costs are not recorded'
+              : `Potential Profit: K ${(totalStockValue - totalCostValue).toLocaleString()}`}
           </span>
         </div>
 
@@ -239,7 +301,7 @@ export const StockScreen: React.FC = () => {
       </div>
 
       {/* Control Bar: Subtabs + Search */}
-      <div className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
         {/* Subtabs */}
         <div className="flex items-center space-x-1.5 bg-slate-100 p-1 rounded-xl">
           <button
@@ -269,10 +331,16 @@ export const StockScreen: React.FC = () => {
               </span>
             )}
           </button>
+          <button
+            onClick={() => setActiveSubTab('archived')}
+            className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activeSubTab === 'archived' ? 'bg-white text-emerald-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+          >
+            Archived ({archivedItems.length})
+          </button>
         </div>
 
         {/* Search Input */}
-        <div className="relative flex-1 sm:max-w-xs">
+        <div className="relative flex-1 lg:max-w-xs">
           <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
           <input
             type="text"
@@ -291,6 +359,8 @@ export const StockScreen: React.FC = () => {
           )}
         </div>
       </div>
+
+      <StockTools adjustingItem={adjustingItem} onCloseAdjustment={() => setAdjustingItem(null)} />
 
       {/* Items List / Table */}
       {filteredItems.length === 0 ? (
@@ -323,12 +393,18 @@ export const StockScreen: React.FC = () => {
           ) : (
             <>
               <h3 className="font-bold text-slate-800 text-sm">
-                {activeSubTab === 'low' ? 'Nothing is running low' : t.noItemsYet}
+                {activeSubTab === 'archived'
+                  ? 'No archived products'
+                  : activeSubTab === 'low'
+                    ? 'Nothing is running low'
+                    : t.noItemsYet}
               </h3>
               <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                {activeSubTab === 'low'
-                  ? 'Every product is above its warning level. You will see it here when stock drops.'
-                  : t.noItemsYetHint}
+                {activeSubTab === 'archived'
+                  ? 'Archived products stay available here and can be restored at any time.'
+                  : activeSubTab === 'low'
+                    ? 'Every product is above its warning level. You will see it here when stock drops.'
+                    : t.noItemsYetHint}
               </p>
               {activeSubTab === 'all' && (
                 <button
@@ -343,8 +419,8 @@ export const StockScreen: React.FC = () => {
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden divide-y divide-slate-100">
-          {/* Table Header (hidden on mobile, visible on sm+) */}
-          <div className="hidden sm:grid grid-cols-12 gap-3 px-4 py-2.5 bg-slate-50/70 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+          {/* Table Header (hidden on mobile, visible on large screens) */}
+          <div className="hidden lg:grid grid-cols-12 gap-3 px-4 py-2.5 bg-slate-50/70 text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <div className="col-span-4">Product Name</div>
             <div className="col-span-2 text-right">Selling Price</div>
             <div className="col-span-2 text-right">Cost Price</div>
@@ -359,12 +435,15 @@ export const StockScreen: React.FC = () => {
             return (
               <div
                 key={item.id}
-                className="p-3.5 sm:px-4 sm:py-3 hover:bg-slate-50/70 transition-colors flex flex-col sm:grid sm:grid-cols-12 sm:gap-3 sm:items-center"
+                className="p-3.5 lg:px-4 lg:py-3 hover:bg-slate-50/70 transition-colors flex flex-col lg:grid lg:grid-cols-12 lg:gap-3 lg:items-center"
               >
                 {/* Column 1: Name and low-stock badge */}
-                <div className="sm:col-span-4 min-w-0">
+                <div className="lg:col-span-4 min-w-0">
                   <div className="flex items-center space-x-2">
-                    <span className="font-bold text-sm text-slate-900 truncate">{item.name}</span>
+                    <span className="font-bold text-sm text-slate-900 truncate">
+                      {item.name}
+                      {item.unitLabel ? ` · ${item.unitLabel}` : ''}
+                    </span>
                     {isOutOfStock ? (
                       <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
                         {t.outOfStock}
@@ -375,35 +454,47 @@ export const StockScreen: React.FC = () => {
                       </span>
                     ) : null}
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-0.5 sm:hidden flex items-center space-x-2">
-                    <span>Cost: K {item.buyingPrice}</span>
-                    <span>·</span>
-                    <span className="text-emerald-700 font-medium">
-                      Profit: +K {item.sellingPrice - item.buyingPrice}
-                    </span>
+                  <div className="text-[11px] text-slate-400 mt-0.5 lg:hidden flex items-center space-x-2">
+                    {item.buyingPriceKnown === false ? (
+                      <span>Cost not recorded</span>
+                    ) : (
+                      <>
+                        <span>Cost: K {item.buyingPrice}</span>
+                        <span>·</span>
+                        <span className="text-emerald-700 font-medium">
+                          Profit: K {(item.sellingPrice - item.buyingPrice).toFixed(2)}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 
                 {/* Column 2: Selling Price */}
-                <div className="sm:col-span-2 sm:text-right mt-1 sm:mt-0 flex items-center justify-between sm:block">
-                  <span className="text-xs text-slate-500 sm:hidden">Selling:</span>
+                <div className="lg:col-span-2 lg:text-right mt-1 lg:mt-0 flex items-center justify-between lg:block">
+                  <span className="text-xs text-slate-500 lg:hidden">Selling:</span>
                   <span className="text-sm font-black text-emerald-900 tabular-nums">
                     K {item.sellingPrice.toFixed(2)}
                   </span>
                 </div>
 
                 {/* Column 3: Buying Price */}
-                <div className="hidden sm:block sm:col-span-2 sm:text-right">
-                  <span className="text-xs font-semibold text-slate-600 tabular-nums">
-                    K {item.buyingPrice.toFixed(2)}
-                  </span>
-                  <p className="text-[10px] text-emerald-700 font-medium tabular-nums">
-                    +K {(item.sellingPrice - item.buyingPrice).toFixed(2)}
-                  </p>
+                <div className="hidden lg:block lg:col-span-2 lg:text-right">
+                  {item.buyingPriceKnown === false ? (
+                    <span className="text-xs text-slate-400">Not recorded</span>
+                  ) : (
+                    <>
+                      <span className="text-xs font-semibold text-slate-600 tabular-nums">
+                        K {item.buyingPrice.toFixed(2)}
+                      </span>
+                      <p className="text-[10px] text-emerald-700 font-medium tabular-nums">
+                        K {(item.sellingPrice - item.buyingPrice).toFixed(2)}
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 {/* Column 4: Quantity & Quick Restock buttons */}
-                <div className="sm:col-span-2 mt-2 sm:mt-0 flex items-center justify-between sm:justify-center">
+                <div className="lg:col-span-2 mt-2 lg:mt-0 flex items-center justify-between lg:justify-center">
                   <div className="flex items-center space-x-2">
                     <span
                       className={`text-sm font-extrabold tabular-nums px-2 py-0.5 rounded-lg border ${
@@ -419,37 +510,60 @@ export const StockScreen: React.FC = () => {
 
                     {/* Quick restock shortcuts */}
                     <div className="flex items-center space-x-1">
-                      {[5, 10].map((amount) => (
-                        <button
-                          key={amount}
-                          onClick={() => void handleRestock(item, amount)}
-                          title={`Add ${amount} units to stock`}
-                          className="text-[10px] font-bold bg-slate-100 hover:bg-emerald-100 hover:text-emerald-900 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 transition-colors"
-                        >
-                          +{amount}
-                        </button>
-                      ))}
+                      {activeSubTab !== 'archived' &&
+                        [5, 10].map((amount) => (
+                          <button
+                            key={amount}
+                            onClick={() => void handleRestock(item, amount)}
+                            title={`Add ${amount} units to stock`}
+                            className="text-[10px] font-bold bg-slate-100 hover:bg-emerald-100 hover:text-emerald-900 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 transition-colors"
+                          >
+                            +{amount}
+                          </button>
+                        ))}
                     </div>
                   </div>
                 </div>
 
                 {/* Column 5: Edit & Delete Actions */}
-                <div className="sm:col-span-2 mt-2 sm:mt-0 flex items-center justify-end space-x-1.5">
-                  <button
-                    onClick={() => handleOpenEdit(item)}
-                    className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-                    title="Edit item"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setItemToDelete(item)}
-                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                    title="Remove item"
-                    aria-label={`Remove ${item.name}`}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                <div className="lg:col-span-2 mt-2 lg:mt-0 flex items-center justify-end space-x-1.5">
+                  {activeSubTab === 'archived' ? (
+                    <button
+                      onClick={() => void handleRestore(item)}
+                      className="min-h-[40px] px-3 text-xs font-bold text-emerald-800 hover:bg-emerald-50 rounded-lg flex items-center gap-1"
+                      aria-label={`Restore ${item.name}`}
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      Restore
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setAdjustingItem(item)}
+                        className="p-2 text-slate-500 hover:text-emerald-800 hover:bg-slate-100 rounded-lg"
+                        title="Adjust stock"
+                        aria-label={`Adjust stock for ${item.name}`}
+                      >
+                        <SlidersHorizontal className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleOpenEdit(item)}
+                        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg"
+                        title="Edit item"
+                        aria-label={`Edit ${item.name}`}
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setItemToDelete(item)}
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg"
+                        title="Archive item"
+                        aria-label={`Remove ${item.name}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             );
@@ -460,7 +574,12 @@ export const StockScreen: React.FC = () => {
       {/* Add / Edit Product Modal Sheet */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={editingItem ? 'Edit product' : 'Add product'}
+            className="bg-white rounded-3xl p-5 sm:p-6 max-w-md w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center space-x-2">
                 <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center">
@@ -505,10 +624,21 @@ export const StockScreen: React.FC = () => {
                 />
               </div>
 
+              <label className="block text-xs font-bold text-slate-700">
+                Unit or pack size (optional)
+                <input
+                  type="text"
+                  maxLength={40}
+                  value={formData.unitLabel}
+                  onChange={(e) => setFormData({ ...formData, unitLabel: e.target.value })}
+                  placeholder="e.g. 500ml, 2kg bag"
+                  className="mt-1 w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900"
+                />
+              </label>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {t.sellingPrice} (K) *
+                    {t.sellingPrice} *
                   </label>
                   <input
                     type="text"
@@ -531,7 +661,7 @@ export const StockScreen: React.FC = () => {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {t.buyingPrice} (K)
+                    {t.buyingPrice}
                   </label>
                   <input
                     type="text"

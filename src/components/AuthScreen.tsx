@@ -14,9 +14,10 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Language } from '../types';
-import { sanitizePhoneInput } from '../utils/format';
-import logo from '/brand/logo.png';
+import { normalizeZambianPhone, sanitizePhoneInput } from '../utils/format';
+import { BrandMark } from './BrandMark';
 import { LegalPages } from './LegalPages';
+import { EmailLoginPanel } from './AccountAccess';
 
 export const AuthScreen: React.FC = () => {
   const { loginWithPhoneAndPin, registerNewShop, isLoading, t, language, setLanguage } = useShop();
@@ -28,6 +29,7 @@ export const AuthScreen: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [showLegal, setShowLegal] = useState<'privacy' | 'terms' | 'security' | null>(null);
+  const [showEmailLogin, setShowEmailLogin] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,8 +40,7 @@ export const AuthScreen: React.FC = () => {
 
     // Accept 0962 838 581, 260962838581 and everything in between; reject anything
     // that is not a Zambian mobile number so a typo cannot create a second shop.
-    const phoneDigits = cleanPhone.replace(/\D/g, '');
-    const national = phoneDigits.startsWith('260') ? `0${phoneDigits.slice(3)}` : phoneDigits;
+    const national = normalizeZambianPhone(cleanPhone);
     if (!/^0(9[5-7]|7[5-7])\d{7}$/.test(national)) {
       setErrorMessage(
         'Enter a Zambian mobile number — 10 digits starting 095, 096, 097, 076 or 077 (e.g. 0977 123 456).'
@@ -73,6 +74,8 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
+  if (showEmailLogin) return <EmailLoginPanel onBack={() => setShowEmailLogin(false)} />;
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex flex-col justify-between py-6 px-4 sm:px-6">
       {/* Legal Modal Overlay */}
@@ -101,7 +104,7 @@ export const AuthScreen: React.FC = () => {
         {/* Brand hero */}
         <div className="flex flex-col items-center text-center pt-2">
           <div className="h-14 flex items-center justify-center">
-            <img src={logo} alt="Countup" className="h-12 w-auto object-contain select-none" />
+            <BrandMark />
           </div>
           <p className="mt-2 text-[11px] text-slate-500 font-medium tracking-wide">
             Zambian Kiosk Sales & Stock Book
@@ -250,11 +253,19 @@ export const AuthScreen: React.FC = () => {
             )}
           </p>
 
+          <button
+            type="button"
+            onClick={() => setShowEmailLogin(true)}
+            className="w-full min-h-[44px] mt-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-bold"
+          >
+            Sign in with email instead
+          </button>
+
           {/* Trust badges */}
           <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-center space-x-4 text-[10px] text-slate-400">
             <span className="flex items-center space-x-1">
               <Shield className="w-3 h-3" />
-              <span>Phone + PIN only</span>
+              <span>Phone + PIN or email</span>
             </span>
             <span className="flex items-center space-x-1">
               <Lock className="w-3 h-3" />

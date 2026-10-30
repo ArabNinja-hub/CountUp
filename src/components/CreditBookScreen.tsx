@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
   BookUser,
@@ -21,6 +21,9 @@ import {
   sanitizeMoneyInput,
   sanitizePhoneInput,
 } from '../utils/format';
+import { customerStatement } from '../utils/ledger';
+import { parseKwachaToNgwee } from '../utils/money';
+import { CustomerEditor } from './CustomerEditor';
 
 export const CreditBookScreen: React.FC = () => {
   const { customers, sales, creditPayments, addCustomer, recordCreditPayment, t, shop, language } =
@@ -31,13 +34,19 @@ export const CreditBookScreen: React.FC = () => {
   const [isAddCustomerOpen, setIsAddCustomerOpen] = useState(false);
   const [newCustName, setNewCustName] = useState('');
   const [newCustPhone, setNewCustPhone] = useState('');
+  const [customerError, setCustomerError] = useState('');
+  const [isCustomerSaving, setIsCustomerSaving] = useState(false);
+  const customerSavingRef = useRef(false);
 
   // Payment recording state
   const [paymentModalCustomer, setPaymentModalCustomer] = useState<Customer | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentNote, setPaymentNote] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'momo'>('cash');
   const [paymentError, setPaymentError] = useState('');
   const [isPaymentSaving, setIsPaymentSaving] = useState(false);
+  const paymentSavingRef = useRef(false);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
   // WhatsApp Reminder modal state
   const [reminderCustomer, setReminderCustomer] = useState<Customer | null>(null);
@@ -110,39 +119,60 @@ export const CreditBookScreen: React.FC = () => {
     window.open(url, '_blank');
   };
 
-  const handleCopyReminder = () => {
-    navigator.clipboard.writeText(customReminderText);
-    setCopiedToast(true);
-    setTimeout(() => setCopiedToast(false), 2500);
+  const handleCopyReminder = async () => {
+    try {
+      if (!navigator.clipboard)
+        throw new Error('Clipboard access is not available on this device.');
+      await navigator.clipboard.writeText(customReminderText);
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2500);
+    } catch (err) {
+      notify('Could not copy the reminder', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please copy the text manually.',
+      });
+    }
   };
 
   // Save new customer
   const handleAddCustomerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCustName.trim()) return;
-    const newCust = await addCustomer(newCustName.trim(), newCustPhone.trim() || undefined);
-    notify(`${newCust.name} added to your credit book`, {
-      kind: 'success',
-      detail: newCust.phone
-        ? 'You can send WhatsApp reminders from their statement.'
-        : 'Add a phone number later to send WhatsApp reminders.',
-    });
-    setNewCustName('');
-    setNewCustPhone('');
-    setIsAddCustomerOpen(false);
-    setSelectedCustomerId(newCust.id);
+    if (!newCustName.trim() || customerSavingRef.current) return;
+    customerSavingRef.current = true;
+    setIsCustomerSaving(true);
+    setCustomerError('');
+    try {
+      const newCust = await addCustomer(newCustName.trim(), newCustPhone.trim() || undefined);
+      notify(`${newCust.name} added to your credit book`, {
+        kind: 'success',
+        detail: newCust.phone
+          ? 'You can send WhatsApp reminders from their statement.'
+          : 'Add a phone number later to send WhatsApp reminders.',
+      });
+      setNewCustName('');
+      setNewCustPhone('');
+      setIsAddCustomerOpen(false);
+      setSelectedCustomerId(newCust.id);
+    } catch (err) {
+      setCustomerError(err instanceof Error ? err.message : 'Could not save that customer.');
+    } finally {
+      customerSavingRef.current = false;
+      setIsCustomerSaving(false);
+    }
   };
 
   // Record payment submit — validates against the real balance and tells the
   // shopkeeper exactly what is left afterwards.
   const handlePaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!paymentModalCustomer || isPaymentSaving) return;
+    if (!paymentModalCustomer || paymentSavingRef.current) return;
     setPaymentError('');
 
-    const amount = parseFloat(paymentAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setPaymentError('Enter the amount the customer actually handed over.');
+    let amount: number;
+    try {
+      amount = parseKwachaToNgwee(paymentAmount) / 100;
+    } catch {
+      setPaymentError('Enter a valid amount with at most two decimal places.');
       return;
     }
     if (amount > paymentModalCustomer.totalOwed) {
@@ -152,12 +182,14 @@ export const CreditBookScreen: React.FC = () => {
       return;
     }
 
+    paymentSavingRef.current = true;
     setIsPaymentSaving(true);
     try {
       const { applied, remaining } = await recordCreditPayment(
         paymentModalCustomer.id,
         amount,
-        paymentNote.trim() || undefined
+        paymentNote.trim() || undefined,
+        paymentMethod
       );
       notify(`Payment recorded — ${formatKwacha(applied)}`, {
         kind: 'success',
@@ -172,41 +204,19 @@ export const CreditBookScreen: React.FC = () => {
     } catch (err) {
       setPaymentError(err instanceof Error ? err.message : 'Could not save that payment.');
     } finally {
+      paymentSavingRef.current = false;
       setIsPaymentSaving(false);
     }
   };
 
-  // Customer Transaction History
-  const getCustomerTransactions = (customerId: string) => {
-    const custSales = sales.filter(
-      (s) => s.paymentType === 'credit' && s.customerId === customerId
-    );
-    const custPayments = creditPayments.filter((p) => p.customerId === customerId);
-
-    const merged = [
-      ...custSales.map((s) => ({
-        id: s.id,
-        type: 'sale' as const,
-        date: s.createdAt,
-        amount: s.totalAmount,
-        details: s.items.map((i) => `${i.name} (x${i.quantity})`).join(', '),
-      })),
-      ...custPayments.map((p) => ({
-        id: p.id,
-        type: 'payment' as const,
-        date: p.createdAt,
-        amount: p.amount,
-        details: p.note || 'Cash payment received',
-      })),
-    ];
-
-    return merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  };
+  // Running balances are computed from the same sales and repayment ledger used in reports.
+  const getCustomerTransactions = (customerId: string) =>
+    customerStatement(customerId, sales, creditPayments);
 
   return (
     <div className="w-full space-y-4">
       {/* Overview Metric Banner */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         <div className="bg-amber-50/70 border border-amber-200/90 rounded-2xl p-4 shadow-xs">
           <span className="text-[11px] font-bold uppercase tracking-wider text-amber-900">
             {t.totalCreditOwed}
@@ -242,7 +252,10 @@ export const CreditBookScreen: React.FC = () => {
             </span>
           </div>
           <button
-            onClick={() => setIsAddCustomerOpen(true)}
+            onClick={() => {
+              setCustomerError('');
+              setIsAddCustomerOpen(true);
+            }}
             className="min-h-[44px] bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white font-bold text-xs px-3.5 py-2.5 rounded-xl flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
           >
             <UserPlus className="w-4 h-4" />
@@ -284,7 +297,10 @@ export const CreditBookScreen: React.FC = () => {
                 Add customers when recording credit sales
               </p>
               <button
-                onClick={() => setIsAddCustomerOpen(true)}
+                onClick={() => {
+                  setCustomerError('');
+                  setIsAddCustomerOpen(true);
+                }}
                 className="mt-3 bg-emerald-800 text-white font-bold text-xs px-4 py-2 rounded-xl"
               >
                 {t.newCustomer}
@@ -384,9 +400,18 @@ export const CreditBookScreen: React.FC = () => {
                     <Phone className="w-3 h-3 text-slate-400" />
                     <span>{activeCustomer.phone || 'No phone number saved'}</span>
                   </p>
+                  {activeCustomer.notes && (
+                    <p className="text-xs text-slate-500 mt-1">{activeCustomer.notes}</p>
+                  )}
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setEditingCustomer(activeCustomer)}
+                    className="min-h-[40px] px-3 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200"
+                  >
+                    Edit customer
+                  </button>
                   {activeCustomer.totalOwed > 0 && (
                     <button
                       onClick={() => handleOpenReminder(activeCustomer)}
@@ -402,6 +427,7 @@ export const CreditBookScreen: React.FC = () => {
                       setPaymentModalCustomer(activeCustomer);
                       setPaymentAmount('');
                       setPaymentNote('');
+                      setPaymentMethod('cash');
                       setPaymentError('');
                     }}
                     className="min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-800 hover:bg-emerald-900 text-white flex items-center space-x-1.5 shadow-xs transition-colors"
@@ -463,6 +489,9 @@ export const CreditBookScreen: React.FC = () => {
                             </span>
                           </div>
                           <p className="text-slate-600 mt-1">{tx.details}</p>
+                          <p className="text-slate-400 mt-0.5">
+                            Balance after: {formatKwacha(tx.runningBalance)}
+                          </p>
                         </div>
                         <span
                           className={`font-black tabular-nums ${
@@ -486,6 +515,10 @@ export const CreditBookScreen: React.FC = () => {
           )}
         </div>
       </div>
+
+      {editingCustomer && (
+        <CustomerEditor customer={editingCustomer} onClose={() => setEditingCustomer(null)} />
+      )}
 
       {/* Record Payment Modal */}
       {paymentModalCustomer && (
@@ -559,24 +592,29 @@ export const CreditBookScreen: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  How did they pay? (optional)
+                  How did they pay?
                 </label>
-                <div className="flex flex-wrap gap-1.5 mb-1.5">
-                  {['Cash', 'Airtel Money', 'MTN MoMo', 'Zamtel'].map((method) => (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {(
+                    [
+                      ['cash', 'Cash'],
+                      ['momo', 'Mobile Money'],
+                    ] as const
+                  ).map(([value, label]) => (
                     <button
-                      key={method}
+                      key={value}
                       type="button"
-                      onClick={() => setPaymentNote(method)}
-                      className={`text-[10px] font-bold rounded-md px-2 py-1 border transition-colors ${
-                        paymentNote === method
-                          ? 'bg-emerald-800 text-white border-emerald-800'
-                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                      }`}
+                      onClick={() => setPaymentMethod(value)}
+                      aria-pressed={paymentMethod === value}
+                      className={`min-h-[40px] text-xs font-bold rounded-lg px-3 border ${paymentMethod === value ? 'bg-emerald-800 text-white border-emerald-800' : 'bg-white text-slate-600 border-slate-200'}`}
                     >
-                      {method}
+                      {label}
                     </button>
                   ))}
                 </div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Note (optional)
+                </label>
                 <input
                   type="text"
                   placeholder="e.g. Paid cash at kiosk"
@@ -690,6 +728,8 @@ export const CreditBookScreen: React.FC = () => {
               <h3 className="font-extrabold text-sm text-slate-900">{t.newCustomer}</h3>
               <button
                 onClick={() => setIsAddCustomerOpen(false)}
+                disabled={isCustomerSaving}
+                aria-label="Close new customer"
                 className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"
               >
                 <X className="w-4 h-4" />
@@ -725,9 +765,18 @@ export const CreditBookScreen: React.FC = () => {
                 />
               </div>
 
+              {customerError && (
+                <p
+                  role="alert"
+                  className="text-xs font-semibold text-rose-800 bg-rose-50 rounded-xl p-2"
+                >
+                  {customerError}
+                </p>
+              )}
               <div className="pt-2 flex items-center space-x-2">
                 <button
                   type="button"
+                  disabled={isCustomerSaving}
                   onClick={() => setIsAddCustomerOpen(false)}
                   className="flex-1 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition-colors"
                 >
@@ -735,9 +784,10 @@ export const CreditBookScreen: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors"
+                  disabled={isCustomerSaving}
+                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors disabled:opacity-50"
                 >
-                  Save Customer
+                  {isCustomerSaving ? 'Saving…' : 'Save Customer'}
                 </button>
               </div>
             </form>

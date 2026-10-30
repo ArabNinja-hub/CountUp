@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reconcile } from './sync';
+import { cleanForFirestore, reconcile, replayQueuedWrites } from './sync';
 
 interface Doc {
   id: string;
@@ -11,6 +11,28 @@ const ITEMS = `${SHOP}/items`;
 const SALES = `${SHOP}/sales`;
 
 const doc = (id: string, name?: string): Doc => ({ id, name });
+
+describe('replayQueuedWrites', () => {
+  it('rebuilds creates and ordered patches after an interrupted cache update', () => {
+    const cached = [doc('old', 'Before')];
+    const queue = [
+      {
+        path: `${ITEMS}/new`,
+        writes: [
+          { path: `${ITEMS}/new`, data: { id: 'new', name: 'New item' } },
+          { path: `${ITEMS}/old`, data: { name: 'Updated' } },
+          { path: `${SALES}/ignored`, data: { id: 'ignored' } },
+        ],
+      },
+      { path: `${ITEMS}/new`, data: { name: 'Renamed' } },
+      { path: `${ITEMS}/missing`, data: { name: 'partial without a cached record' } },
+    ];
+    expect(replayQueuedWrites(cached, queue, ITEMS)).toEqual([
+      doc('old', 'Updated'),
+      doc('new', 'Renamed'),
+    ]);
+  });
+});
 
 describe('reconcile', () => {
   it('returns the server snapshot untouched when nothing is queued', () => {
@@ -86,6 +108,27 @@ describe('reconcile', () => {
     const queue = [{ path: `${ITEMS}/deleted-locally` }];
 
     expect(reconcile(remote, local, queue, ITEMS).map((d) => d.id)).toEqual(['a']);
+  });
+
+  it('keeps pending grouped edits visible and hides pending deletes', () => {
+    const remote = [doc('a', 'old'), doc('b', 'removed')];
+    const local = [doc('a', 'new')];
+    const queue = [
+      {
+        path: `${ITEMS}/a`,
+        writes: [
+          { path: `${ITEMS}/a`, data: { name: 'new' } },
+          { path: `${ITEMS}/b`, data: { isDeleted: true } },
+        ],
+      },
+    ];
+    expect(reconcile(remote, local, queue, ITEMS)).toEqual([doc('a', 'new')]);
+  });
+
+  it('removes undefined optional fields before sending Firestore documents', () => {
+    expect(
+      cleanForFirestore({ value: 1, optional: undefined, nested: { note: undefined, name: 'ok' } })
+    ).toEqual({ value: 1, nested: { name: 'ok' } });
   });
 
   it('works with a deeper or different collection path', () => {

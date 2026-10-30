@@ -23,15 +23,17 @@ export const OfflineNotice: React.FC = () => {
           )}
 
           <div className="min-w-0 text-xs">
-            <p className="font-bold text-slate-100 truncate">
+            <p className="font-bold text-slate-100">
               {!isOnline
                 ? 'Saved offline on phone'
                 : `${pendingSyncCount} ${pendingSyncCount === 1 ? 'entry' : 'entries'} waiting to sync`}
             </p>
-            <p className="text-[11px] text-slate-400 truncate">
+            <p className="text-[11px] text-slate-400 break-words">
               {!isOnline
-                ? 'Nothing is lost — everything syncs automatically once you are back online'
-                : 'You are online. Sending your saved entries now.'}
+                ? 'Keep this browser’s data until your entries sync.'
+                : lastOfflineNotice && !isSyncing
+                  ? lastOfflineNotice
+                  : 'Sending your saved entries now.'}
             </p>
           </div>
         </div>

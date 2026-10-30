@@ -97,7 +97,7 @@ export const ExpensesModal: React.FC<ExpensesModalProps> = ({ isOpen, onClose })
 
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">
-              {t.expenseAmount} (K) *
+              {t.expenseAmount} *
             </label>
             <input
               type="text"

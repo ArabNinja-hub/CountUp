@@ -1,6 +1,6 @@
 import React from 'react';
 import { useShop } from '../context/ShopContext';
-import { ShoppingBag, Boxes, BookUser, BarChart3 } from 'lucide-react';
+import { Home, ShoppingBag, Boxes, BookUser, BarChart3 } from 'lucide-react';
 import { ActiveTab } from '../types';
 
 export const Navigation: React.FC = () => {
@@ -18,6 +18,7 @@ export const Navigation: React.FC = () => {
     icon: React.ComponentType<{ className?: string }>;
     badge?: number;
   }[] = [
+    { id: 'home', label: t.tabHome, icon: Home },
     {
       id: 'sell',
       label: t.tabSell,
@@ -44,7 +45,7 @@ export const Navigation: React.FC = () => {
 
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-8px_30px_rgba(16,185,129,0.10)] pb-[env(safe-area-inset-bottom)]">
-      <div className="grid grid-cols-4 h-[68px] max-w-lg mx-auto">
+      <div className="grid grid-cols-5 h-[68px] max-w-lg mx-auto">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           const Icon = tab.icon;
