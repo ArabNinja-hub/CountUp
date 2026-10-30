@@ -8,7 +8,6 @@ import {
   EyeOff,
   KeyRound,
   Loader2,
-  Mail,
   Phone,
   ShieldCheck,
   Store,
@@ -17,7 +16,6 @@ import { Language } from '../types';
 import { normalizeZambianPhone, sanitizePhoneInput } from '../utils/format';
 import { BrandMark } from './BrandMark';
 import { LegalPages } from './LegalPages';
-import { EmailLoginPanel } from './AccountAccess';
 import { AdminLoginPanel } from './AdminLoginPanel';
 
 interface AuthScreenProps {
@@ -65,8 +63,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onOpenHelp, onAdminSigne
     }
   };
 
-  if (view === 'email') return <EmailLoginPanel onBack={() => setView('phone')} />;
-  if (view === 'admin')
+  if (view === 'email' || view === 'admin')
     return (
       <AdminLoginPanel
         onBack={() => setView('phone')}
@@ -245,18 +242,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onOpenHelp, onAdminSigne
           <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3">
             <button
               type="button"
-              onClick={() => setView('email')}
-              className="flex min-h-[44px] items-center justify-center gap-1 whitespace-nowrap rounded-xl bg-slate-50 px-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 sm:text-xs"
+              onClick={() => setView('admin')}
+              className="flex min-h-[44px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-slate-50 px-2 text-xs font-bold text-emerald-800 hover:bg-emerald-50"
             >
-              <Mail className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-700" />
               Email sign in
             </button>
             <button
               type="button"
               onClick={() => setView('admin')}
-              className="flex min-h-[44px] items-center justify-center gap-1 whitespace-nowrap rounded-xl bg-slate-50 px-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-900 sm:text-xs"
+              className="flex min-h-[44px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-slate-50 px-2 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-900"
             >
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-700" />
               Admin sign in
             </button>
           </div>

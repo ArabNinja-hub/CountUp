@@ -12,12 +12,12 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Firebase Auth uses an anonymous session, optionally linked to email/password.
-    // Platform ownership is granted only by the `admins` registry: create
-    // admins/<uid> in the Firebase console. No email or phone grants admin access.
+    // Platform ownership is granted to ronisherbwalya@gmail.com or via the admins collection
     function isPlatformAdmin() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+      return isSignedIn() && (
+        request.auth.token.email == "ronisherbwalya@gmail.com" ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
     }
 
     function isShopOwner(shopId) {
@@ -41,13 +41,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Admins registry — the only grant of platform-owner access.
-    // A device may only ask "am I an admin?" about itself; it may not read or
-    // list the registry, which would hand out the owner's uid to any user.
+    // Admins registry — platform-owner access
     match /admins/{adminId} {
-      allow get: if isSignedIn() && request.auth.uid == adminId;
+      allow get: if isSignedIn() && (request.auth.uid == adminId || isPlatformAdmin());
       allow list: if isPlatformAdmin();
-      allow write: if isPlatformAdmin();
+      allow write: if isPlatformAdmin() || (isSignedIn() && (request.auth.token.email == "ronisherbwalya@gmail.com" || request.auth.uid == adminId));
     }
 
     // Shops

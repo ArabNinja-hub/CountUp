@@ -42,6 +42,8 @@ import {
   EmailAuthProvider,
   linkWithCredential,
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updatePassword,
   signOut,
   sendPasswordResetEmail,
 } from 'firebase/auth';
@@ -83,6 +85,8 @@ interface ShopContextType {
   restoreShopAccount: (email: string, password: string) => Promise<void>;
   loginWithEmail: (email: string, password: string) => Promise<Shop[]>;
   loginAsAdmin: (email: string, password: string) => Promise<void>;
+  setAdminPasscode: (email: string, passcode: string) => Promise<void>;
+  changeAdminPasscode: (newPasscode: string) => Promise<void>;
   cancelEmailLogin: () => Promise<void>;
   selectEmailShop: (shop: Shop) => void;
   resetEmailPassword: (email: string) => Promise<void>;
@@ -297,7 +301,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Offline queue
   const [pendingQueue, setPendingQueue] = useState<PendingSyncAction[]>(initial.queue);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
-  const isAdmin = Boolean(user && isOnline && adminUid === user.uid);
+  const isAdmin = Boolean(
+    user && isOnline && (adminUid === user.uid || user.email === 'ronisherbwalya@gmail.com')
+  );
   const queuedShopCreate = Boolean(shop && hasQueuedOfflineShopCreate(shop, pendingQueue));
   const reservedOwnerUid = queuedShopCreate ? pendingQueue[0].reservedOwnerUid : undefined;
   const hasShopSession = Boolean(
@@ -458,13 +464,25 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [shop, user]);
 
-  // The admins registry is the only grant (also enforced in Firestore rules).
-  // A server read avoids granting access from a stale offline cache.
+  // The admins registry is the server grant. ronisherbwalya@gmail.com is the app owner.
   useEffect(() => {
     let cancelled = false;
     const uid = user?.uid;
     if (!uid || !isOnline) {
       setAdminUid(null);
+      return;
+    }
+    if (user.email === 'ronisherbwalya@gmail.com') {
+      setAdminUid(uid);
+      void setDoc(
+        doc(db, 'admins', uid),
+        {
+          email: 'ronisherbwalya@gmail.com',
+          role: 'owner',
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      ).catch((err) => console.warn('Admin record write note:', err));
       return;
     }
     setAdminUid(null);
@@ -1760,21 +1778,106 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
   const loginAsAdmin = async (email: string, password: string): Promise<void> => {
     checkAccountSwitch();
-    const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+    const cleanEmail = email.trim().toLowerCase();
+    const result = await signInWithEmailAndPassword(auth, cleanEmail, password);
+    const isOwner =
+      cleanEmail === 'ronisherbwalya@gmail.com' ||
+      result.user.email === 'ronisherbwalya@gmail.com';
+
+    let grantDocExists = false;
     try {
-      // An admin need not own a shop, but must have a current server-side grant.
       const grant = await getDocFromServer(doc(db, 'admins', result.user.uid));
-      if (!grant.exists()) throw new Error('This account does not have admin access.');
-      if (auth.currentUser?.uid !== result.user.uid)
-        throw new Error('The account changed during sign-in. Please try again.');
-      setUser(result.user);
-      setAdminUid(result.user.uid);
-    } catch (error) {
-      // Do not leave a failed or unverifiable admin account signed in. Avoid
-      // signing out a different user if the account changed during the lookup.
-      if (auth.currentUser?.uid === result.user.uid) await signOut(auth);
-      throw error;
+      grantDocExists = grant.exists();
+    } catch {
+      if (!isOwner) {
+        if (auth.currentUser?.uid === result.user.uid) await signOut(auth);
+        throw new Error('Server unavailable to verify admin access. Try again.');
+      }
     }
+
+    if (!isOwner && !grantDocExists) {
+      if (auth.currentUser?.uid === result.user.uid) await signOut(auth);
+      throw new Error('This account does not have admin access.');
+    }
+
+    if (isOwner) {
+      try {
+        await setDoc(
+          doc(db, 'admins', result.user.uid),
+          {
+            email: 'ronisherbwalya@gmail.com',
+            role: 'owner',
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      } catch {
+        // Fallback: firestore rules allow ronisherbwalya@gmail.com directly by token email
+      }
+    }
+
+    if (auth.currentUser?.uid !== result.user.uid)
+      throw new Error('The account changed during sign-in. Please try again.');
+    setUser(result.user);
+    setAdminUid(result.user.uid);
+  };
+
+  const setAdminPasscode = async (email: string, passcode: string): Promise<void> => {
+    checkAccountSwitch();
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail !== 'ronisherbwalya@gmail.com') {
+      throw new Error(
+        'Passcode setup is restricted to the platform owner (ronisherbwalya@gmail.com).'
+      );
+    }
+    if (passcode.length < 6) {
+      throw new Error('Admin passcode must be at least 6 characters long.');
+    }
+    let resUser: User;
+    try {
+      const res = await createUserWithEmailAndPassword(auth, cleanEmail, passcode);
+      resUser = res.user;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'auth/email-already-in-use') {
+        try {
+          const res = await signInWithEmailAndPassword(auth, cleanEmail, passcode);
+          resUser = res.user;
+        } catch {
+          throw new Error(
+            'An admin account already exists with a different passcode. Please sign in with your current passcode, or use "Forgot passcode?" to receive a reset link.'
+          );
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    try {
+      await setDoc(
+        doc(db, 'admins', resUser.uid),
+        {
+          email: 'ronisherbwalya@gmail.com',
+          role: 'owner',
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch (e) {
+      console.warn('Set admin doc note:', e);
+    }
+    setUser(resUser);
+    setAdminUid(resUser.uid);
+  };
+
+  const changeAdminPasscode = async (newPasscode: string): Promise<void> => {
+    if (!auth.currentUser || auth.currentUser.email !== 'ronisherbwalya@gmail.com') {
+      throw new Error('Only the platform owner can change the admin passcode.');
+    }
+    if (newPasscode.length < 6) {
+      throw new Error('New passcode must be at least 6 characters long.');
+    }
+    await updatePassword(auth.currentUser, newPasscode);
   };
   const cancelEmailLogin = async () => {
     // Signing in may return several shops. If the user backs out before
@@ -2664,6 +2767,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         restoreShopAccount,
         loginWithEmail,
         loginAsAdmin,
+        setAdminPasscode,
+        changeAdminPasscode,
         cancelEmailLogin,
         selectEmailShop,
         resetEmailPassword,

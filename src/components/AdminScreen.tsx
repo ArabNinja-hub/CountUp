@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useShop } from '../context/ShopContext';
-import { ShieldCheck, Search, CheckCircle, Ban, CalendarPlus } from 'lucide-react';
+import { ShieldCheck, Search, CheckCircle, Ban, CalendarPlus, KeyRound } from 'lucide-react';
 import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -12,11 +12,15 @@ interface AdminScreenProps {
 }
 
 export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'Exit admin' }) => {
-  const { allShops, shop, adminExtendShop, adminToggleDeactivate, user } = useShop();
+  const { allShops, shop, adminExtendShop, adminToggleDeactivate, changeAdminPasscode } = useShop();
   const { notify } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState<string | null>(null);
   const [shopToToggle, setShopToToggle] = useState<Shop | null>(null);
+  const [showPasscodeForm, setShowPasscodeForm] = useState(false);
+  const [newPasscode, setNewPasscode] = useState('');
+  const [confirmNewPasscode, setConfirmNewPasscode] = useState('');
+  const [isChangingPasscode, setIsChangingPasscode] = useState(false);
 
   // If allShops is empty in single-user context, ensure current shop is included in view
   const shopList = useMemo(() => {
@@ -115,6 +119,36 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     }
   };
 
+  const handleUpdatePasscode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPasscode.length < 6) {
+      notify('Passcode must be at least 6 characters', { kind: 'error' });
+      return;
+    }
+    if (newPasscode !== confirmNewPasscode) {
+      notify('Passcodes do not match', { kind: 'error' });
+      return;
+    }
+    setIsChangingPasscode(true);
+    try {
+      await changeAdminPasscode(newPasscode);
+      notify('Admin passcode updated successfully', {
+        kind: 'success',
+        detail: 'Use your new passcode next time you log in to the admin console.',
+      });
+      setNewPasscode('');
+      setConfirmNewPasscode('');
+      setShowPasscodeForm(false);
+    } catch (err: unknown) {
+      notify('Could not update passcode', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Check your connection or sign in again.',
+      });
+    } finally {
+      setIsChangingPasscode(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-5xl mx-auto py-4 px-3 sm:px-6 space-y-4">
       {/* Header */}
@@ -126,21 +160,90 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
               <span>Admin console</span>
             </h2>
             <p className="text-xs text-slate-500 break-all">
-              Admin:{' '}
-              <strong className="text-slate-800 font-mono">
-                {user?.email || user?.uid || 'not signed in'}
-              </strong>
+              Owner:{' '}
+              <strong className="text-slate-800 font-mono">ronisherbwalya@gmail.com</strong>
             </p>
           </div>
         </div>
 
-        <button
-          onClick={onBack}
-          className="min-h-[40px] shrink-0 text-xs bg-slate-900 hover:bg-slate-950 text-white font-bold px-3 py-1.5 rounded-lg transition-colors"
-        >
-          {exitLabel}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowPasscodeForm(!showPasscodeForm)}
+            className="min-h-[40px] shrink-0 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>{showPasscodeForm ? 'Close Passcode Form' : 'Change Admin Passcode'}</span>
+          </button>
+          <button
+            onClick={onBack}
+            className="min-h-[40px] shrink-0 text-xs bg-slate-900 hover:bg-slate-950 text-white font-bold px-3 py-1.5 rounded-lg transition-colors"
+          >
+            {exitLabel}
+          </button>
+        </div>
       </div>
+
+      {/* Owner Passcode Settings Card */}
+      {showPasscodeForm && (
+        <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-4 sm:p-5 shadow-xs">
+          <div className="flex items-center gap-2 mb-2">
+            <KeyRound className="w-4 h-4 text-emerald-800" />
+            <h3 className="text-sm font-extrabold text-slate-900">Change Admin Console Passcode</h3>
+          </div>
+          <p className="text-xs text-slate-600 mb-3">
+            Set a new passcode for <strong>ronisherbwalya@gmail.com</strong>. You will use this passcode whenever opening the admin console.
+          </p>
+
+          <form onSubmit={handleUpdatePasscode} className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                New Passcode (min 6 chars)
+              </label>
+              <input
+                type="password"
+                required
+                value={newPasscode}
+                onChange={(e) => setNewPasscode(e.target.value)}
+                placeholder="New passcode"
+                className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                Confirm New Passcode
+              </label>
+              <input
+                type="password"
+                required
+                value={confirmNewPasscode}
+                onChange={(e) => setConfirmNewPasscode(e.target.value)}
+                placeholder="Confirm new passcode"
+                className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={isChangingPasscode}
+                className="flex-1 min-h-[38px] bg-emerald-900 hover:bg-emerald-950 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors disabled:opacity-50"
+              >
+                {isChangingPasscode ? 'Updating…' : 'Save Passcode'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasscodeForm(false);
+                  setNewPasscode('');
+                  setConfirmNewPasscode('');
+                }}
+                className="min-h-[38px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs px-3 py-2 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
