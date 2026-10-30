@@ -65,7 +65,7 @@ export const ReportsScreen: React.FC = () => {
     };
   }, [sales, creditPayments, expenses, timeView]);
 
-  // ShopBook's accounting rules: credit sales are not money received and
+  // Credit sales are not money received and
   // repayments are not another sale. Older CountUp payments default to cash.
   const ledger = useMemo(
     () => summarizeLedger(filteredSales, filteredPayments, []),

@@ -18,7 +18,7 @@ import { useToast } from '../components/Toast';
 import { cleanForFirestore, reconcile, replayQueuedWrites } from '../utils/sync';
 import { addKwacha, localDateKey, multiplyKwacha, toNgwee } from '../utils/money';
 import { normalizeZambianPhone } from '../utils/format';
-import { prepareShopBookImport, ShopBookImport } from '../services/shopBookImport';
+import { prepareLegacyBackupImport, LegacyBackupImport } from '../services/backupImport';
 import {
   signInAnonymously,
   onAuthStateChanged,
@@ -112,7 +112,7 @@ interface ShopContextType {
   customers: Customer[];
   creditPayments: CreditPayment[];
   expenses: Expense[];
-  importShopBook: (raw: string) => Promise<ShopBookImport>;
+  importLegacyBackup: (raw: string) => Promise<LegacyBackupImport>;
 
   // Actions
   recordSale: (saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>) => Promise<Sale>;
@@ -1058,7 +1058,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const owned = snapshot.docs.map((entry) => entry.data() as Shop);
       if (!owned.length)
         throw new Error(
-          'This account does not own a CountUp shop. ShopBook accounts must be linked separately and their backup imported.'
+          'This account does not own a CountUp shop. Enable email access in your shop on its original device before signing in here.'
         );
       return owned;
     } catch (error) {
@@ -1834,14 +1834,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /** Import is an online, all-or-nothing transaction. No existing document is overwritten. */
-  const importShopBook = async (raw: string): Promise<ShopBookImport> => {
+  const importLegacyBackup = async (raw: string): Promise<LegacyBackupImport> => {
     if (!shop || !auth.currentUser || !navigator.onLine)
       throw new Error('Connect to the internet and sign in as the shop owner to import.');
     if (auth.currentUser.uid !== shop.ownerUid && auth.currentUser.uid !== shop.id)
       throw new Error('Only the shop owner can import a backup.');
     if (queueRef.current.length || syncingRef.current)
       throw new Error('Sync all pending CountUp entries before importing a backup.');
-    const prepared = prepareShopBookImport(raw, shop.id);
+    const prepared = prepareLegacyBackupImport(raw, shop.id);
     const writes: { path: string; data: object }[] = [
       ...prepared.items.map((item) => ({ path: `shops/${shop.id}/items/${item.id}`, data: item })),
       ...prepared.customers.map((customer) => ({
@@ -1867,9 +1867,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const refs = writes.map((write) => doc(db, write.path));
       const existing = await Promise.all(refs.map((ref) => transaction.get(ref)));
       if (existing.some((snapshot) => snapshot.exists()))
-        throw new Error(
-          'Some of these ShopBook records are already in this shop. Nothing was imported.'
-        );
+        throw new Error('Some of these records are already in this shop. Nothing was imported.');
       writes.forEach((write, index) =>
         transaction.set(refs[index], cleanForFirestore(write.data) as DocumentData)
       );
@@ -1971,7 +1969,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         stockMovements,
         stockConflicts,
         resolveStockConflict,
-        importShopBook,
+        importLegacyBackup,
         sales,
         customers,
         creditPayments,

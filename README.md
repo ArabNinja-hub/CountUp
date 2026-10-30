@@ -16,7 +16,7 @@ Email access, backup import and account deletion require an internet connection.
 - **Stock Book** — add/edit products, optional cost prices, low-stock warnings, stock movements, adjustments and reversible archives.
 - **Credit Book** — customer statements, balance tracking, cash/Mobile Money repayments and polite **WhatsApp** reminders in 3 languages.
 - **Reports** — daily / weekly / monthly sales, known-cost profit, cash vs. Mobile Money received (including repayments), top sellers and expenses.
-- **Data tools** — JSON and CSV exports, plus an additive import for ShopBook v1 backups.
+- **Data tools** — JSON and CSV exports, plus an additive import for legacy v1 backups.
 - **Subscriptions** — 30-day free trial, then monthly / 3-month / 6-month plans paid by
   Mobile Money (Airtel, MTN, Zamtel) through the contact channels in the Plan screen.
 - **Offline-first** — ordinary entries are saved locally and queued for sync; unresolved conflicts can stop the queue.
@@ -102,7 +102,7 @@ npm run check       # typecheck + lint + tests in one go
 ```
 
 Tests cover plans, money and ledger calculations, queue reconciliation and recovery,
-ShopBook conversion, CSV escaping, mocked authentication/transactions and screen
+legacy backup conversion, CSV escaping, mocked authentication/transactions and screen
 behavior. The mock tests are not a substitute for testing a real Firebase project.
 
 To exercise Firestore authorization locally, install Java and the Firebase CLI's
@@ -158,8 +158,9 @@ request a password reset by email.
 
 Phone/PIN-only shops remain bound to their original anonymous Firebase identity; a
 PIN alone does not authorize a new device. Do not clear that identity before linking.
-Email access and cloud operations require connectivity. ShopBook credentials are not
-transferred: create/link CountUp access separately, then import a ShopBook backup.
+Email access and cloud operations require connectivity. Credentials from earlier
+accounts are not transferred automatically; enable email access for your shop and import
+any supported legacy backup separately.
 
 ### Platform owner access
 Owner access is granted by data, not by an email in the source: create the Firestore
@@ -212,17 +213,16 @@ device on the internet, so it is deliberately strict:
 
 ---
 
-## ShopBook migration and data exports
+## Legacy backups and data exports
 
-1. In ShopBook, export the **full JSON backup** (`shopbook-backup-v1`) and keep the
-   original file safe. ShopBook accounts, credentials, roles, settings and sync queue
-   are not transferred.
-2. Sign in to the target CountUp shop as its Firebase owner, connect to the internet
-   and sync all pending CountUp entries.
-3. Open Settings → **Data & backups** → **Choose ShopBook JSON**. Review the preview,
-   then import. Products (including archives), sales and line snapshots, customers,
-   repayments and stock movements are converted; balances are checked from the credit
-   ledger. Prices with unknown costs remain unknown.
+1. Keep a copy of your **full legacy v1 JSON backup** (format `shopbook-backup-v1`).
+   Accounts, credentials, roles, settings and the old sync queue are not transferred.
+2. Sign in to your shop as its Firebase owner, connect to the internet and sync all
+   pending entries.
+3. Open Settings → **Data & backups** → **Choose legacy JSON backup**. Review the
+   preview, then import. Products (including archives), sales and line snapshots,
+   customers, repayments and stock movements are converted; balances are checked from
+   the credit ledger. Prices with unknown costs remain unknown.
 4. Imports are additive and atomic, and duplicate IDs are refused without overwriting
    existing records. The file must be at most 5 MB and produce at most 400 CountUp
    documents. Invalid references or inconsistent totals are rejected. Larger files

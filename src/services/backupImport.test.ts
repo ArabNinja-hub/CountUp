@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { prepareShopBookImport } from './shopBookImport';
+import { prepareLegacyBackupImport } from './backupImport';
 
 const at = '2026-10-23T10:00:00.000Z';
 function backup() {
@@ -135,9 +135,9 @@ function backup() {
     ],
   };
 }
-const convert = (data: unknown) => prepareShopBookImport(JSON.stringify(data), 'shop_dest');
+const convert = (data: unknown) => prepareLegacyBackupImport(JSON.stringify(data), 'shop_dest');
 
-describe('ShopBook backup conversion', () => {
+describe('Legacy backup conversion', () => {
   it('preserves receipts, historical prices, missing costs, archives, stock history and transaction-derived balances', () => {
     const result = convert(backup());
     expect(result.sourceShopName).toBe('Source shop');
@@ -177,7 +177,7 @@ describe('ShopBook backup conversion', () => {
     });
   });
   it('rejects malformed, duplicate or orphaned records before any database write', () => {
-    expect(() => prepareShopBookImport('nope', 'shop_dest')).toThrow(/JSON/);
+    expect(() => prepareLegacyBackupImport('nope', 'shop_dest')).toThrow(/JSON/);
     const duplicate = backup();
     duplicate.products.push({ ...duplicate.products[0] });
     expect(() => convert(duplicate)).toThrow(/duplicate product/i);
@@ -186,7 +186,7 @@ describe('ShopBook backup conversion', () => {
     expect(() => convert(orphan)).toThrow(/missing sale or product/i);
     const path = backup();
     path.products[0].id = '../unsafe';
-    expect(() => convert(path)).toThrow(/Invalid ShopBook backup/);
+    expect(() => convert(path)).toThrow(/Invalid backup/);
   });
   it('rejects tampered amounts, credit entries, negative balances and stock history', () => {
     const incorrect = backup();

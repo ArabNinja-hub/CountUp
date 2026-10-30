@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Download, Upload, X } from 'lucide-react';
 import { useShop } from '../context/ShopContext';
-import { prepareShopBookImport, ShopBookImport } from '../services/shopBookImport';
+import { prepareLegacyBackupImport, LegacyBackupImport } from '../services/backupImport';
 import { downloadText, ExportKind, ledgerCsv } from '../services/export';
 import { useToast } from './Toast';
 
@@ -14,13 +14,13 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     customers,
     creditPayments,
     stockMovements,
-    importShopBook,
+    importLegacyBackup,
     isOnline,
     pendingSyncCount,
   } = useShop();
   const { notify } = useToast();
   const [raw, setRaw] = useState('');
-  const [preview, setPreview] = useState<ShopBookImport | null>(null);
+  const [preview, setPreview] = useState<LegacyBackupImport | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const chooseFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -36,7 +36,7 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
     try {
       const text = await file.text();
-      const result = prepareShopBookImport(text, shop.id);
+      const result = prepareLegacyBackupImport(text, shop.id);
       setRaw(text);
       setPreview(result);
     } catch (err) {
@@ -48,8 +48,8 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     setBusy(true);
     setError('');
     try {
-      const result = await importShopBook(raw);
-      notify('ShopBook records imported', {
+      const result = await importLegacyBackup(raw);
+      notify('Backup records imported', {
         detail: `${result.items.length} products, ${result.sales.length} sales and ${result.customers.length} customers added to CountUp.`,
       });
       setRaw('');
@@ -137,20 +137,20 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         </section>
         <section className="space-y-3 border-t border-slate-100 pt-4">
-          <h3 className="text-sm font-bold text-slate-900">Import a ShopBook backup</h3>
+          <h3 className="text-sm font-bold text-slate-900">Import an earlier backup</h3>
           <p className="text-xs text-slate-600 leading-relaxed">
-            In ShopBook, download its full JSON backup first. Import adds its products, receipts,
-            credit history and stock movements to this CountUp shop; it does not replace existing
-            records or change your shop, plan or PIN. Duplicate imports are refused.
+            Choose a full legacy v1 JSON backup to add its products, receipts, credit history and
+            stock movements to your shop. Existing records, your plan and PIN are not replaced.
+            Duplicate imports are refused. The original backup is not changed.
           </p>
           <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">
-            Import requires an internet connection, an owner session and no pending sync. A backup
-            may contain up to 400 resulting records per import. Your original ShopBook data is
-            untouched.
+            Import requires an internet connection, an owner session and no pending sync. Files may
+            be up to 5 MB and contain up to 400 resulting records. The current CountUp JSON export
+            is not yet supported for restore.
           </p>
           <label className="min-h-[44px] flex items-center justify-center gap-2 rounded-xl border border-emerald-300 text-emerald-800 text-xs font-bold cursor-pointer hover:bg-emerald-50">
             <Upload className="w-4 h-4" />
-            Choose ShopBook JSON
+            Choose legacy JSON backup
             <input
               type="file"
               accept="application/json,.json"

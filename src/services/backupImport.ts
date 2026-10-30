@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { CreditPayment, Customer, Item, Sale, StockMovement } from '../types';
 import { fromNgwee } from '../utils/money';
 
-// A ShopBook backup is untrusted input. All validation and reconciliation happens
+// A legacy backup is untrusted input. All validation and reconciliation happens
 // before any write. IDs are namespaced so importing never replaces CountUp records.
 const id = z
   .string()
@@ -111,7 +111,7 @@ const backupSchema = z.object({
   creditTransactions: z.array(creditSchema),
 });
 
-export interface ShopBookImport {
+export interface LegacyBackupImport {
   sourceShopName: string;
   items: Item[];
   sales: Sale[];
@@ -126,8 +126,8 @@ function unique(values: string[], label: string) {
   if (new Set(values).size !== values.length) throw new Error(`Backup has duplicate ${label}.`);
 }
 
-/** Convert a ShopBook v1 JSON backup into CountUp's existing ledger, without writes. */
-export function prepareShopBookImport(raw: string, shopId: string): ShopBookImport {
+/** Convert a legacy v1 JSON backup into the existing ledger, without writes. */
+export function prepareLegacyBackupImport(raw: string, shopId: string): LegacyBackupImport {
   let json: unknown;
   try {
     json = JSON.parse(raw);
@@ -137,8 +137,11 @@ export function prepareShopBookImport(raw: string, shopId: string): ShopBookImpo
   const parsed = backupSchema.safeParse(json);
   if (!parsed.success) {
     const first = parsed.error.issues[0];
+    if (first?.path[0] === 'format') {
+      throw new Error('Invalid backup format. Choose a full legacy v1 JSON backup.');
+    }
     throw new Error(
-      `Invalid ShopBook backup at ${first?.path.join('.') || 'file'}: ${first?.message || 'check the file'}.`
+      `Invalid backup at ${first?.path.join('.') || 'file'}: ${first?.message || 'check the file'}.`
     );
   }
   const data = parsed.data;
@@ -212,7 +215,7 @@ export function prepareShopBookImport(raw: string, shopId: string): ShopBookImpo
       (movement.relatedSaleId && !salesById.has(movement.relatedSaleId))
     )
       throw new Error('Backup has a stock movement referring to a missing product or sale.');
-    // A ShopBook sync conflict can clamp stock at zero while retaining the requested delta.
+    // A legacy sync conflict can clamp stock at zero while retaining the requested delta.
     if (Math.max(0, movement.previousQty + movement.deltaQty) !== movement.newQty)
       throw new Error('Backup has an inconsistent stock movement.');
   }

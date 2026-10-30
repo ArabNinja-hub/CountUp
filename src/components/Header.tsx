@@ -279,7 +279,7 @@ export const Header: React.FC = () => {
                     <span>Change PIN</span>
                   </button>
 
-                  {/* One place for backups, CSV exports and ShopBook import. */}
+                  {/* One place for backups, CSV exports and legacy import. */}
                   <button
                     onClick={() => {
                       setShowSettingsMenu(false);

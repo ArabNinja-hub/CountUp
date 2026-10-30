@@ -5,7 +5,7 @@ import { summarizeLedger } from '../utils/ledger';
 import { localDateKey } from '../utils/money';
 import { formatKwacha } from '../utils/format';
 
-/** ShopBook's at-a-glance home, using the same CountUp ledger as every other tab. */
+/** The at-a-glance home uses the same ledger as every other tab. */
 export const HomeScreen: React.FC<{ onAddProduct: () => void }> = ({ onAddProduct }) => {
   const {
     shop,
