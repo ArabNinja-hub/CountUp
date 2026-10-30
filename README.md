@@ -24,7 +24,7 @@ offline guide. The complete step-by-step manual is in [docs/USER_GUIDE.md](docs/
 - **Data tools** — JSON and CSV exports, plus an additive import for legacy v1 backups.
 - **Subscriptions** — 30-day free trial, then monthly / 3-month / 6-month plans paid by
   Mobile Money (Airtel, MTN, Zamtel) through the contact channels in the Plan screen.
-- **Offline-first** — ordinary entries are saved locally and queued for sync; unresolved conflicts can stop the queue.
+- **Offline-first** — after the built app has loaded online once, it can reopen in the same browser offline. Ordinary entries are saved locally and queued for sync; unresolved conflicts can stop the queue.
 - **Localized** — existing navigation and reminders support English, Ichibemba, and Chinyanja; some newer screens are currently English-only.
 - **Platform admin** — the owner account can see every shop, extend plans, and suspend
   a shop. A suspended shop keeps its records (viewable and exportable) but cannot record
@@ -38,18 +38,46 @@ There is no sample data, demo shop, or pre-filled inventory anywhere in the app.
 - **Real-time everywhere.** Sales, stock, credit balances, expenses, the plan expiry
   and the admin shop list are all backed by live Firestore listeners. A sale shows up
   in Today's totals, Reports and the credit book immediately, with no reload.
-- **Grouped sync.** A queued sale and its stock and credit changes are committed in a
-  Firestore transaction with an operation marker for safe retries. If another device
-  has sold the same stock, a shortfall is flagged for a physical recount.
+- **Grouped sync.** Normal queued entries and their operation markers commit together,
+  so retries do not repeat them. A sale undo already completed on another device is
+  not applied twice. Stock shortfalls and stale physical counts are flagged for a
+  recount rather than overwriting newer stock.
 - **Offline entries are queued.** The header shows how many are waiting; keep the
-  browser data until they sync. If a repayment or void conflicts with a newer server
-  balance, the queue stops and shows the reason; an in-app resolution flow is not yet
-  available.
+  browser data until they sync. Temporary connection failures are retried. If a
+  repayment or sale undo conflicts with a newer balance, the queue pauses and **Review**
+  compares the saved entry with the server. Only after the owner confirms a verified
+  mistake can a payment be corrected or cancelled, or an undo cancelled. The original
+  and decision are kept under Settings → Data & backups → Sync review history; later
+  entries remain queued and resume in order. Genuine overpayments and refunds are not
+  supported: leave the affected entry waiting and reconcile outside the app or seek
+  support. A pending non-transactional edit made by an older release may lack an
+  operation marker; if its acknowledgement was lost before this update, a retry can
+  still overwrite a newer edit. Check the affected records after upgrading.
+- **One active tab per browser.** On browsers supporting Web Locks, another CountUp
+  tab waits until the first closes, so their local queues cannot overwrite each other.
+  Older browsers display a warning: use only one CountUp tab on that device.
 - **Validation.** A sale cannot exceed the local stock on hand, credit sales require
   a customer and repayments cannot exceed the local balance.
 - **Reversal.** Today's eligible sales can be undone in Reports; a partly repaid credit
   sale cannot be voided. Archived products can be restored, and deleted expenses have
   a short-lived Undo action.
+
+### Before going offline
+
+Open the production app online in the browser you will use, and allow it to finish
+loading so its static app shell can be cached. It can then reopen in that browser
+without a connection, provided the browser has not cleared or evicted those files.
+The development server does not install the offline worker. The worker caches only
+application files, not Firebase responses or shop records; it is not a data backup.
+Shop entries and their pending queue remain in browser storage until they sync. Do not
+clear that storage while entries are pending. Logging out clears the local shop cache;
+a phone-and-PIN login needs a connection afterwards.
+
+If a previously linked shop loses its cloud session while entries are waiting, use
+**Settings → Account & cloud access** to reconnect the original email account without
+discarding the queue. A different account cannot sync it. A phone-and-PIN-only shop
+still needs its original anonymous Firebase session; an unlinked identity cannot be
+recovered by creating a new anonymous account.
 
 ---
 
@@ -89,7 +117,7 @@ npm run dev
 
 ### Build & Preview (production)
 ```bash
-npm run build      # outputs to ./dist (+ 404.html, .nojekyll)
+npm run build      # outputs to ./dist (+ 404.html, .nojekyll, sw.js)
 npm run start      # serves dist/ via Express at the same base path
 npm run preview    # Vite preview server
 npm run deploy     # publish dist/ to the gh-pages branch (see Deployment)
@@ -107,8 +135,9 @@ npm run check       # typecheck + lint + tests in one go
 ```
 
 Tests cover plans, money and ledger calculations, queue reconciliation and recovery,
-legacy backup conversion, CSV escaping, mocked authentication/transactions and screen
-behavior. The mock tests are not a substitute for testing a real Firebase project.
+static offline-shell caching, single-tab coordination, legacy backup conversion, CSV
+escaping, mocked authentication/transactions and screen behavior. The mock tests are
+not a substitute for testing a real Firebase project.
 
 To exercise Firestore authorization locally, install Java and the Firebase CLI's
 Firestore emulator, then start it with this repository's `firebase.json` and rules:

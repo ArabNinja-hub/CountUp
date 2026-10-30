@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ToastProvider } from '../components/Toast';
 import { Shop } from '../types';
 
@@ -21,6 +21,17 @@ const fake = vi.hoisted(() => {
     resets: [] as string[],
     failAdminRead: false,
     failWrite: false,
+    failBatch: false,
+    transactionError: null as Error | null,
+    failMarker: null as string | null,
+    failNextVerification: false,
+    transactionAttempts: 0,
+    failDeletePath: null as string | null,
+    deleteGate: null as Promise<void> | null,
+    deleteGates: new Map<string, Promise<void>>(),
+    deleteCalls: [] as string[],
+    failAnonymousSignIn: false,
+    anonymousSignIns: 0,
   };
   return state;
 });
@@ -37,7 +48,15 @@ vi.mock('firebase/auth', () => ({
       fake.authListeners = fake.authListeners.filter((fn) => fn !== callback);
     };
   },
-  signInAnonymously: async () => ({ user: fake.auth.currentUser }),
+  signInAnonymously: async () => {
+    fake.anonymousSignIns++;
+    if (fake.failAnonymousSignIn) throw new Error('Anonymous sign-in failed');
+    if (!fake.auth.currentUser) {
+      fake.auth.currentUser = { uid: 'new-anonymous-owner', isAnonymous: true, email: null };
+      fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
+    }
+    return { user: fake.auth.currentUser };
+  },
   EmailAuthProvider: { credential: (email: string, password: string) => ({ email, password }) },
   linkWithCredential: async (
     user: { uid: string },
@@ -101,6 +120,7 @@ vi.mock('firebase/firestore', () => {
         result.docs = result.docs.filter((d) => d.data().ownerUid === fake.auth.currentUser?.uid);
       return result;
     },
+    getDocsFromServer: async (ref: { path: string }) => collectionSnapshot(ref.path),
     setDoc: async (
       ref: { path: string },
       data: Record<string, unknown>,
@@ -111,6 +131,11 @@ vi.mock('firebase/firestore', () => {
       emit();
     },
     deleteDoc: async (ref: { path: string }) => {
+      fake.deleteCalls.push(ref.path);
+      if (fake.deleteGate) await fake.deleteGate;
+      const pathGate = fake.deleteGates.get(ref.path);
+      if (pathGate) await pathGate;
+      if (fake.failDeletePath === ref.path) throw new Error('Delete interrupted');
       fake.docs.delete(ref.path);
       emit();
     },
@@ -130,21 +155,36 @@ vi.mock('firebase/firestore', () => {
         set: (ref: { path: string }, data: Record<string, unknown>, opts?: { merge: boolean }) =>
           writes.push({ path: ref.path, data, merge: Boolean(opts?.merge) }),
         commit: async () => {
+          if (fake.failBatch) throw new Error('Batch rejected');
           writes.forEach((w) => write(w.path, w.data, w.merge));
           emit();
         },
       };
     },
     runTransaction: async (_db: unknown, callback: (tx: unknown) => Promise<unknown>) => {
+      fake.transactionAttempts++;
+      if (fake.transactionError) throw fake.transactionError;
       const writes: { path: string; data: Record<string, unknown>; merge: boolean }[] = [];
       const tx = {
-        get: async (ref: { path: string }) => snapshot(ref.path),
+        get: async (ref: { path: string }) => {
+          if (fake.failMarker && ref.path.endsWith(`/sync_operations/${fake.failMarker}`))
+            throw Object.assign(new Error('Write permission denied'), {
+              code: 'permission-denied',
+            });
+          return snapshot(ref.path);
+        },
         set: (ref: { path: string }, data: Record<string, unknown>, opts?: { merge: boolean }) =>
           writes.push({ path: ref.path, data, merge: Boolean(opts?.merge) }),
       };
       const result = await callback(tx);
       writes.forEach((w) => write(w.path, w.data, w.merge));
       emit();
+      if (fake.failNextVerification && writes.some((entry) => entry.data.hasResolution === true)) {
+        fake.failNextVerification = false;
+        fake.transactionError = Object.assign(new Error('Network lost after commit'), {
+          code: 'unavailable',
+        });
+      }
       return result;
     },
   };
@@ -193,6 +233,17 @@ beforeEach(() => {
   fake.resets = [];
   fake.failAdminRead = false;
   fake.failWrite = false;
+  fake.failBatch = false;
+  fake.transactionError = null;
+  fake.failMarker = null;
+  fake.failNextVerification = false;
+  fake.transactionAttempts = 0;
+  fake.failDeletePath = null;
+  fake.deleteGate = null;
+  fake.deleteGates.clear();
+  fake.deleteCalls = [];
+  fake.failAnonymousSignIn = false;
+  fake.anonymousSignIns = 0;
   fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
   online(false);
   localStorage.setItem('countup_active_shop', JSON.stringify(shop));
@@ -369,6 +420,713 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(fake.docs.get(path)?.totalOwed).toBe(5);
     expect([...fake.docs.keys()].some((key) => key.includes('/credit_payments/'))).toBe(false);
     expect([...fake.docs.keys()].some((key) => key.includes('/expenses/'))).toBe(false);
+  });
+
+  it('corrects a verified mistaken payment, audits the original and rebases dependent entries', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const item = {
+      id: 'item_a',
+      shopId: shop.id,
+      name: 'Tea',
+      buyingPrice: 1,
+      sellingPrice: 2,
+      quantity: 5,
+      lowStockThreshold: 1,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const customerPath = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(customerPath, customer);
+    fake.docs.set(`shops/${shop.id}/items/${item.id}`, item);
+    await mount();
+    await waitFor(() => expect(current.items).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8, 'original note', 'cash');
+      await current.recordSale({
+        items: [{ itemId: item.id, name: item.name, quantity: 1, buyingPrice: 1, sellingPrice: 2 }],
+        itemsCount: 1,
+        totalAmount: 2,
+        totalCost: 1,
+        profit: 1,
+        paymentType: 'credit',
+        customerId: customer.id,
+      });
+      await current.recordCreditPayment(customer.id, 2, 'later payment', 'momo');
+      await current.addExpense('rent', 1);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!);
+    const firstId = queued[0].id;
+    const paymentPath = queued[0].writes[0].path;
+    fake.docs.set(customerPath, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.blockedSync).toEqual({ actionId: firstId, kind: 'payment' });
+    const review = await current.loadSyncReview(firstId);
+    expect(review).toMatchObject({ originalAmount: 8, serverBalance: 5, customerName: 'Mwamba' });
+    // Keep the later sale queued so its local projection can be inspected.
+    fake.failMarker = queued[1].id;
+    await act(async () => {
+      await current.resolveSyncReview(review, { kind: 'correct-payment', amount: 4 });
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(3));
+    expect(current.customers[0].totalOwed).toBe(1); // K5 - K4 + K2 - K2
+    expect(
+      current.creditPayments.find((entry) => entry.id === paymentPath.split('/').at(-1))?.amount
+    ).toBe(4);
+    expect(fake.docs.get(paymentPath)).toMatchObject({ amount: 4, note: 'original note' });
+    const marker = fake.docs.get(`shops/${shop.id}/sync_operations/${firstId}`);
+    expect(marker?.resolution).toMatchObject({
+      kind: 'correct-payment',
+      originalAmount: 8,
+      correctedAmount: 4,
+      originalPayment: { amount: 8, note: 'original note', paymentMethod: 'cash' },
+    });
+    const history = await current.loadSyncResolutionHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].originalPayment?.amount).toBe(8);
+    fake.failMarker = null;
+    await act(async () => {
+      await current.syncNow();
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(customerPath)?.totalOwed).toBe(1);
+    expect([...fake.docs.keys()].filter((path) => path.includes('/credit_payments/'))).toHaveLength(
+      2
+    );
+    expect([...fake.docs.keys()].filter((path) => path.includes('/expenses/'))).toHaveLength(1);
+  });
+
+  it('stops again for a dependent overpayment instead of discarding or changing it', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8);
+      await current.recordCreditPayment(customer.id, 2);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!);
+    fake.docs.set(path, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    const firstReview = await current.loadSyncReview(queued[0].id);
+    await act(async () => {
+      await current.resolveSyncReview(firstReview, { kind: 'correct-payment', amount: 4 });
+    });
+    await waitFor(() =>
+      expect(current.blockedSync).toEqual({ actionId: queued[1].id, kind: 'payment' })
+    );
+    expect(current.pendingSyncCount).toBe(1);
+    expect(fake.docs.get(path)?.totalOwed).toBe(1);
+    expect(fake.docs.has(queued[1].writes[0].path)).toBe(false);
+    expect(
+      JSON.parse(localStorage.getItem('countup_pending_queue')!)[0].writes[0].data.amount
+    ).toBe(2);
+    const secondReview = await current.loadSyncReview(queued[1].id);
+    expect(secondReview).toMatchObject({ originalAmount: 2, serverBalance: 1 });
+    await act(async () => {
+      await current.resolveSyncReview(secondReview, { kind: 'correct-payment', amount: 1 });
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(path)?.totalOwed).toBe(0);
+    expect(fake.docs.get(queued[1].writes[0].path)?.amount).toBe(1);
+    expect(await current.loadSyncResolutionHistory()).toHaveLength(2);
+  });
+
+  it('cancels a confirmed duplicate payment without recording it and keeps the original in history', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8, 'duplicate', 'momo');
+      await current.addExpense('rent', 1);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!);
+    fake.docs.set(path, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    const review = await current.loadSyncReview(queued[0].id);
+    await act(async () => {
+      await current.resolveSyncReview(review, { kind: 'cancel-payment' });
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(path)?.totalOwed).toBe(5);
+    expect(current.creditPayments).toHaveLength(0);
+    expect([...fake.docs.keys()].filter((key) => key.includes('/credit_payments/'))).toHaveLength(
+      0
+    );
+    expect(
+      fake.docs.get(`shops/${shop.id}/sync_operations/${queued[0].id}`)?.resolution
+    ).toMatchObject({
+      kind: 'cancel-payment',
+      originalAmount: 8,
+      originalPayment: { note: 'duplicate', paymentMethod: 'momo' },
+    });
+    expect([...fake.docs.keys()].some((key) => key.includes('/expenses/'))).toBe(true);
+  });
+
+  it('refuses a stale review and invalid amounts without changing any entry', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8);
+    });
+    const id = JSON.parse(localStorage.getItem('countup_pending_queue')!)[0].id;
+    fake.docs.set(path, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    const review = await current.loadSyncReview(id);
+    await expect(
+      current.resolveSyncReview(review, { kind: 'correct-payment', amount: 6 })
+    ).rejects.toThrow(/current balance/);
+    fake.docs.set(path, { ...customer, totalOwed: 4 });
+    await act(async () => {
+      await expect(
+        current.resolveSyncReview(review, { kind: 'correct-payment', amount: 3 })
+      ).rejects.toThrow(/balance changed/i);
+    });
+    expect(current.pendingSyncCount).toBe(1);
+    expect(fake.docs.has(`shops/${shop.id}/sync_operations/${id}`)).toBe(false);
+    expect([...fake.docs.keys()].some((key) => key.includes('/credit_payments/'))).toBe(false);
+    fake.auth.currentUser = { uid: 'wrong-owner', isAnonymous: true, email: null };
+    await expect(current.loadSyncReview(id)).rejects.toThrow(/original shop account/i);
+    expect(current.pendingSyncCount).toBe(1);
+  });
+
+  it('resumes a reviewed payment after cloud commit but before local acknowledgement', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8);
+      await current.addExpense('rent', 1);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!);
+    fake.docs.set(path, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    const review = await current.loadSyncReview(queued[0].id);
+    fake.failNextVerification = true;
+    await act(async () => {
+      await expect(
+        current.resolveSyncReview(review, { kind: 'correct-payment', amount: 4 })
+      ).rejects.toThrow(/saved in the cloud/i);
+    });
+    expect(current.pendingSyncCount).toBe(2);
+    expect(fake.docs.get(path)?.totalOwed).toBe(1);
+    expect(fake.docs.get(queued[0].writes[0].path)?.amount).toBe(4);
+    fake.transactionError = null;
+    await act(async () => {
+      await current.syncNow();
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(path)?.totalOwed).toBe(1);
+    expect([...fake.docs.keys()].filter((key) => key.includes('/credit_payments/'))).toHaveLength(
+      1
+    );
+    expect(current.creditPayments[0].amount).toBe(4);
+    expect([...fake.docs.keys()].filter((key) => key.includes('/expenses/'))).toHaveLength(1);
+  });
+
+  it('recovers a committed review after local storage fails and the browser restarts', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8);
+      await current.addExpense('rent', 1);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!);
+    const firstId = queued[0].id;
+    fake.docs.set(path, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    const review = await current.loadSyncReview(firstId);
+    const original = Storage.prototype.setItem;
+    const storage = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (key, value) {
+        if (
+          key === 'countup_pending_queue' &&
+          !JSON.parse(value).some((entry: { id: string }) => entry.id === firstId)
+        )
+          throw new Error('Storage full');
+        return original.call(this, key, value);
+      });
+    await act(async () => {
+      await expect(
+        current.resolveSyncReview(review, { kind: 'correct-payment', amount: 4 })
+      ).rejects.toThrow(/saved in the cloud/i);
+    });
+    expect(current.pendingSyncCount).toBe(2);
+    expect(fake.docs.get(path)?.totalOwed).toBe(1);
+    expect(fake.docs.get(`shops/${shop.id}/sync_operations/${firstId}`)?.hasResolution).toBe(true);
+    storage.mockRestore();
+    cleanup();
+    await mount();
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(path)?.totalOwed).toBe(1);
+    expect(current.customers[0].totalOwed).toBe(1);
+    expect(current.creditPayments[0].amount).toBe(4);
+    expect([...fake.docs.keys()].filter((key) => key.includes('/credit_payments/'))).toHaveLength(
+      1
+    );
+    expect([...fake.docs.keys()].filter((key) => key.includes('/expenses/'))).toHaveLength(1);
+  });
+
+  it('keeps a sale when its conflicting undo is cancelled, and rebases later stock changes', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const item = {
+      id: 'item_a',
+      shopId: shop.id,
+      name: 'Tea',
+      buyingPrice: 1,
+      sellingPrice: 5,
+      quantity: 8,
+      lowStockThreshold: 1,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const sale = {
+      id: 'sale_a',
+      shopId: shop.id,
+      items: [{ itemId: item.id, name: item.name, quantity: 2, buyingPrice: 1, sellingPrice: 5 }],
+      itemsCount: 2,
+      totalAmount: 10,
+      totalCost: 2,
+      profit: 8,
+      paymentType: 'credit',
+      customerId: customer.id,
+      customerName: customer.name,
+      createdAt: new Date().toISOString(),
+      receiptNumber: 'CU-001',
+    };
+    const customerPath = `shops/${shop.id}/customers/${customer.id}`;
+    const itemPath = `shops/${shop.id}/items/${item.id}`;
+    const salePath = `shops/${shop.id}/sales/${sale.id}`;
+    fake.docs.set(customerPath, customer);
+    fake.docs.set(itemPath, item);
+    fake.docs.set(salePath, sale);
+    await mount();
+    await waitFor(() => expect(current.sales).toHaveLength(1));
+    await act(async () => {
+      await current.voidSale(sale.id);
+      await current.recordSale({
+        items: [{ itemId: item.id, name: item.name, quantity: 1, buyingPrice: 1, sellingPrice: 5 }],
+        itemsCount: 1,
+        totalAmount: 5,
+        totalCost: 1,
+        profit: 4,
+        paymentType: 'cash',
+      });
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!);
+    fake.docs.set(customerPath, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.blockedSync).toEqual({ actionId: queued[0].id, kind: 'void' });
+    const review = await current.loadSyncReview(queued[0].id);
+    expect(review).toMatchObject({ receipt: 'CU-001', serverBalance: 5, originalAmount: 10 });
+    fake.failMarker = queued[1].id;
+    await act(async () => {
+      await current.resolveSyncReview(review, { kind: 'keep-sale' });
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(1));
+    expect(current.items[0].quantity).toBe(7); // Server's 8 minus the later sale, not the cancelled restore.
+    expect(current.customers[0].totalOwed).toBe(5);
+    expect(current.sales.map((entry) => entry.id)).toContain(sale.id);
+    expect(current.stockMovements.some((entry) => entry.type === 'void')).toBe(false);
+    expect(
+      fake.docs.get(`shops/${shop.id}/sync_operations/${queued[0].id}`)?.resolution
+    ).toMatchObject({
+      kind: 'keep-sale',
+      saleId: sale.id,
+      originalAmount: 10,
+      stockRestorations: [{ itemId: item.id, quantity: 2 }],
+    });
+    fake.failMarker = null;
+    await act(async () => {
+      await current.syncNow();
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(itemPath)?.quantity).toBe(7);
+    expect(fake.docs.get(customerPath)?.totalOwed).toBe(5);
+    expect(fake.docs.get(salePath)?.isDeleted).not.toBe(true);
+    expect([...fake.docs.keys()].filter((key) => key.includes('/sales/'))).toHaveLength(2);
+  });
+
+  it('can retry the original unchanged payment when the server balance has recovered', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.recordCreditPayment(customer.id, 8);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!)[0];
+    fake.docs.set(path, { ...customer, totalOwed: 5 });
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    fake.docs.set(path, { ...customer, totalOwed: 9 });
+    const review = await current.loadSyncReview(queued.id);
+    expect(review).toMatchObject({ canRetry: true, originalAmount: 8, serverBalance: 9 });
+    await expect(current.resolveSyncReview(review, { kind: 'cancel-payment' })).rejects.toThrow(
+      /out of date/i
+    );
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(fake.docs.get(path)?.totalOwed).toBe(1);
+    expect(fake.docs.get(queued.writes[0].path)?.amount).toBe(8);
+    expect(
+      fake.docs.get(`shops/${shop.id}/sync_operations/${queued.id}`)?.resolution
+    ).toBeUndefined();
+  });
+
+  it('does not undo a credit sale if its customer is missing locally', async () => {
+    const item = {
+      id: 'item_a',
+      shopId: shop.id,
+      name: 'Tea',
+      buyingPrice: 1,
+      sellingPrice: 5,
+      quantity: 8,
+      lowStockThreshold: 1,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const sale = {
+      id: 'sale_a',
+      shopId: shop.id,
+      items: [{ itemId: item.id, name: item.name, quantity: 2, buyingPrice: 1, sellingPrice: 5 }],
+      itemsCount: 2,
+      totalAmount: 10,
+      totalCost: 2,
+      profit: 8,
+      paymentType: 'credit',
+      customerId: 'missing',
+      createdAt: new Date().toISOString(),
+    };
+    fake.docs.set(`shops/${shop.id}/items/${item.id}`, item);
+    fake.docs.set(`shops/${shop.id}/sales/${sale.id}`, sale);
+    await mount();
+    await waitFor(() => expect(current.sales).toHaveLength(1));
+    await expect(current.voidSale(sale.id)).rejects.toThrow(/customer.*missing/i);
+    expect(current.pendingSyncCount).toBe(0);
+    expect(current.items[0].quantity).toBe(8);
+    expect(current.sales).toHaveLength(1);
+  });
+
+  it('does not restore stock or subtract credit twice when two devices undo the same sale', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Mwamba',
+      phone: '',
+      notes: '',
+      totalOwed: 20,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const item = {
+      id: 'item_a',
+      shopId: shop.id,
+      name: 'Tea',
+      buyingPrice: 1,
+      sellingPrice: 5,
+      quantity: 8,
+      lowStockThreshold: 1,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const sale = {
+      id: 'sale_a',
+      shopId: shop.id,
+      items: [{ itemId: item.id, name: item.name, quantity: 2, buyingPrice: 1, sellingPrice: 5 }],
+      itemsCount: 2,
+      totalAmount: 10,
+      totalCost: 2,
+      profit: 8,
+      paymentType: 'credit',
+      customerId: customer.id,
+      customerName: customer.name,
+      createdAt: new Date().toISOString(),
+    };
+    const customerPath = `shops/${shop.id}/customers/${customer.id}`;
+    const itemPath = `shops/${shop.id}/items/${item.id}`;
+    const salePath = `shops/${shop.id}/sales/${sale.id}`;
+    fake.docs.set(customerPath, customer);
+    fake.docs.set(itemPath, item);
+    fake.docs.set(salePath, sale);
+    await mount();
+    await waitFor(() => expect(current.sales).toHaveLength(1));
+    await act(async () => {
+      await current.voidSale(sale.id);
+    });
+    const queued = JSON.parse(localStorage.getItem('countup_pending_queue')!)[0];
+    // Another device completed its own undo before this phone reconnects.
+    fake.docs.set(customerPath, { ...customer, totalOwed: 10 });
+    fake.docs.set(itemPath, { ...item, quantity: 10 });
+    fake.docs.set(salePath, { ...sale, isDeleted: true });
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.pendingSyncCount).toBe(0);
+    expect(fake.docs.get(customerPath)?.totalOwed).toBe(10);
+    expect(fake.docs.get(itemPath)?.quantity).toBe(10);
+    expect(fake.docs.get(`shops/${shop.id}/sync_operations/${queued.id}`)).toMatchObject({
+      outcome: 'already-voided',
+      saleId: sale.id,
+    });
+    expect([...fake.docs.keys()].filter((key) => key.includes('/stock_movements/'))).toHaveLength(
+      0
+    );
+  });
+
+  it('does not overwrite newer stock with an old physical count; it records a recount notice', async () => {
+    const item = {
+      id: 'item_a',
+      shopId: shop.id,
+      name: 'Tea',
+      buyingPrice: 1,
+      sellingPrice: 2,
+      quantity: 10,
+      lowStockThreshold: 1,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/items/${item.id}`;
+    fake.docs.set(path, item);
+    await mount();
+    await waitFor(() => expect(current.items).toHaveLength(1));
+    await act(async () => {
+      await current.adjustStock(item.id, 'set', 12, 'Count before reconnecting');
+      await current.addExpense('rent', 1);
+    });
+    fake.docs.set(path, { ...item, quantity: 8 });
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.pendingSyncCount).toBe(0);
+    expect(fake.docs.get(path)?.quantity).toBe(8);
+    const conflict = [...fake.docs.entries()].find(([key]) =>
+      key.includes('/stock_conflicts/')
+    )?.[1];
+    expect(conflict).toMatchObject({
+      kind: 'recount',
+      observed: 10,
+      requested: 12,
+      available: 8,
+      resolved: false,
+    });
+    const movement = [...fake.docs.entries()].find(([key]) =>
+      key.includes('/stock_movements/')
+    )?.[1];
+    expect(movement).toMatchObject({
+      delta: 0,
+      requestedQuantity: 12,
+      recountNeeded: true,
+      previousQuantity: 8,
+      newQuantity: 8,
+    });
+    expect([...fake.docs.keys()].some((key) => key.includes('/expenses/'))).toBe(true);
+  });
+
+  it('does not replay an acknowledged metadata write over a newer server edit', async () => {
+    const customer = {
+      id: 'customer_a',
+      shopId: shop.id,
+      name: 'Before',
+      phone: '',
+      notes: '',
+      totalOwed: 0,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const path = `shops/${shop.id}/customers/${customer.id}`;
+    fake.docs.set(path, customer);
+    await mount();
+    await waitFor(() => expect(current.customers).toHaveLength(1));
+    await act(async () => {
+      await current.updateCustomer(customer.id, { name: 'First', phone: '', notes: '' });
+    });
+    const action = JSON.parse(localStorage.getItem('countup_pending_queue')!)[0];
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(fake.docs.get(path)?.name).toBe('First');
+    fake.docs.set(path, { ...fake.docs.get(path), name: 'Newer on another device' });
+    localStorage.setItem('countup_pending_queue', JSON.stringify([action]));
+    cleanup();
+    await mount();
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(fake.docs.get(path)?.name).toBe('Newer on another device');
+    expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('automatically retries transient server failures without waiting for an online event', async () => {
+    await mount();
+    await act(async () => {
+      await current.addExpense('rent', 2);
+    });
+    vi.useFakeTimers();
+    try {
+      online(true);
+      fake.transactionError = Object.assign(new Error('Unavailable'), { code: 'unavailable' });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await act(async () => {
+        await current.syncNow();
+      });
+      expect(current.pendingSyncCount).toBe(1);
+      expect(current.lastOfflineNotice).toMatch(/retry automatically/i);
+      fake.transactionError = null;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(current.pendingSyncCount).toBe(0);
+      expect([...fake.docs.keys()].some((key) => key.includes('/expenses/'))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not continuously retry a permission failure', async () => {
+    await mount();
+    await act(async () => {
+      await current.addExpense('rent', 2);
+    });
+    vi.useFakeTimers();
+    try {
+      online(true);
+      fake.transactionError = Object.assign(new Error('Permission denied'), {
+        code: 'permission-denied',
+      });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await act(async () => {
+        await current.syncNow();
+      });
+      const attempts = fake.transactionAttempts;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120000);
+      });
+      expect(fake.transactionAttempts).toBe(attempts);
+      expect(current.pendingSyncCount).toBe(1);
+      expect(current.lastOfflineNotice).toMatch(/permission denied/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('links the existing owner UID to email, signs in again, rejects wrong credentials and requests recovery', async () => {
@@ -568,6 +1326,437 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
     expect(current.shop?.ownerUid).toBe('owner-1');
     expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('authenticates and syncs an offline-created shop after reopening online', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    let itemId = '';
+    await act(async () => {
+      itemId = await current.addItem({
+        name: 'Sugar',
+        buyingPrice: 1,
+        sellingPrice: 2,
+        quantity: 4,
+        lowStockThreshold: 1,
+      });
+    });
+    await act(async () => {
+      await current.recordSale({
+        items: [{ itemId, name: 'Sugar', quantity: 1, buyingPrice: 1, sellingPrice: 2 }],
+        itemsCount: 1,
+        totalAmount: 2,
+        totalCost: 1,
+        profit: 1,
+        paymentType: 'cash',
+      });
+    });
+    expect(current.pendingSyncCount).toBe(3);
+    cleanup();
+    online(true);
+    fake.auth.currentUser = null;
+    await mount();
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.anonymousSignIns).toBe(1);
+    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('new-anonymous-owner');
+    expect(fake.docs.get(`shops/${shop.id}/items/${itemId}`)?.quantity).toBe(3);
+    await waitFor(() => expect(current.items[0].quantity).toBe(3));
+    expect(current.sales).toHaveLength(1);
+  });
+
+  it('keeps a temporary shop queued when anonymous sign-in fails, then retries safely', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    cleanup();
+    fake.failAnonymousSignIn = true;
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    online(true);
+    await mount();
+    await waitFor(() =>
+      expect(current.lastOfflineNotice).toMatch(/Could not create a cloud session/i)
+    );
+    expect(current.pendingSyncCount).toBe(1);
+    expect(current.shop?.ownerUid).toBe(shop.id);
+    fake.failAnonymousSignIn = false;
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.pendingSyncCount).toBe(0);
+    expect(current.shop?.ownerUid).toBe('new-anonymous-owner');
+  });
+
+  it('keeps an existing shop queue safe when its original Firebase account is missing', async () => {
+    fake.auth.currentUser = null;
+    online(true);
+    localStorage.setItem(
+      'countup_pending_queue',
+      JSON.stringify([
+        {
+          id: 'pending',
+          type: 'expense',
+          path: `shops/${shop.id}/expenses/expense-a`,
+          data: { id: 'expense-a', amount: 2 },
+          timestamp: 1,
+        },
+      ])
+    );
+    await mount();
+    await waitFor(() => expect(current.lastOfflineNotice).toMatch(/original shop account/i));
+    expect(fake.anonymousSignIns).toBe(0);
+    expect(current.pendingSyncCount).toBe(1);
+    expect(fake.docs.has(`shops/${shop.id}/expenses/expense-a`)).toBe(false);
+  });
+
+  it('does not sync an established shop with a different signed-in UID', async () => {
+    fake.auth.currentUser = { uid: 'other-owner', isAnonymous: true, email: null };
+    localStorage.setItem(
+      'countup_pending_queue',
+      JSON.stringify([
+        {
+          id: 'pending',
+          type: 'expense',
+          path: `shops/${shop.id}/expenses/expense-a`,
+          data: { id: 'expense-a', amount: 2 },
+          timestamp: 1,
+        },
+      ])
+    );
+    online(true);
+    await mount();
+    await waitFor(() => expect(current.lastOfflineNotice).toMatch(/different account/i));
+    expect(current.needsShopAccountRecovery).toBe(true);
+    expect(current.pendingSyncCount).toBe(1);
+    expect(fake.auth.currentUser?.uid).toBe('other-owner');
+    expect(fake.anonymousSignIns).toBe(0);
+    expect(fake.docs.has(`shops/${shop.id}/expenses/expense-a`)).toBe(false);
+  });
+
+  it('reconnects only the original linked owner without discarding pending entries', async () => {
+    fake.auth.currentUser = null;
+    fake.accounts.set('owner@example.com', { uid: 'owner-1', password: 'password123' });
+    fake.accounts.set('other@example.com', { uid: 'other-owner', password: 'password123' });
+    localStorage.setItem(
+      'countup_pending_queue',
+      JSON.stringify([
+        {
+          id: 'pending',
+          type: 'expense',
+          path: `shops/${shop.id}/expenses/expense-a`,
+          data: { id: 'expense-a', amount: 2 },
+          timestamp: 1,
+        },
+      ])
+    );
+    online(true);
+    await mount();
+    expect(current.needsShopAccountRecovery).toBe(true);
+    await act(async () => {
+      await expect(current.restoreShopAccount('other@example.com', 'password123')).rejects.toThrow(
+        /not linked to the original shop/i
+      );
+    });
+    expect(fake.auth.currentUser).toBeNull();
+    expect(current.pendingSyncCount).toBe(1);
+    expect(fake.docs.has(`shops/${shop.id}/expenses/expense-a`)).toBe(false);
+    await act(async () => {
+      await current.restoreShopAccount('owner@example.com', 'password123');
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(`shops/${shop.id}/expenses/expense-a`)).toMatchObject({ amount: 2 });
+    expect(current.needsShopAccountRecovery).toBe(false);
+  });
+
+  it('does not bind a temporary shop owner until its cloud creation succeeds', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    fake.failBatch = true;
+    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.shop?.ownerUid).toBe(shop.id);
+    expect(JSON.parse(localStorage.getItem('countup_active_shop') || '{}').ownerUid).toBe(shop.id);
+    expect(current.pendingSyncCount).toBe(1);
+    fake.failBatch = false;
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.shop?.ownerUid).toBe('owner-1');
+    expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('does not replay stale shop creation fields when the same creation was already accepted', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    const created = JSON.parse(localStorage.getItem('countup_pending_queue')!)[0].writes[0].data;
+    fake.docs.set(`shops/${created.id}`, {
+      ...created,
+      ownerUid: 'owner-1',
+      pin: '9999',
+      planStatus: 'active',
+    });
+    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.pendingSyncCount).toBe(0);
+    expect(fake.docs.get(`shops/${created.id}`)).toMatchObject({
+      ownerUid: 'owner-1',
+      pin: '9999',
+      planStatus: 'active',
+    });
+  });
+
+  it('defers listeners for a queued online creation until its parent exists', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    online(true);
+    fake.failWrite = true;
+    fake.failBatch = true;
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Queued online', '0977000000', '1234')).toBe(true);
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(1));
+    expect(fake.listeners.some((entry) => entry.path.startsWith(`shops/${shop.id}`))).toBe(false);
+    fake.failWrite = false;
+    fake.failBatch = false;
+    await act(async () => {
+      await current.syncNow();
+    });
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
+    await waitFor(() =>
+      expect(fake.listeners.some((entry) => entry.path === `shops/${shop.id}/items`)).toBe(true)
+    );
+  });
+
+  it('defers remote listeners until an offline shop create is acknowledged', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    await act(async () => {
+      fake.authListeners.forEach((listener) => listener(fake.auth.currentUser));
+    });
+    expect(fake.listeners.some((entry) => entry.path.startsWith(`shops/${shop.id}`))).toBe(false);
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    await waitFor(() =>
+      expect(fake.listeners.some((entry) => entry.path === `shops/${shop.id}/items`)).toBe(true)
+    );
+    expect(current.shop?.ownerUid).toBe('owner-1');
+    expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('keeps the reserved creation UID if a cloud acknowledgement and session are lost', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    fake.failBatch = true;
+    fake.auth.currentUser = { uid: 'original-owner', isAnonymous: true, email: null };
+    online(true);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(JSON.parse(localStorage.getItem('countup_pending_queue') || '[]')[0]).toMatchObject({
+      reservedOwnerUid: 'original-owner',
+    });
+    expect(current.shop?.ownerUid).toBe(shop.id);
+    cleanup();
+    fake.auth.currentUser = null;
+    await mount();
+    await waitFor(() => expect(current.lastOfflineNotice).toMatch(/original shop account/i));
+    expect(current.needsShopAccountRecovery).toBe(true);
+    expect(fake.anonymousSignIns).toBe(0);
+    expect(current.pendingSyncCount).toBe(1);
+    fake.failBatch = false;
+    fake.auth.currentUser = { uid: 'wrong-owner', isAnonymous: true, email: null };
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.lastOfflineNotice).toMatch(/different account/i);
+    expect(fake.docs.has(`shops/${shop.id}`)).toBe(false);
+    fake.auth.currentUser = { uid: 'original-owner', isAnonymous: true, email: null };
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('original-owner');
+    expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('does not send a shop create if its chosen UID cannot be saved locally', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    });
+    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    online(true);
+    const original = Storage.prototype.setItem;
+    const storage = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (key, value) {
+        if (key === 'countup_pending_queue' && value.includes('reservedOwnerUid')) {
+          throw new Error('Storage full');
+        }
+        return original.call(this, key, value);
+      });
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(fake.docs.has(`shops/${shop.id}`)).toBe(false);
+    expect(current.pendingSyncCount).toBe(1);
+    expect(current.lastOfflineNotice).toMatch(/Storage full/);
+    storage.mockRestore();
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
+    expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('warns when interrupted shop deletion has already removed some records', async () => {
+    fake.docs.set(`shops/${shop.id}/items/item-a`, { id: 'item-a', name: 'Sugar' });
+    fake.docs.set(`shops/${shop.id}/sales/sale-a`, { id: 'sale-a', totalAmount: 2 });
+    fake.failDeletePath = `shops/${shop.id}/sales/sale-a`;
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    online(true);
+    await mount();
+    await act(async () => {
+      expect(await current.deleteShopAccount()).toBe(false);
+    });
+    expect(fake.docs.has(`shops/${shop.id}/items/item-a`)).toBe(false);
+    expect(fake.docs.has(`shops/${shop.id}/sales/sale-a`)).toBe(true);
+    expect(fake.docs.has(`shops/${shop.id}`)).toBe(true);
+    expect(current.shop?.id).toBe(shop.id);
+    expect(screen.getByText(/Some records may already have been removed/i)).toBeTruthy();
+  });
+
+  it('waits for in-flight deletions to settle before reporting a partial failure', async () => {
+    const failedPath = `shops/${shop.id}/sales/sale-failed`;
+    const slowPath = `shops/${shop.id}/sales/sale-slow`;
+    fake.docs.set(failedPath, { id: 'sale-failed' });
+    fake.docs.set(slowPath, { id: 'sale-slow' });
+    fake.failDeletePath = failedPath;
+    let finish!: () => void;
+    fake.deleteGates.set(
+      slowPath,
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      })
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    online(true);
+    await mount();
+    let deletion!: Promise<boolean>;
+    act(() => {
+      deletion = current.deleteShopAccount();
+    });
+    await waitFor(() => expect(fake.deleteCalls).toContain(slowPath));
+    expect(current.isLoading).toBe(true);
+    expect(fake.docs.has(slowPath)).toBe(true);
+    await act(async () => {
+      finish();
+      expect(await deletion).toBe(false);
+    });
+    expect(current.isLoading).toBe(false);
+    expect(fake.docs.has(slowPath)).toBe(false);
+    expect(fake.docs.has(failedPath)).toBe(true);
+  });
+
+  it('unblocks the app if local cleanup fails after the cloud shop was removed', async () => {
+    online(true);
+    await mount();
+    const original = Storage.prototype.removeItem;
+    const storage = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (key) {
+      if (key === 'countup_sales') throw new Error('Local storage unavailable');
+      return original.call(this, key);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await act(async () => {
+      expect(await current.deleteShopAccount()).toBe(false);
+    });
+    expect(current.isLoading).toBe(false);
+    expect(fake.docs.has(`shops/${shop.id}`)).toBe(false);
+    expect(screen.getByText(/Some records may already have been removed/i)).toBeTruthy();
+    storage.mockRestore();
+  });
+
+  it('keeps the deletion dialog open and shows an interrupted partial deletion', async () => {
+    fake.docs.set(`shops/${shop.id}/items/item-a`, {
+      id: 'item-a',
+      name: 'Sugar',
+      quantity: 2,
+      lowStockThreshold: 1,
+      sellingPrice: 1,
+      buyingPrice: 1,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+      shopId: shop.id,
+    });
+    fake.docs.set(`shops/${shop.id}/sales/sale-a`, { id: 'sale-a', totalAmount: 2 });
+    fake.failDeletePath = `shops/${shop.id}/sales/sale-a`;
+    let finish!: () => void;
+    fake.deleteGate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    online(true);
+    render(<App />);
+    await screen.findByText('Welcome, CountUp Test');
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Shop & Data' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete shop & all data' });
+    fireEvent.change(within(dialog).getByLabelText(/Type CountUp Test to confirm/i), {
+      target: { value: 'CountUp Test' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete forever' }));
+    await screen.findByText(/Deleting shop and data/i);
+    await act(async () => finish());
+    await waitFor(() =>
+      expect(within(dialog).getByText(/Some records may already have been removed/i)).toBeTruthy()
+    );
+    expect(screen.queryByText(/Deleting shop and data/i)).toBeNull();
+    expect(fake.docs.has(`shops/${shop.id}/items/item-a`)).toBe(false);
+    expect(fake.docs.has(`shops/${shop.id}/sales/sale-a`)).toBe(true);
   });
 
   it('does not enter an offline shop when saving its queue fails', async () => {

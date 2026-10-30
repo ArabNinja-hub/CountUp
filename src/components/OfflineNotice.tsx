@@ -1,10 +1,19 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useShop } from '../context/ShopContext';
 import { WifiOff, RefreshCw, X } from 'lucide-react';
+import { SyncReviewDialog } from './SyncReviewDialog';
 
 export const OfflineNotice: React.FC = () => {
-  const { lastOfflineNotice, clearOfflineNotice, isOnline, pendingSyncCount, syncNow, isSyncing } =
-    useShop();
+  const {
+    lastOfflineNotice,
+    clearOfflineNotice,
+    isOnline,
+    pendingSyncCount,
+    syncNow,
+    isSyncing,
+    blockedSync,
+  } = useShop();
+  const [reviewing, setReviewing] = useState<string | null>(null);
 
   if (pendingSyncCount === 0 && (isOnline || !lastOfflineNotice)) return null;
 
@@ -40,7 +49,16 @@ export const OfflineNotice: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center space-x-1.5 shrink-0">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 shrink-0">
+          {isOnline && blockedSync && pendingSyncCount > 0 && (
+            <button
+              onClick={() => setReviewing(blockedSync.actionId)}
+              disabled={isSyncing}
+              className="text-[11px] font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 px-2.5 py-1 rounded-lg disabled:opacity-50"
+            >
+              Review
+            </button>
+          )}
           {isOnline && pendingSyncCount > 0 && (
             <button
               onClick={() => void syncNow()}
@@ -62,6 +80,7 @@ export const OfflineNotice: React.FC = () => {
           )}
         </div>
       </div>
+      {reviewing && <SyncReviewDialog actionId={reviewing} onClose={() => setReviewing(null)} />}
     </div>
   );
 };

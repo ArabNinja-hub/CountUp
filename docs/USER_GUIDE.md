@@ -40,8 +40,14 @@ Sales include credit given. Money received includes cash, Mobile Money and repay
 
 ## 6. Offline, sync and backups
 
-- Ordinary shop entries can be saved on the current device while offline. Reconnect and check the sync notice; a conflict can stop the queue and may require a stock recount or support.
-- Do not clear browser data or switch accounts while entries are waiting to sync. Link email before moving a phone-and-PIN-only shop to a new device.
+- Open the production app online once and let it finish loading. It can then reopen offline in the same browser, unless its cached files have been cleared or evicted. The app files are not a backup of your shop data.
+- Ordinary shop entries can be saved on the current device while offline. Reconnect and check the sync notice; CountUp retries temporary connection failures. Keep the original browser data until the waiting count is zero.
+- If a payment or sale undo conflicts with a newer customer balance, later entries wait too. Tap **Review** to compare the saved entry and current server balance. Check the receipts and payments on every device before choosing. Correct an amount only if it was entered wrongly, or cancel a payment only if it was never made or is a duplicate. For a conflicting undo, you may choose to keep the sale and cancel the undo; check physical stock afterwards. Each choice requires confirmation, and the remaining entries resume in order.
+- CountUp cannot yet record a genuine overpayment or refund. If the full payment was really received, or the sale still needs to be undone and refunded, leave the entry waiting; reconcile outside the app or seek support. Do not reduce a real payment just to clear the queue. **Settings → Data & backups → Sync review history** shows the original entry and confirmed decision for reviewed conflicts.
+- When another device's stock changes conflict with a sale, or an offline physical count was based on an older stock level, Stock shows **Stock recount needed**. A stale count is not applied. Count the goods again, use **Adjust stock → Set to physical count**, then mark the notice recounted.
+- Use only one CountUp tab on a device. Supported browsers make a second tab wait until the first closes; older browsers show a warning instead.
+- Do not clear browser data or switch accounts while entries are waiting to sync. Link email before moving a phone-and-PIN-only shop to a new device. Logging out clears the local shop cache, so phone-and-PIN sign-in needs a connection afterwards.
+- If a linked shop loses its cloud session while entries are waiting, reconnect the original email under **Settings → Account & cloud access**. The queue stays on this device; a different account cannot sync it. An unlinked anonymous Firebase identity cannot be recreated to recover an existing shop.
 - **Settings → Data & backups** exports JSON or CSV and can import supported legacy v1 backups. CountUp JSON exports do **not** yet have an in-app restore, and do not contain the pending sync queue. Keep the original device data until everything has synced.
 - Plan activation is handled through the contact options on the Plan screen; recording a Mobile Money sale does not pay for the subscription.
 

@@ -138,7 +138,7 @@ const MainAppContent: React.FC = () => {
     expenses,
   ]);
 
-  if (isLoading) {
+  if (isLoading && !shop) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="text-center">
@@ -209,50 +209,66 @@ const MainAppContent: React.FC = () => {
   }
 
   return withHelp(
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900 font-sans">
-      {/* Desktop sidebar + content shell */}
-      <div className="md:flex md:min-h-screen">
-        <Sidebar />
+    <>
+      <div
+        inert={isLoading}
+        className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900 font-sans"
+      >
+        {/* Desktop sidebar + content shell */}
+        <div className="md:flex md:min-h-screen">
+          <Sidebar />
 
-        <div className="flex-1 min-w-0 flex flex-col">
-          {/* Top Header */}
-          <Header onOpenHelp={openHelp} />
+          <div className="flex-1 min-w-0 flex flex-col">
+            {/* Top Header */}
+            <Header onOpenHelp={openHelp} />
 
-          {/* Offline sync notice toast */}
-          <OfflineNotice />
+            {/* Offline sync notice toast */}
+            <OfflineNotice />
 
-          {/* Active Tab Screen */}
-          <main className="flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-3 sm:py-5 pb-48 md:pb-8">
-            {activeTab === 'home' && (
-              <HomeScreen
-                onOpenHelp={openHelp}
-                onAddProduct={() => {
-                  setAddProductFromHome(true);
-                  setActiveTab('stock');
-                }}
-              />
-            )}
-            {activeTab === 'sell' && (
-              <SellScreen
-                onOpenPlan={() => setIsPlanOpen(true)}
-                onGoToStock={() => setActiveTab('stock')}
-              />
-            )}
-            {activeTab === 'stock' && (
-              <StockScreen
-                initialAdd={addProductFromHome}
-                onConsumedInitialAdd={() => setAddProductFromHome(false)}
-              />
-            )}
-            {activeTab === 'credit' && <CreditBookScreen />}
-            {activeTab === 'reports' && <ReportsScreen />}
-          </main>
+            {/* Active Tab Screen */}
+            <main className="flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-3 sm:py-5 pb-48 md:pb-8">
+              {activeTab === 'home' && (
+                <HomeScreen
+                  onOpenHelp={openHelp}
+                  onAddProduct={() => {
+                    setAddProductFromHome(true);
+                    setActiveTab('stock');
+                  }}
+                />
+              )}
+              {activeTab === 'sell' && (
+                <SellScreen
+                  onOpenPlan={() => setIsPlanOpen(true)}
+                  onGoToStock={() => setActiveTab('stock')}
+                />
+              )}
+              {activeTab === 'stock' && (
+                <StockScreen
+                  initialAdd={addProductFromHome}
+                  onConsumedInitialAdd={() => setAddProductFromHome(false)}
+                />
+              )}
+              {activeTab === 'credit' && <CreditBookScreen />}
+              {activeTab === 'reports' && <ReportsScreen />}
+            </main>
 
-          {/* Mobile-Only Bottom Navigation */}
-          <Navigation />
+            {/* Mobile-Only Bottom Navigation */}
+            <Navigation />
+          </div>
         </div>
       </div>
-    </div>
+      {isLoading && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/50 p-4 text-center"
+        >
+          <div className="rounded-2xl bg-white p-6 text-sm font-bold text-slate-900 shadow-xl">
+            Deleting shop and data… Please keep this page open.
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

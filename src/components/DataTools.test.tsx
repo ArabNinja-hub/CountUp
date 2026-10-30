@@ -36,6 +36,7 @@ const backup = {
   creditTransactions: [],
 };
 const importBackup = vi.fn();
+const loadHistory = vi.fn();
 
 function chooseFile(contents: string) {
   const file = new File([contents], 'backup.json', { type: 'application/json' });
@@ -55,6 +56,7 @@ beforeEach(() => {
     creditPayments: [],
     stockMovements: [],
     importLegacyBackup: importBackup,
+    loadSyncResolutionHistory: loadHistory,
     isOnline: true,
     pendingSyncCount: 0,
   } as unknown as ReturnType<typeof useShop>);
@@ -65,6 +67,29 @@ afterEach(() => {
 });
 
 describe('Unified data tools', () => {
+  it('loads the original payment and the owner-confirmed sync decision', async () => {
+    loadHistory.mockResolvedValueOnce([
+      {
+        actionId: 'q1',
+        kind: 'correct-payment',
+        customerName: 'Mwamba',
+        originalAmount: 8,
+        correctedAmount: 4,
+        serverBalanceBefore: 5,
+        queuedAt: now,
+        resolvedAt: now,
+        originalPayment: { amount: 8, paymentMethod: 'momo', note: 'Original note' },
+      },
+    ]);
+    render(<DataTools onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load sync review history' }));
+    expect(await screen.findByText(/Payment amount corrected/)).toBeTruthy();
+    expect(screen.getByText(/Original: K 8.00/).textContent).toContain('Recorded: K 4.00');
+    expect(screen.getByText(/Original payment: Mobile Money/).textContent).toContain(
+      'Original note'
+    );
+  });
+
   it('previews and imports supported legacy data without presenting a separate product', async () => {
     const raw = JSON.stringify(backup);
     importBackup.mockResolvedValueOnce(prepareLegacyBackupImport(raw, 'shop'));

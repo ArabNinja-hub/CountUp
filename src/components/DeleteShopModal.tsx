@@ -24,15 +24,17 @@ export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => 
     if (!matches || isDeleting) return;
     setIsDeleting(true);
     setError('');
-    const ok = await deleteShopAccount();
-    setIsDeleting(false);
-    if (!ok) {
+    try {
+      const ok = await deleteShopAccount();
+      if (!ok) throw new Error('Deletion did not complete');
+      onClose();
+    } catch {
       setError(
-        "We couldn't finish deleting your shop. Check your connection and try again — nothing has been removed yet."
+        'Deletion did not finish. Some records may already have been removed. Reconnect and try again to finish deleting the shop.'
       );
-      return;
+    } finally {
+      setIsDeleting(false);
     }
-    onClose();
   };
 
   return (

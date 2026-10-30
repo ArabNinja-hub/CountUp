@@ -84,6 +84,25 @@ afterEach(() => {
 });
 
 describe('Admin authorization and guide routing', () => {
+  it('keeps the shop mounted but inaccessible during deletion so a failure can be shown', () => {
+    const current = { ...state(), shop: { id: 'shop', name: 'My Shop' } } as ReturnType<
+      typeof useShop
+    >;
+    vi.mocked(useShop).mockReturnValue(current);
+    const view = render(<App />);
+    const header = screen.getByText('Help in shop');
+    vi.mocked(useShop).mockReturnValue({ ...current, isLoading: true });
+    view.rerender(<App />);
+    expect(screen.getByText(/Deleting shop and data/i)).toBeTruthy();
+    expect(screen.getByText('Help in shop')).toBe(header);
+    expect(header.closest('[inert]')).toBeTruthy();
+    vi.mocked(useShop).mockReturnValue(current);
+    view.rerender(<App />);
+    expect(screen.queryByText(/Deleting shop and data/i)).toBeNull();
+    expect(screen.getByText('Help in shop')).toBe(header);
+    expect(header.closest('[inert]')).toBeNull();
+  });
+
   it('does not open or arm the admin console from an event sent by a non-admin', () => {
     const ordinary = { ...state(), shop: { id: 'shop', name: 'My Shop' } } as ReturnType<
       typeof useShop

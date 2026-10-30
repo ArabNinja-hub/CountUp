@@ -117,6 +117,9 @@ export interface StockMovement {
   newQuantity: number;
   reason: string;
   relatedSaleId?: string;
+  /** An offline count could not safely replace newer stock; recount is required. */
+  requestedQuantity?: number;
+  recountNeeded?: boolean;
   isDemo?: boolean;
   createdAt: string;
 }
@@ -125,6 +128,10 @@ export interface StockConflict {
   id: string;
   itemId: string;
   itemName: string;
+  /** Absent on older records, which describe a shortfall. */
+  kind?: 'shortfall' | 'recount';
+  /** Stock shown when the offline count was entered. */
+  observed?: number;
   requested: number;
   available: number;
   shortfall: number;

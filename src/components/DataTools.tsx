@@ -4,6 +4,8 @@ import { useShop } from '../context/ShopContext';
 import { prepareLegacyBackupImport, LegacyBackupImport } from '../services/backupImport';
 import { downloadText, ExportKind, ledgerCsv } from '../services/export';
 import { useToast } from './Toast';
+import { SyncResolutionAudit } from '../services/syncReview';
+import { formatKwacha, formatWhen } from '../utils/format';
 
 export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const {
@@ -15,6 +17,7 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     creditPayments,
     stockMovements,
     importLegacyBackup,
+    loadSyncResolutionHistory,
     isOnline,
     pendingSyncCount,
   } = useShop();
@@ -23,6 +26,20 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [preview, setPreview] = useState<LegacyBackupImport | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState<SyncResolutionAudit[] | null>(null);
+  const [historyError, setHistoryError] = useState('');
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const loadHistory = async () => {
+    setLoadingHistory(true);
+    setHistoryError('');
+    try {
+      setHistory(await loadSyncResolutionHistory());
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : 'Could not load sync review history.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
   const chooseFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -135,6 +152,77 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               </button>
             ))}
           </div>
+        </section>
+        <section className="space-y-2 border-t border-slate-100 pt-4">
+          <h3 className="text-sm font-bold text-slate-900">Sync review history</h3>
+          <p className="text-xs text-slate-600">
+            See the original entries and decisions made when resolving payment or sale-undo sync
+            conflicts. This history is stored with your cloud shop.
+          </p>
+          <button
+            onClick={() => void loadHistory()}
+            disabled={!isOnline || loadingHistory}
+            className="min-h-[42px] w-full rounded-xl border border-slate-300 text-xs font-bold text-slate-800 disabled:opacity-50"
+          >
+            {loadingHistory
+              ? 'Loading…'
+              : history
+                ? 'Refresh sync review history'
+                : 'Load sync review history'}
+          </button>
+          {!isOnline && <p className="text-xs text-amber-800">Connect to load this history.</p>}
+          {historyError && (
+            <p role="alert" className="text-xs text-rose-700">
+              {historyError}
+            </p>
+          )}
+          {history?.length === 0 && (
+            <p className="text-xs text-slate-500">No sync reviews found.</p>
+          )}
+          {history && history.length > 0 && (
+            <ul className="max-h-72 overflow-y-auto divide-y divide-slate-200 rounded-xl border border-slate-200">
+              {history.map((entry) => (
+                <li key={entry.actionId} className="p-3 text-xs space-y-1 text-slate-700">
+                  <p className="font-bold text-slate-900">
+                    {entry.kind === 'correct-payment'
+                      ? 'Payment amount corrected'
+                      : entry.kind === 'cancel-payment'
+                        ? 'Queued payment cancelled'
+                        : 'Queued sale undo cancelled'}{' '}
+                    · {entry.customerName}
+                  </p>
+                  <p>
+                    Original: {formatKwacha(entry.originalAmount)}
+                    {entry.correctedAmount !== undefined &&
+                      ` · Recorded: ${formatKwacha(entry.correctedAmount)}`}{' '}
+                    · Server balance before review: {formatKwacha(entry.serverBalanceBefore)}
+                  </p>
+                  {entry.receipt && <p>Receipt: {entry.receipt}</p>}
+                  {entry.originalPayment && (
+                    <>
+                      <p>
+                        Original payment:{' '}
+                        {entry.originalPayment.paymentMethod === 'momo' ? 'Mobile Money' : 'Cash'}
+                        {entry.originalPayment.note && ` · ${entry.originalPayment.note}`}
+                      </p>
+                      <p>Payment reference: {entry.originalPayment.id}</p>
+                    </>
+                  )}
+                  {entry.stockRestorations?.length ? (
+                    <p>
+                      Cancelled stock restoration:{' '}
+                      {entry.stockRestorations
+                        .map((item) => `${item.itemName} × ${item.quantity}`)
+                        .join(', ')}
+                    </p>
+                  ) : null}
+                  <p className="text-slate-500">
+                    Saved {formatWhen(entry.queuedAt)} · Reviewed {formatWhen(entry.resolvedAt)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
         <section className="space-y-3 border-t border-slate-100 pt-4">
           <h3 className="text-sm font-bold text-slate-900">Import an earlier backup</h3>

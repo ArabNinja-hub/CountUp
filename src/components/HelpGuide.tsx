@@ -58,8 +58,13 @@ const topics = [
   {
     title: 'Offline and keeping your data',
     lines: [
-      'Entries can be saved on this phone while offline. Reconnect and check the sync notice; conflicts can stop the queue.',
+      'Open CountUp online once and let it finish loading. It can then reopen offline in the same browser unless its cached files are cleared.',
+      'Entries can be saved on this phone while offline. Reconnect and check the sync notice. Temporary connection failures retry automatically.',
+      'If a payment or sale undo conflicts, tap Review and check the records on every device. Correct or cancel an entry only if it was a mistake. The original and your decision are kept in Data & backups → Sync review history.',
+      'Real overpayments and refunds cannot yet be recorded. Leave the entry waiting and seek support; do not reduce a real payment just to clear sync. For a stock conflict, count the goods again and adjust stock.',
+      'Use only one CountUp tab on this device. Another tab may wait until you close the first.',
       'Do not clear browser data before entries sync. To open the shop on another device, first sync and link email in Settings → Account & cloud access.',
+      'If a linked shop loses its cloud session, reconnect its original email in Account & cloud access without discarding waiting entries.',
       'Settings → Data & backups can export data and import a legacy backup. CountUp JSON exports cannot yet be restored in the app.',
     ],
   },
