@@ -37,6 +37,7 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState('');
+  const [showItemOptions, setShowItemOptions] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<Item | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -76,6 +77,8 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
   // Open add modal
   const handleOpenAdd = () => {
     setEditingItem(null);
+    setFormError('');
+    setShowItemOptions(false);
     setFormData({
       name: '',
       unitLabel: '',
@@ -90,6 +93,8 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
   // Open edit modal
   const handleOpenEdit = (item: Item) => {
     setEditingItem(item);
+    setFormError('');
+    setShowItemOptions(false);
     setFormData({
       name: item.name,
       unitLabel: item.unitLabel || '',
@@ -135,6 +140,7 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
       threshold < 0 ||
       threshold > 1_000_000
     ) {
+      setShowItemOptions(true);
       setFormError('Enter a whole low-stock warning between 0 and 1,000,000.');
       return;
     }
@@ -244,61 +250,47 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
 
   return (
     <div className="w-full space-y-4">
-      {/* Top Metric Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {/* Retail Value */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Stock Retail Value
-          </span>
-          <p className="text-2xl font-black text-emerald-900 tracking-tight mt-1 tabular-nums">
-            K {totalStockValue.toLocaleString()}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+        <div>
+          <h2 className="text-lg font-extrabold text-slate-900">Stock</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {items.length} {items.length === 1 ? 'product' : 'products'}
+            {lowStockItems.length > 0 ? ` · ${lowStockItems.length} running low` : ''}
           </p>
-          <span className="text-xs text-slate-500 font-medium">Based on selling price</span>
         </div>
-
-        {/* Cost Value */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Total Inventory Cost
-          </span>
-          <p className="text-2xl font-black text-slate-800 tracking-tight mt-1 tabular-nums">
-            K {totalCostValue.toLocaleString()}
-          </p>
-          <span className="text-xs text-emerald-700 font-semibold">
-            {items.some((item) => item.buyingPriceKnown === false)
-              ? 'Some costs are not recorded'
-              : `Potential Profit: K ${(totalStockValue - totalCostValue).toLocaleString()}`}
-          </span>
-        </div>
-
-        {/* Total Products & Low Stock Alert */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              Inventory Status
-            </span>
-            <p className="text-2xl font-black text-slate-900 tracking-tight mt-1 tabular-nums">
-              {items.length} <span className="text-xs font-semibold text-slate-500">items</span>
-            </p>
-            <span
-              className={`text-xs font-bold ${lowStockItems.length > 0 ? 'text-amber-700' : 'text-emerald-700'}`}
-            >
-              {lowStockItems.length > 0
-                ? `${lowStockItems.length} items low or out of stock`
-                : 'All stock levels healthy'}
-            </span>
-          </div>
-
-          <button
-            onClick={handleOpenAdd}
-            className="min-h-[44px] bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white font-bold text-xs px-3.5 py-2.5 rounded-xl flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>{t.addItem}</span>
-          </button>
-        </div>
+        <button
+          onClick={handleOpenAdd}
+          className="flex min-h-[44px] items-center gap-1.5 rounded-xl bg-emerald-800 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-900"
+        >
+          <Plus className="w-4 h-4" />
+          <span>{t.addItem.replace(/^\+\s*/, '')}</span>
+        </button>
       </div>
+
+      <details className="rounded-2xl border border-slate-200 bg-white px-4 shadow-xs">
+        <summary className="min-h-[44px] cursor-pointer py-3 text-sm font-bold text-slate-700">
+          Stock value &amp; details
+        </summary>
+        <div className="grid gap-3 pb-4 sm:grid-cols-2">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-bold text-slate-600">Stock value at selling price</p>
+            <p className="mt-1 text-xl font-black tabular-nums text-emerald-900">
+              K {totalStockValue.toLocaleString()}
+            </p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-bold text-slate-600">Stock cost</p>
+            <p className="mt-1 text-xl font-black tabular-nums text-slate-900">
+              K {totalCostValue.toLocaleString()}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {items.some((item) => item.buyingPriceKnown === false)
+                ? 'Some costs are not recorded'
+                : `Potential profit: K ${(totalStockValue - totalCostValue).toLocaleString()}`}
+            </p>
+          </div>
+        </div>
+      </details>
 
       {/* Control Bar: Subtabs + Search */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
@@ -540,27 +532,30 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
                     <>
                       <button
                         onClick={() => setAdjustingItem(item)}
-                        className="p-2 text-slate-500 hover:text-emerald-800 hover:bg-slate-100 rounded-lg"
+                        className="flex min-h-[40px] items-center gap-1 rounded-lg px-2 text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-emerald-800"
                         title="Adjust stock"
                         aria-label={`Adjust stock for ${item.name}`}
                       >
                         <SlidersHorizontal className="w-4 h-4" />
+                        <span>Adjust</span>
                       </button>
                       <button
                         onClick={() => handleOpenEdit(item)}
-                        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg"
+                        className="flex min-h-[40px] items-center gap-1 rounded-lg px-2 text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                         title="Edit item"
                         aria-label={`Edit ${item.name}`}
                       >
                         <Edit2 className="w-4 h-4" />
+                        <span>Edit</span>
                       </button>
                       <button
                         onClick={() => setItemToDelete(item)}
-                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg"
+                        className="flex min-h-[40px] items-center gap-1 rounded-lg px-2 text-xs font-bold text-slate-500 hover:bg-rose-50 hover:text-rose-600"
                         title="Archive item"
                         aria-label={`Remove ${item.name}`}
                       >
                         <Trash2 className="w-4 h-4" />
+                        <span>Archive</span>
                       </button>
                     </>
                   )}
@@ -597,49 +592,37 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setIsAddModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
+                disabled={isSaving}
+                aria-label="Close product form"
+                className="h-10 w-10 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 disabled:opacity-50"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSave} className="space-y-3.5 mt-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {t.itemName} *
-                </label>
+            <form onSubmit={handleSave} className="mt-4 space-y-3.5">
+              <label className="block text-xs font-bold text-slate-700">
+                {t.itemName} *
                 <input
                   type="text"
                   required
                   autoFocus={!editingItem}
                   autoComplete="off"
-                  placeholder="e.g. Sugar 1kg, Cooking Oil 2L, Panado"
+                  placeholder="e.g. Sugar 1kg"
                   value={formData.name}
                   onChange={(e) => {
                     setFormData({ ...formData, name: e.target.value });
                     setFormError('');
                   }}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
-                />
-              </div>
-
-              <label className="block text-xs font-bold text-slate-700">
-                Unit or pack size (optional)
-                <input
-                  type="text"
-                  maxLength={40}
-                  value={formData.unitLabel}
-                  onChange={(e) => setFormData({ ...formData, unitLabel: e.target.value })}
-                  placeholder="e.g. 500ml, 2kg bag"
-                  className="mt-1 w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900"
+                  className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 px-3 text-base font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
                 />
               </label>
+
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {t.sellingPrice} *
-                  </label>
+                <label className="block text-xs font-bold text-slate-700">
+                  {t.sellingPrice} *
                   <input
                     type="text"
                     inputMode="decimal"
@@ -654,15 +637,14 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
                       });
                       setFormError('');
                     }}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono font-bold"
+                    className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 px-3 text-base font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
                   />
-                  <p className="text-[10px] text-slate-400 mt-0.5">What you sell it for</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {t.buyingPrice}
-                  </label>
+                  <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                    What you sell it for
+                  </span>
+                </label>
+                <label className="block text-xs font-bold text-slate-700">
+                  {t.buyingPrice}
                   <input
                     type="text"
                     inputMode="decimal"
@@ -672,13 +654,14 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
                     onChange={(e) =>
                       setFormData({ ...formData, buyingPrice: sanitizeMoneyInput(e.target.value) })
                     }
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
+                    className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 px-3 text-base font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
                   />
-                  <p className="text-[10px] text-slate-400 mt-0.5">What you paid for it</p>
-                </div>
+                  <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                    Optional; needed for profit
+                  </span>
+                </label>
               </div>
 
-              {/* Profit preview — tells the shopkeeper, in words, what each sale earns */}
               {previewMargin &&
                 (previewMargin.isLoss ? (
                   <div className="p-2 bg-amber-50 rounded-xl border border-amber-300 text-[11px] text-amber-900 flex items-start gap-1.5">
@@ -698,69 +681,90 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
                   </div>
                 ))}
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {t.inStock} ({t.qty}) *
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    required
-                    placeholder="e.g. 50"
-                    value={formData.quantity}
-                    onChange={(e) => {
-                      setFormData({ ...formData, quantity: sanitizeIntegerInput(e.target.value) });
-                      setFormError('');
-                    }}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono font-bold"
-                  />
-                  <p className="text-[10px] text-slate-400 mt-0.5">How many you have now</p>
-                </div>
+              <label className="block text-xs font-bold text-slate-700">
+                {t.inStock} ({t.qty}) *
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  required
+                  placeholder="e.g. 50"
+                  value={formData.quantity}
+                  onChange={(e) => {
+                    setFormData({ ...formData, quantity: sanitizeIntegerInput(e.target.value) });
+                    setFormError('');
+                  }}
+                  className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 px-3 text-base font-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
+                />
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                  How many you have now
+                </span>
+              </label>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {t.lowStockWarning}
+              <details
+                open={showItemOptions}
+                onToggle={(event) => setShowItemOptions(event.currentTarget.open)}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3"
+              >
+                <summary className="min-h-[44px] cursor-pointer py-3 text-xs font-bold text-slate-700">
+                  More options: pack size and low-stock alert
+                </summary>
+                <div className="space-y-3 pb-3">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Unit or pack size (optional)
+                    <input
+                      type="text"
+                      maxLength={40}
+                      value={formData.unitLabel}
+                      onChange={(e) => setFormData({ ...formData, unitLabel: e.target.value })}
+                      placeholder="e.g. 500ml, 2kg bag"
+                      className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-300 bg-white px-3 text-base font-normal text-slate-900"
+                    />
                   </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    placeholder="e.g. 5"
-                    value={formData.lowStockThreshold}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        lowStockThreshold: sanitizeIntegerInput(e.target.value),
-                      })
-                    }
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
-                  />
-                  <p className="text-[10px] text-slate-400 mt-0.5">Warn me at or below this</p>
+                  <label className="block text-xs font-bold text-slate-700">
+                    Low-stock alert
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={formData.lowStockThreshold}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          lowStockThreshold: sanitizeIntegerInput(e.target.value),
+                        })
+                      }
+                      className="mt-1 min-h-[44px] w-full rounded-xl border border-slate-300 bg-white px-3 text-base font-normal text-slate-900"
+                    />
+                    <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                      Warn me when stock is at or below this number.
+                    </span>
+                  </label>
                 </div>
-              </div>
+              </details>
 
               {formError && (
-                <p className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl p-2.5 flex items-start gap-1.5">
+                <p
+                  role="alert"
+                  className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl p-2.5 flex items-start gap-1.5"
+                >
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>{formError}</span>
                 </p>
               )}
-
-              <div className="pt-2 flex items-center space-x-2">
+              <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
                   disabled={isSaving}
-                  className="flex-1 min-h-[44px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition-colors disabled:opacity-50"
+                  className="min-h-[44px] flex-1 rounded-xl bg-slate-100 text-xs font-bold text-slate-700 hover:bg-slate-200 disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="flex-1 min-h-[44px] bg-emerald-800 hover:bg-emerald-900 text-white font-bold text-xs py-2.5 rounded-xl shadow-xs transition-colors disabled:opacity-50"
+                  className="min-h-[44px] flex-1 rounded-xl bg-emerald-800 text-xs font-bold text-white shadow-xs hover:bg-emerald-900 disabled:opacity-50"
                 >
                   {isSaving ? 'Saving…' : editingItem ? 'Save Changes' : t.addItem}
                 </button>

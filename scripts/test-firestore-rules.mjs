@@ -125,6 +125,8 @@ try {
   );
   await denied('other user lists all shops', getDocs(collection(other, 'shops')));
   await denied('owner changes plan', updateDoc(ownerShop, { planStatus: 'active' }));
+  await denied('owner changes deactivation status', updateDoc(ownerShop, { isDeactivated: true }));
+  await denied('other user changes plan', updateDoc(otherShop, { planStatus: 'active' }));
   await denied('owner changes ownership', updateDoc(ownerShop, { ownerUid: otherId }));
   await denied('owner changes PIN to an invalid value', updateDoc(ownerShop, { pin: 'abc' }));
   await allowed('owner changes PIN', updateDoc(ownerShop, { pin: '4321' }));
@@ -150,14 +152,35 @@ try {
       });
     })
   );
+  await allowed(
+    'non-admin can check their own admin entry',
+    getDoc(doc(other, 'admins', otherId)).then((snapshot) => assert.equal(snapshot.exists(), false))
+  );
+  await denied('user cannot read another admin entry', getDoc(doc(other, 'admins', adminId)));
+  await denied('user cannot list the admin registry', getDocs(collection(other, 'admins')));
   await denied(
     'user cannot grant their own admin access',
     setDoc(doc(other, 'admins', otherId), {})
   );
   await seedAdmin('PATCH');
   seededAdmin = true;
+  await allowed(
+    'platform admin can check their own admin entry',
+    getDoc(doc(admin, 'admins', adminId)).then((snapshot) => assert.equal(snapshot.exists(), true))
+  );
+  await denied('other user cannot read a real admin entry', getDoc(doc(other, 'admins', adminId)));
+  await allowed('platform admin lists shops', getDocs(collection(admin, 'shops')));
   await allowed('platform admin reads a shop', getDoc(adminShop));
   await allowed('platform admin changes its plan', updateDoc(adminShop, { planStatus: 'active' }));
+  await allowed(
+    'platform admin can deactivate a shop',
+    updateDoc(adminShop, { isDeactivated: true })
+  );
+  await denied('owner cannot reactivate a shop', updateDoc(ownerShop, { isDeactivated: false }));
+  await allowed(
+    'platform admin can reactivate a shop',
+    updateDoc(adminShop, { isDeactivated: false })
+  );
   await denied('other user deletes a shop', deleteDoc(otherShop));
   for (const name of subcollections) await deleteDoc(doc(owner, 'shops', shopId, name, 'example'));
   await deleteDoc(doc(owner, 'shops', shopId, 'sync_operations', 'transaction'));

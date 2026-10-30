@@ -1,312 +1,283 @@
 import React, { useState } from 'react';
 import { useShop } from '../context/ShopContext';
 import {
-  Store,
-  Phone,
-  KeyRound,
+  AlertCircle,
   ArrowRight,
-  Shield,
-  Lock,
-  FileText,
+  BookOpen,
   Eye,
   EyeOff,
+  KeyRound,
   Loader2,
-  AlertCircle,
+  Mail,
+  Phone,
+  ShieldCheck,
+  Store,
 } from 'lucide-react';
 import { Language } from '../types';
 import { normalizeZambianPhone, sanitizePhoneInput } from '../utils/format';
 import { BrandMark } from './BrandMark';
 import { LegalPages } from './LegalPages';
 import { EmailLoginPanel } from './AccountAccess';
+import { AdminLoginPanel } from './AdminLoginPanel';
 
-export const AuthScreen: React.FC = () => {
+interface AuthScreenProps {
+  onOpenHelp: () => void;
+  onAdminSignedIn: () => void;
+}
+
+export const AuthScreen: React.FC<AuthScreenProps> = ({ onOpenHelp, onAdminSignedIn }) => {
   const { loginWithPhoneAndPin, registerNewShop, isLoading, t, language, setLanguage } = useShop();
-
-  const [mode, setMode] = useState<'login' | 'register'>('register'); // Default to register for new users
+  const [mode, setMode] = useState<'login' | 'register'>('register');
   const [shopName, setShopName] = useState('');
   const [phone, setPhone] = useState('');
   const [pin, setPin] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [showLegal, setShowLegal] = useState<'privacy' | 'terms' | 'security' | null>(null);
-  const [showEmailLogin, setShowEmailLogin] = useState(false);
+  const [view, setView] = useState<'phone' | 'email' | 'admin'>('phone');
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setErrorMessage('');
-
     const cleanPhone = phone.trim();
     const cleanPin = pin.trim();
-
-    // Accept 0962 838 581, 260962838581 and everything in between; reject anything
-    // that is not a Zambian mobile number so a typo cannot create a second shop.
     const national = normalizeZambianPhone(cleanPhone);
     if (!/^0(9[5-7]|7[5-7])\d{7}$/.test(national)) {
-      setErrorMessage(
-        'Enter a Zambian mobile number — 10 digits starting 095, 096, 097, 076 or 077 (e.g. 0977 123 456).'
-      );
+      setErrorMessage('Enter a Zambian mobile number, for example 0977 123 456.');
       return;
     }
-
-    if (!cleanPin || cleanPin.length !== 4 || !/^\d{4}$/.test(cleanPin)) {
-      setErrorMessage('Your PIN must be exactly 4 numbers (e.g. 1234).');
+    if (!/^\d{4}$/.test(cleanPin)) {
+      setErrorMessage('Enter a PIN with exactly 4 numbers.');
       return;
     }
-
     if (mode === 'register') {
       if (!shopName.trim()) {
-        setErrorMessage('Please enter your shop or kiosk name');
+        setErrorMessage('Enter your shop name.');
         return;
       }
       const success = await registerNewShop(shopName, cleanPhone, cleanPin);
-      if (!success) {
-        setErrorMessage(
-          'Could not create this shop. That phone number may already be registered — log in instead, or check your connection and try again.'
-        );
-      }
+      if (!success)
+        setErrorMessage('Could not create this shop. Check your connection or try logging in.');
     } else {
       const success = await loginWithPhoneAndPin(cleanPhone, cleanPin);
-      if (!success) {
-        setErrorMessage(
-          'That phone number and PIN do not match a shop saved on this phone. Check the PIN, or create your shop if this is your first time.'
-        );
-      }
+      if (!success)
+        setErrorMessage('Phone number or PIN not found on this device. Check them and try again.');
     }
   };
 
-  if (showEmailLogin) return <EmailLoginPanel onBack={() => setShowEmailLogin(false)} />;
+  if (view === 'email') return <EmailLoginPanel onBack={() => setView('phone')} />;
+  if (view === 'admin')
+    return (
+      <AdminLoginPanel
+        onBack={() => setView('phone')}
+        onSignedIn={onAdminSignedIn}
+        onOpenHelp={onOpenHelp}
+      />
+    );
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 flex flex-col justify-between py-6 px-4 sm:px-6">
-      {/* Legal Modal Overlay */}
-      {showLegal && <LegalPages onClose={() => setShowLegal(null)} />}
-
-      <div className="max-w-md w-full mx-auto space-y-5">
-        {/* Top bar: language switch */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-1 bg-white border border-slate-200/90 rounded-xl p-1 shadow-xs">
+    <div className="min-h-screen bg-gradient-to-b from-emerald-50/70 via-slate-50 to-slate-100 px-4 py-4 sm:px-6 sm:py-6">
+      {showLegal && <LegalPages initialDoc={showLegal} onClose={() => setShowLegal(null)} />}
+      <div className="mx-auto w-full max-w-md">
+        <div className="flex items-center justify-between gap-3">
+          <div
+            role="group"
+            aria-label="Language"
+            className="flex items-center gap-0.5 rounded-xl border border-slate-200 bg-white p-1 shadow-xs"
+          >
             {(['en', 'bem', 'nya'] as Language[]).map((lang) => (
               <button
                 key={lang}
+                type="button"
                 onClick={() => setLanguage(lang)}
-                className={`min-h-[28px] px-2.5 py-1 rounded-lg text-xs font-bold uppercase transition-all ${
+                aria-pressed={language === lang}
+                className={`min-h-[32px] rounded-lg px-2.5 text-xs font-bold uppercase transition-colors ${
                   language === lang
-                    ? 'bg-emerald-900 text-white shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800'
+                    ? 'bg-emerald-900 text-white'
+                    : 'text-slate-500 hover:bg-slate-50'
                 }`}
               >
-                {lang.toUpperCase()}
+                {lang}
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            onClick={onOpenHelp}
+            className="flex min-h-[40px] items-center gap-1.5 rounded-xl px-3 text-sm font-bold text-emerald-800 hover:bg-emerald-100"
+          >
+            <BookOpen className="h-4 w-4" />
+            Help
+          </button>
         </div>
 
-        {/* Brand hero */}
-        <div className="flex flex-col items-center text-center pt-2">
-          <div className="h-14 flex items-center justify-center">
-            <BrandMark />
-          </div>
-          <p className="mt-2 text-[11px] text-slate-500 font-medium tracking-wide">
-            Zambian Kiosk Sales & Stock Book
-          </p>
-          <p className="mt-1 text-[10px] text-emerald-700 font-semibold uppercase tracking-wider">
-            Works Offline · Syncs Automatically · 30-Day Free Trial
-          </p>
+        <div className="pb-4 pt-4 text-center sm:pb-5 sm:pt-6">
+          <BrandMark />
+          <p className="mt-1.5 text-sm text-slate-600">Your shop, in one place.</p>
         </div>
 
-        {/* Main Card */}
-        <div className="bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-6 shadow-sm">
-          {/* Mode Indicator (simplified - no toggle tabs) */}
-          <div className="mb-4">
-            <h2 className="text-base font-bold text-slate-900">
-              {mode === 'login' ? 'Welcome Back' : 'Create Your Shop'}
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {mode === 'login'
-                ? 'Enter your phone and 4-digit PIN to continue'
-                : 'Get started in 30 seconds. Free 30-day trial included.'}
-            </p>
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <div
+            className="mb-4 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1"
+            role="group"
+            aria-label="Shop access"
+          >
+            {(
+              [
+                { value: 'register', label: 'New shop' },
+                { value: 'login', label: 'Log in' },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setMode(option.value);
+                  setErrorMessage('');
+                }}
+                aria-pressed={mode === option.value}
+                className={`min-h-[40px] rounded-lg text-sm font-bold transition-colors ${
+                  mode === option.value
+                    ? 'bg-white text-emerald-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
+
+          <h1 className="text-xl font-extrabold tracking-tight text-slate-950">
+            {mode === 'register' ? 'Create your shop' : 'Log in to your shop'}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">
+            {mode === 'register'
+              ? 'Start with a 30-day free trial.'
+              : 'Use your phone number and PIN.'}
+          </p>
 
           {errorMessage && (
-            <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl font-medium flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div
+              role="alert"
+              className="mt-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{errorMessage}</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-3">
+          <form onSubmit={handleSubmit} className="mt-4 space-y-3">
             {mode === 'register' && (
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {t.shopName} <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <Store className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+              <label className="block text-sm font-bold text-slate-700">
+                {t.shopName}
+                <span className="relative mt-1 block">
+                  <Store className="absolute left-3 top-3.5 h-4 w-4 text-slate-400" />
                   <input
                     type="text"
                     required
                     value={shopName}
-                    onChange={(e) => setShopName(e.target.value)}
-                    placeholder="e.g. Bwino Kiosk, Soweto Stall 4"
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white"
+                    onChange={(event) => setShopName(event.target.value)}
+                    placeholder="e.g. Bwino Kiosk"
                     autoComplete="organization"
+                    className="min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 py-2 pl-10 pr-3 text-base font-normal text-slate-900 outline-hidden focus:border-emerald-700 focus:ring-2 focus:ring-emerald-200"
                   />
-                </div>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                {t.phoneNumber} <span className="text-rose-500">*</span>
+                </span>
               </label>
-              <div className="relative">
-                <Phone className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+            )}
+            <label className="block text-sm font-bold text-slate-700">
+              {t.phoneNumber}
+              <span className="relative mt-1 block">
+                <Phone className="absolute left-3 top-3.5 h-4 w-4 text-slate-400" />
                 <input
                   type="tel"
                   required
                   value={phone}
-                  onChange={(e) => setPhone(sanitizePhoneInput(e.target.value))}
-                  placeholder="e.g. 0977 123 456"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono"
+                  onChange={(event) => setPhone(sanitizePhoneInput(event.target.value))}
+                  placeholder="0977 123 456"
                   autoComplete="tel"
                   inputMode="tel"
+                  className="min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 py-2 pl-10 pr-3 text-base font-normal text-slate-900 outline-hidden focus:border-emerald-700 focus:ring-2 focus:ring-emerald-200"
                 />
-              </div>
-            </div>
-
+              </span>
+            </label>
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                {t.pin} (4 numbers) <span className="text-rose-500">*</span>
+              <label htmlFor="shop-pin" className="block text-sm font-bold text-slate-700">
+                {t.pin}
               </label>
-              <div className="relative">
-                <KeyRound className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+              <div className="relative mt-1">
+                <KeyRound className="absolute left-3 top-3.5 h-4 w-4 text-slate-400" />
                 <input
+                  id="shop-pin"
                   type={showPin ? 'text' : 'password'}
                   inputMode="numeric"
                   maxLength={4}
                   required
                   value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
                   placeholder="••••"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-10 pr-12 py-2.5 text-base font-black tracking-widest text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:bg-white font-mono text-center"
                   autoComplete="off"
+                  className="min-h-[44px] w-full rounded-xl border border-slate-300 bg-slate-50 py-2 pl-10 pr-12 text-base tracking-widest text-slate-900 outline-hidden focus:border-emerald-700 focus:ring-2 focus:ring-emerald-200"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPin(!showPin)}
-                  className="absolute right-3.5 top-3 text-slate-400 hover:text-slate-600"
                   aria-label={showPin ? 'Hide PIN' : 'Show PIN'}
+                  className="absolute right-1 top-0 flex h-11 w-11 items-center justify-center text-slate-500 hover:text-slate-800"
                 >
-                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {showPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
             </div>
-
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full min-h-[48px] mt-2 bg-emerald-900 hover:bg-emerald-950 active:scale-[0.99] text-white py-3 px-4 rounded-xl font-bold text-sm flex items-center justify-center space-x-2 shadow-xs disabled:opacity-50 transition-all cursor-pointer"
+              className="mt-1 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-900 px-4 text-sm font-bold text-white transition-colors hover:bg-emerald-950 disabled:opacity-50"
             >
-              <span>
-                {isLoading
-                  ? 'Connecting...'
-                  : mode === 'login'
-                    ? 'Log In'
-                    : 'Create Shop & Start Trial'}
-              </span>
-              {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-              {!isLoading && <ArrowRight className="w-4 h-4" />}
+              {isLoading ? 'Connecting…' : mode === 'login' ? 'Log in' : 'Create shop'}
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ArrowRight className="h-4 w-4" />
+              )}
             </button>
           </form>
 
-          {/* Switch mode link */}
-          <p className="text-center text-xs text-slate-500 mt-4">
-            {mode === 'login' ? (
-              <>
-                Don&apos;t have a shop?{' '}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode('register');
-                    setErrorMessage('');
-                  }}
-                  className="text-emerald-700 font-bold underline hover:text-emerald-900"
-                >
-                  Create New Shop
-                </button>
-              </>
-            ) : (
-              <>
-                Already have a shop?{' '}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode('login');
-                    setErrorMessage('');
-                  }}
-                  className="text-emerald-700 font-bold underline hover:text-emerald-900"
-                >
-                  Log In
-                </button>
-              </>
-            )}
-          </p>
-
-          <button
-            type="button"
-            onClick={() => setShowEmailLogin(true)}
-            className="w-full min-h-[44px] mt-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-bold"
-          >
-            Sign in with email instead
-          </button>
-
-          {/* Trust badges */}
-          <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-center space-x-4 text-[10px] text-slate-400">
-            <span className="flex items-center space-x-1">
-              <Shield className="w-3 h-3" />
-              <span>Phone + PIN or email</span>
-            </span>
-            <span className="flex items-center space-x-1">
-              <Lock className="w-3 h-3" />
-              <span>Encrypted Sync</span>
-            </span>
-            <span className="flex items-center space-x-1">
-              <FileText className="w-3 h-3" />
-              <span>Data Export</span>
-            </span>
+          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3">
+            <button
+              type="button"
+              onClick={() => setView('email')}
+              className="flex min-h-[44px] items-center justify-center gap-1 whitespace-nowrap rounded-xl bg-slate-50 px-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 sm:text-xs"
+            >
+              <Mail className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+              Email sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setView('admin')}
+              className="flex min-h-[44px] items-center justify-center gap-1 whitespace-nowrap rounded-xl bg-slate-50 px-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-900 sm:text-xs"
+            >
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+              Admin sign in
+            </button>
           </div>
         </div>
-
-        {/* Legal Links Footer */}
-        <div className="max-w-md w-full mx-auto text-center space-y-2 text-[10px] text-slate-400">
-          <p>Countup Zambia · Works Offline & Syncs Automatically</p>
-          <div className="flex items-center justify-center space-x-3">
+        <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 pb-3 text-xs text-slate-500">
+          {(
+            [
+              { label: 'Privacy', doc: 'privacy' },
+              { label: 'Terms', doc: 'terms' },
+              { label: 'Security', doc: 'security' },
+            ] as const
+          ).map(({ label, doc }) => (
             <button
-              onClick={() => setShowLegal('privacy')}
-              className="hover:text-emerald-700 underline transition-colors"
+              key={doc}
+              type="button"
+              onClick={() => setShowLegal(doc)}
+              className="min-h-[32px] hover:text-emerald-800"
             >
-              Privacy Policy
+              {label}
             </button>
-            <span>·</span>
-            <button
-              onClick={() => setShowLegal('terms')}
-              className="hover:text-emerald-700 underline transition-colors"
-            >
-              Terms of Service
-            </button>
-            <span>·</span>
-            <button
-              onClick={() => setShowLegal('security')}
-              className="hover:text-emerald-700 underline transition-colors"
-            >
-              Security
-            </button>
-          </div>
-          <p className="text-[9px] text-slate-400">
-            By using Countup, you agree to our <span className="underline">Terms</span> and{' '}
-            <span className="underline">Privacy Policy</span>.
-          </p>
+          ))}
         </div>
       </div>
     </div>

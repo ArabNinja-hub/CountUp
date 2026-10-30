@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Trash2,
   KeyRound,
+  CircleHelp,
 } from 'lucide-react';
 import { Language } from '../types';
 import { DeleteShopModal } from './DeleteShopModal';
@@ -26,8 +27,7 @@ import { DataTools } from './DataTools';
 import { AccountAccess } from './AccountAccess';
 import icon from '/brand/icon.png';
 
-// Header takes no props; the plan and admin screens live in Settings now.
-export const Header: React.FC = () => {
+export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => {
   const {
     shop,
     t,
@@ -78,9 +78,9 @@ export const Header: React.FC = () => {
   return (
     <header className="sticky top-0 z-40 bg-gradient-to-r from-emerald-950 via-emerald-900 to-emerald-800 border-b border-emerald-800/80 text-white shadow-sm">
       {/* Main Bar */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3">
+      <div className="max-w-6xl mx-auto px-3 sm:px-6 py-2.5 flex items-center justify-between gap-2">
         {/* Left: Brand & Shop Info */}
-        <div className="flex items-center space-x-3 min-w-0">
+        <div className="flex items-center space-x-2 min-w-0">
           <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0 shadow-xs overflow-hidden backdrop-blur-sm">
             <img src={icon} alt="Countup" className="w-7 h-7 object-contain" />
           </div>
@@ -88,7 +88,7 @@ export const Header: React.FC = () => {
             <h1 className="font-bold text-sm sm:text-base text-white tracking-tight truncate">
               {shop?.name || 'Countup'}
             </h1>
-            <p className="text-[11px] text-emerald-200/90 truncate flex items-center space-x-1.5">
+            <p className="hidden sm:flex text-[11px] text-emerald-200/90 truncate items-center space-x-1.5">
               <span>{shop?.ownerPhone}</span>
               <span className="text-emerald-500">·</span>
               <span className="text-emerald-300 font-medium">ZMW (K)</span>
@@ -97,7 +97,7 @@ export const Header: React.FC = () => {
         </div>
 
         {/* Right: Actions (Sync status, Language, Settings Menu) */}
-        <div className="flex items-center space-x-2 shrink-0">
+        <div className="flex items-center space-x-1 sm:space-x-2 shrink-0">
           {/* Connectivity / Sync Button */}
           <button
             onClick={() => void syncNow()}
@@ -133,11 +133,12 @@ export const Header: React.FC = () => {
                 setShowLangMenu(!showLangMenu);
                 setShowSettingsMenu(false);
               }}
-              className="flex items-center space-x-1 bg-emerald-800/60 hover:bg-emerald-800 border border-emerald-700/60 px-2.5 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider text-white"
+              aria-label="Change language"
+              className="flex min-h-[36px] items-center gap-1 bg-emerald-800/60 hover:bg-emerald-800 border border-emerald-700/60 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider text-white"
             >
-              <Globe className="w-3.5 h-3.5 text-emerald-300" />
+              <Globe className="hidden sm:block w-3.5 h-3.5 text-emerald-300" />
               <span>{language.toUpperCase()}</span>
-              <ChevronDown className="w-3 h-3 text-emerald-300 opacity-70" />
+              <ChevronDown className="hidden sm:block w-3 h-3 text-emerald-300 opacity-70" />
             </button>
 
             {showLangMenu && (
@@ -170,6 +171,16 @@ export const Header: React.FC = () => {
             )}
           </div>
 
+          <button
+            type="button"
+            onClick={onOpenHelp}
+            aria-label="Open instruction guide"
+            title="Help guide"
+            className="h-9 w-9 rounded-lg hover:bg-emerald-700 flex items-center justify-center text-emerald-100 transition-colors"
+          >
+            <CircleHelp className="w-5 h-5" />
+          </button>
+
           {/* Settings Menu (replaces Shop Profile Menu) */}
           <div className="relative" ref={settingsMenuRef}>
             <button
@@ -177,7 +188,7 @@ export const Header: React.FC = () => {
                 setShowSettingsMenu(!showSettingsMenu);
                 setShowLangMenu(false);
               }}
-              className="w-8 h-8 rounded-lg bg-emerald-800 hover:bg-emerald-700 flex items-center justify-center border border-emerald-700/80 text-white transition-colors"
+              className="w-9 h-9 rounded-lg bg-emerald-800 hover:bg-emerald-700 flex items-center justify-center border border-emerald-700/80 text-white transition-colors"
               aria-label="Settings"
             >
               <Settings className="w-4 h-4" />
@@ -337,7 +348,8 @@ export const Header: React.FC = () => {
               <span className="flex items-center space-x-1 text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
                 <BookUser className="w-3 h-3" />
                 <span>
-                  {debtCustomerCount} customer{debtCustomerCount > 1 ? 's' : ''} owe you money
+                  {debtCustomerCount} {debtCustomerCount === 1 ? 'customer owes' : 'customers owe'}{' '}
+                  you money
                 </span>
               </span>
             )}

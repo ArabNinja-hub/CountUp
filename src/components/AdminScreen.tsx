@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useShop } from '../context/ShopContext';
-import { ShieldCheck, Search, CheckCircle, Ban, CalendarPlus, ArrowLeft } from 'lucide-react';
+import { ShieldCheck, Search, CheckCircle, Ban, CalendarPlus } from 'lucide-react';
 import { getSubscriptionInfo, SUBSCRIPTION_PLANS } from '../config/plans';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -8,9 +8,10 @@ import { Shop } from '../types';
 
 interface AdminScreenProps {
   onBack: () => void;
+  exitLabel?: string;
 }
 
-export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
+export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'Exit admin' }) => {
   const { allShops, shop, adminExtendShop, adminToggleDeactivate, user } = useShop();
   const { notify } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
@@ -117,31 +118,27 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
   return (
     <div className="w-full max-w-5xl mx-auto py-4 px-3 sm:px-6 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-200">
-        <div className="flex items-center space-x-2.5">
-          <button
-            onClick={onBack}
-            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-700 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
+      <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-200">
+        <div className="flex min-w-0 items-start">
+          <div className="min-w-0">
             <h2 className="text-lg font-black text-slate-900 flex items-center space-x-2">
-              <ShieldCheck className="w-5 h-5 text-emerald-800" />
-              <span>Platform Owner Administration</span>
+              <ShieldCheck className="w-5 h-5 text-emerald-800 shrink-0" />
+              <span>Admin console</span>
             </h2>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 break-all">
               Admin:{' '}
-              <strong className="text-slate-800 font-mono">{user?.uid || 'not signed in'}</strong>
+              <strong className="text-slate-800 font-mono">
+                {user?.email || user?.uid || 'not signed in'}
+              </strong>
             </p>
           </div>
         </div>
 
         <button
           onClick={onBack}
-          className="text-xs bg-slate-900 hover:bg-slate-950 text-white font-bold px-3 py-1.5 rounded-lg transition-colors"
+          className="min-h-[40px] shrink-0 text-xs bg-slate-900 hover:bg-slate-950 text-white font-bold px-3 py-1.5 rounded-lg transition-colors"
         >
-          Exit Admin
+          {exitLabel}
         </button>
       </div>
 
@@ -179,12 +176,12 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
         {/* Expiring Soon */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            Expiring &lt;5d / Grace
+            Plans ending soon
           </span>
           <p className="text-2xl font-black text-amber-700 mt-1 tabular-nums">
             {stats.expiringSoon}
           </p>
-          <span className="text-xs text-amber-700 font-semibold">Needs renewal</span>
+          <span className="text-xs text-amber-700 font-semibold">Under 5 days or in grace</span>
         </div>
       </div>
 
@@ -263,7 +260,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack }) => {
                 </div>
 
                 {/* Admin Actions */}
-                <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between space-x-2">
+                <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center space-x-2">
                     <button
                       disabled={isTargetUpdating}

@@ -420,7 +420,7 @@ _Recorded with Countup Zambia_`;
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setIsExpenseModalOpen(true)}
             className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100 transition-colors flex items-center space-x-1"
@@ -435,7 +435,7 @@ _Recorded with Countup Zambia_`;
             title="Share via WhatsApp"
           >
             <Share2 className="w-3.5 h-3.5 text-emerald-700" />
-            <span className="hidden sm:inline">{copiedShare ? 'Copied!' : 'Share'}</span>
+            <span>{copiedShare ? 'Copied!' : 'Share'}</span>
           </button>
 
           <button
@@ -444,107 +444,20 @@ _Recorded with Countup Zambia_`;
             title="Export CSV"
           >
             <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">CSV</span>
+            <span>CSV</span>
           </button>
         </div>
       </div>
 
-      {/* Business Health + Trend */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
-        {/* Health score card */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4 flex flex-col">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center space-x-1.5">
-              <Activity className="w-4 h-4 text-emerald-700" />
-              <h3 className="font-bold text-sm text-slate-900">Business Health</h3>
-            </div>
-            <span
-              className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${healthMeta.bg} ${healthMeta.text}`}
-            >
-              {healthMeta.label}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Score ring */}
-            <div className="relative shrink-0">
-              <svg viewBox="0 0 80 80" className="w-24 h-24 -rotate-90">
-                <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="8" />
-                <circle
-                  cx="40"
-                  cy="40"
-                  r="34"
-                  fill="none"
-                  stroke={healthMeta.ring}
-                  strokeWidth="8"
-                  strokeLinecap="round"
-                  strokeDasharray={2 * Math.PI * 34}
-                  strokeDashoffset={2 * Math.PI * 34 * (1 - health.overall / 100)}
-                />
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">
-                  {health.overall}
-                </span>
-                <span className="text-[10px] text-slate-400 font-semibold">/ 100</span>
-              </div>
-            </div>
-
-            {/* Breakdown bars */}
-            <div className="flex-1 space-y-2 min-w-0">
-              {healthBars.map((b) => (
-                <div key={b.key}>
-                  <div className="flex items-center justify-between text-[11px] mb-0.5">
-                    <span className="text-slate-600 font-medium truncate">{b.label}</span>
-                    <span className="text-slate-400 tabular-nums ml-2">{b.value}</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${
-                        b.value >= 70
-                          ? 'bg-emerald-500'
-                          : b.value >= 40
-                            ? 'bg-amber-500'
-                            : 'bg-rose-500'
-                      }`}
-                      style={{ width: `${b.value}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Trend chart card */}
-        <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4">
-          <div className="flex items-center justify-between mb-1">
-            <h3 className="font-bold text-sm text-slate-900 flex items-center space-x-1.5">
-              <TrendingUp className="w-4 h-4 text-emerald-700" />
-              <span>Sales &amp; Profit Trend</span>
-            </h3>
-            <div className="flex items-center space-x-3 text-[11px] text-slate-500">
-              <span className="flex items-center space-x-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" /> Sales
-              </span>
-              <span className="flex items-center space-x-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Profit
-              </span>
-            </div>
-          </div>
-          <TrendChart data={trendData} height={200} />
-        </div>
-      </div>
-
       {/* Primary 4-card Metric Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
         {/* Total Sales */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-400">
             <span className="text-[11px] font-bold uppercase tracking-wider">{t.totalSales}</span>
             <TrendingUp className="w-4 h-4 text-emerald-700" />
           </div>
-          <p className="text-2xl font-black text-slate-900 tracking-tight mt-1 tabular-nums">
+          <p className="break-words text-xl sm:text-2xl font-black text-slate-900 tracking-tight mt-1 tabular-nums">
             {formatKwacha(totalSalesAmount)}
           </p>
           <span className="text-xs text-slate-500 font-medium">
@@ -560,7 +473,7 @@ _Recorded with Countup Zambia_`;
             </span>
             <ArrowUpRight className="w-4 h-4 text-emerald-300" />
           </div>
-          <p className="text-2xl font-black text-white tracking-tight mt-1 tabular-nums">
+          <p className="break-words text-xl sm:text-2xl font-black text-white tracking-tight mt-1 tabular-nums">
             {filteredSales.length > 0 && ledger.missingCostRevenue === ledger.sales
               ? 'Not available'
               : formatKwacha(netProfit)}
@@ -579,7 +492,7 @@ _Recorded with Countup Zambia_`;
             <span className="text-[11px] font-bold uppercase tracking-wider">Cash received</span>
             <Banknote className="w-4 h-4 text-emerald-700" />
           </div>
-          <p className="text-2xl font-black text-emerald-900 tracking-tight mt-1 tabular-nums">
+          <p className="break-words text-xl sm:text-2xl font-black text-emerald-900 tracking-tight mt-1 tabular-nums">
             K{' '}
             {totalCashInHand.toLocaleString(undefined, {
               minimumFractionDigits: 2,
@@ -597,7 +510,7 @@ _Recorded with Countup Zambia_`;
             </span>
             <Smartphone className="w-4 h-4 text-sky-600" />
           </div>
-          <p className="text-2xl font-black text-sky-900 tracking-tight mt-1 tabular-nums">
+          <p className="break-words text-xl sm:text-2xl font-black text-sky-900 tracking-tight mt-1 tabular-nums">
             K{' '}
             {totalMomoInWallet.toLocaleString(undefined, {
               minimumFractionDigits: 2,
@@ -609,6 +522,97 @@ _Recorded with Countup Zambia_`;
           </span>
         </div>
       </div>
+
+      <details className="rounded-2xl border border-slate-200 bg-white px-4 shadow-xs">
+        <summary className="min-h-[44px] cursor-pointer py-3 text-sm font-bold text-slate-900">
+          More insights: business health and sales trend
+        </summary>
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+          {/* Health score card */}
+          <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4 flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center space-x-1.5">
+                <Activity className="w-4 h-4 text-emerald-700" />
+                <h3 className="font-bold text-sm text-slate-900">Business Health</h3>
+              </div>
+              <span
+                className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${healthMeta.bg} ${healthMeta.text}`}
+              >
+                {healthMeta.label}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-4">
+              {/* Score ring */}
+              <div className="relative shrink-0">
+                <svg viewBox="0 0 80 80" className="w-24 h-24 -rotate-90">
+                  <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="8" />
+                  <circle
+                    cx="40"
+                    cy="40"
+                    r="34"
+                    fill="none"
+                    stroke={healthMeta.ring}
+                    strokeWidth="8"
+                    strokeLinecap="round"
+                    strokeDasharray={2 * Math.PI * 34}
+                    strokeDashoffset={2 * Math.PI * 34 * (1 - health.overall / 100)}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-2xl font-black text-slate-900 tabular-nums leading-none">
+                    {health.overall}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-semibold">/ 100</span>
+                </div>
+              </div>
+
+              {/* Breakdown bars */}
+              <div className="flex-1 space-y-2 min-w-0">
+                {healthBars.map((b) => (
+                  <div key={b.key}>
+                    <div className="flex items-center justify-between text-[11px] mb-0.5">
+                      <span className="text-slate-600 font-medium truncate">{b.label}</span>
+                      <span className="text-slate-400 tabular-nums ml-2">{b.value}</span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          b.value >= 70
+                            ? 'bg-emerald-500'
+                            : b.value >= 40
+                              ? 'bg-amber-500'
+                              : 'bg-rose-500'
+                        }`}
+                        style={{ width: `${b.value}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Trend chart card */}
+          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-bold text-sm text-slate-900 flex items-center space-x-1.5">
+                <TrendingUp className="w-4 h-4 text-emerald-700" />
+                <span>Sales &amp; Profit Trend</span>
+              </h3>
+              <div className="flex items-center space-x-3 text-[11px] text-slate-500">
+                <span className="flex items-center space-x-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" /> Sales
+                </span>
+                <span className="flex items-center space-x-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Profit
+                </span>
+              </div>
+            </div>
+            <TrendChart data={trendData} height={200} />
+          </div>
+        </div>
+      </details>
 
       <details className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
         <summary className="cursor-pointer text-sm font-bold text-slate-900">

@@ -55,11 +55,21 @@ export const CreditBookScreen: React.FC = () => {
 
   // Selected customer for detailed ledger
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const customerDetailsRef = useRef<HTMLDivElement>(null);
+  const selectCustomer = (id: string) => {
+    setSelectedCustomerId(id);
+    if (window.innerWidth < 1024) {
+      window.requestAnimationFrame(() =>
+        customerDetailsRef.current?.scrollIntoView?.({ block: 'start' })
+      );
+    }
+  };
 
   // Total credit owed across all customers
   const totalMoneyOwed = useMemo(() => {
     return customers.reduce((sum, c) => sum + Math.max(0, c.totalOwed), 0);
   }, [customers]);
+  const owingCustomerCount = customers.filter((customer) => customer.totalOwed > 0).length;
 
   const sortedCustomers = useMemo(() => {
     let result = [...customers];
@@ -215,53 +225,27 @@ export const CreditBookScreen: React.FC = () => {
 
   return (
     <div className="w-full space-y-4">
-      {/* Overview Metric Banner */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-        <div className="bg-amber-50/70 border border-amber-200/90 rounded-2xl p-4 shadow-xs">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-amber-900">
-            {t.totalCreditOwed}
-          </span>
-          <p className="text-3xl font-black text-amber-950 tracking-tight mt-1 tabular-nums">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 shadow-xs">
+        <div>
+          <p className="text-xs font-bold text-amber-900">{t.totalCreditOwed}</p>
+          <p className="mt-1 text-2xl font-black tabular-nums tracking-tight text-amber-950">
             {formatKwacha(totalMoneyOwed)}
           </p>
-          <span className="text-xs text-amber-800 font-medium">
-            Outstanding from {customers.filter((c) => c.totalOwed > 0).length} customers
-          </span>
-        </div>
-
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Customer Ledger
-          </span>
-          <p className="text-3xl font-black text-slate-800 tracking-tight mt-1 tabular-nums">
-            {customers.length}
+          <p className="mt-1 text-xs text-amber-800">
+            {owingCustomerCount} {owingCustomerCount === 1 ? 'customer owes' : 'customers owe'} you
+            · {customers.filter((customer) => customer.totalOwed === 0).length} cleared
           </p>
-          <span className="text-xs text-slate-500 font-medium">
-            {customers.filter((c) => c.totalOwed === 0).length} accounts cleared
-          </span>
         </div>
-
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              Credit Management
-            </span>
-            <p className="text-sm font-bold text-slate-900 mt-1">WhatsApp Polite Reminders</p>
-            <span className="text-xs text-emerald-700 font-medium">
-              English, Bemba &amp; Nyanja ready
-            </span>
-          </div>
-          <button
-            onClick={() => {
-              setCustomerError('');
-              setIsAddCustomerOpen(true);
-            }}
-            className="min-h-[44px] bg-emerald-800 hover:bg-emerald-900 active:scale-95 text-white font-bold text-xs px-3.5 py-2.5 rounded-xl flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>{t.newCustomer}</span>
-          </button>
-        </div>
+        <button
+          onClick={() => {
+            setCustomerError('');
+            setIsAddCustomerOpen(true);
+          }}
+          className="flex min-h-[44px] items-center gap-1.5 rounded-xl bg-emerald-800 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-900"
+        >
+          <UserPlus className="h-4 w-4" />
+          <span>{t.newCustomer.replace(/^\+\s*/, '')}</span>
+        </button>
       </div>
 
       {/* Main Responsive Grid: Left customer list, Right detailed customer ledger statement */}
@@ -315,14 +299,18 @@ export const CreditBookScreen: React.FC = () => {
                 return (
                   <div
                     key={customer.id}
-                    onClick={() => setSelectedCustomerId(customer.id)}
-                    className={`p-3.5 transition-all cursor-pointer flex items-center justify-between ${
+                    className={`p-3.5 transition-all flex items-center justify-between ${
                       isSelected
                         ? 'bg-emerald-50/80 border-l-4 border-l-emerald-700'
                         : 'hover:bg-slate-50'
                     }`}
                   >
-                    <div className="min-w-0 flex-1 pr-3">
+                    <button
+                      type="button"
+                      onClick={() => selectCustomer(customer.id)}
+                      aria-pressed={isSelected}
+                      className="min-w-0 flex-1 pr-3 text-left"
+                    >
                       <div className="flex items-center space-x-2">
                         <span className="font-bold text-sm text-slate-900 truncate">
                           {customer.name}
@@ -343,7 +331,10 @@ export const CreditBookScreen: React.FC = () => {
                           <span>{customer.phone}</span>
                         </p>
                       )}
-                    </div>
+                      <span className="mt-1 block text-[11px] font-semibold text-emerald-700">
+                        View details
+                      </span>
+                    </button>
 
                     <div className="text-right shrink-0">
                       <span
@@ -361,8 +352,9 @@ export const CreditBookScreen: React.FC = () => {
                               e.stopPropagation();
                               handleOpenReminder(customer);
                             }}
-                            className="p-1 rounded text-emerald-700 hover:bg-emerald-100 transition-colors"
+                            className="flex h-10 w-10 items-center justify-center rounded text-emerald-700 hover:bg-emerald-100 transition-colors"
                             title="Send WhatsApp Reminder"
+                            aria-label={`Send ${customer.name} a WhatsApp reminder`}
                           >
                             <MessageSquare className="w-4 h-4" />
                           </button>
@@ -373,11 +365,13 @@ export const CreditBookScreen: React.FC = () => {
                             setPaymentModalCustomer(customer);
                             setPaymentAmount('');
                             setPaymentNote('');
+                            setPaymentMethod('cash');
                             setPaymentError('');
                           }}
-                          className="text-[11px] font-bold text-emerald-800 hover:text-emerald-950 px-2 py-0.5 rounded bg-emerald-100 hover:bg-emerald-200 transition-colors"
+                          aria-label={`Record payment from ${customer.name}`}
+                          className="min-h-[40px] text-[11px] font-bold text-emerald-800 hover:text-emerald-950 px-2 rounded bg-emerald-100 hover:bg-emerald-200 transition-colors"
                         >
-                          + Pay
+                          Record payment
                         </button>
                       </div>
                     </div>
@@ -389,7 +383,10 @@ export const CreditBookScreen: React.FC = () => {
         </div>
 
         {/* Right Column: Customer Detailed Ledger Statement */}
-        <div className="mt-4 lg:mt-0 lg:col-span-6 xl:col-span-7">
+        <div
+          ref={customerDetailsRef}
+          className="mt-4 scroll-mt-24 lg:mt-0 lg:col-span-6 xl:col-span-7"
+        >
           {activeCustomer ? (
             <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-4 sm:p-5 space-y-4">
               {/* Customer Header Info */}

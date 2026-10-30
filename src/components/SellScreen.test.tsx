@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useShop } from '../context/ShopContext';
 import { translations } from '../i18n/translations';
 import { Item, Sale, CreditPayment } from '../types';
@@ -66,6 +66,8 @@ describe('Sell screen', () => {
   it('lets a mobile user adjust a cart and collapse checkout to add more items', () => {
     render(<SellScreen onOpenPlan={vi.fn()} onGoToStock={vi.fn()} />);
     fireEvent.click(screen.getByText('Sugar'));
+    expect(document.getElementById('mobile-checkout')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Review sale' }));
     const checkout = document.getElementById('mobile-checkout')!;
     fireEvent.click(within(checkout).getByRole('button', { name: 'Increase Sugar quantity' }));
     expect(within(checkout).getByText('2')).toBeTruthy();
@@ -81,9 +83,46 @@ describe('Sell screen', () => {
     render(<SellScreen onOpenPlan={vi.fn()} onGoToStock={vi.fn()} />);
     const product = screen.getByRole('button', { name: 'Add Sugar to cart' });
     fireEvent.keyDown(product, { key: 'Enter' });
-    expect(document.getElementById('mobile-checkout')).not.toBeNull();
+    expect(document.getElementById('mobile-checkout')).toBeNull();
     fireEvent.keyDown(product, { key: ' ' });
+    fireEvent.click(screen.getByRole('button', { name: 'Review sale' }));
     expect(within(document.getElementById('mobile-checkout')!).getByText('2')).toBeTruthy();
+  });
+
+  it('saves a mobile money sale with optional details from the simplified checkout', async () => {
+    const recordSale = vi.fn().mockResolvedValue({ totalAmount: 5, receiptNumber: 'receipt-1' });
+    vi.mocked(useShop).mockReturnValue({
+      ...vi.mocked(useShop)(),
+      recordSale,
+    });
+    render(<SellScreen onOpenPlan={vi.fn()} onGoToStock={vi.fn()} />);
+    fireEvent.click(screen.getByText('Sugar'));
+    fireEvent.click(screen.getByRole('button', { name: 'Review sale' }));
+    const checkout = document.getElementById('mobile-checkout')!;
+    fireEvent.click(within(checkout).getByRole('button', { name: 'Increase Sugar quantity' }));
+    fireEvent.click(within(checkout).getByRole('button', { name: 'Mobile Money' }));
+    fireEvent.click(within(checkout).getByRole('button', { name: 'MTN MoMo' }));
+    fireEvent.click(within(checkout).getByText('More details (optional)'));
+    fireEvent.change(within(checkout).getByLabelText('Mobile Money reference'), {
+      target: { value: 'ref-123' },
+    });
+    fireEvent.change(within(checkout).getByLabelText('Sale note'), {
+      target: { value: 'Delivery' },
+    });
+    const save = within(checkout).getByRole('button', { name: /Save Sale/ });
+    fireEvent.click(save);
+    fireEvent.click(save);
+    await waitFor(() => expect(recordSale).toHaveBeenCalledTimes(1));
+    expect(recordSale).toHaveBeenCalledWith(
+      expect.objectContaining({
+        totalAmount: 5,
+        paymentType: 'momo',
+        momoOperator: 'mtn',
+        paymentReference: 'ref-123',
+        note: 'Delivery',
+      })
+    );
+    await waitFor(() => expect(screen.getByText('Sale Recorded!')).toBeTruthy());
   });
 
   it('includes repayments in the received-today summary and does not invent profit for unknown costs', () => {

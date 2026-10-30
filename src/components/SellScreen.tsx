@@ -50,7 +50,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [mobileCheckoutOpen, setMobileCheckoutOpen] = useState(true);
+  const [mobileCheckoutOpen, setMobileCheckoutOpen] = useState(false);
   const [paymentType, setPaymentType] = useState<PaymentType>('cash');
   const [momoOperator, setMomoOperator] = useState<'airtel' | 'mtn' | 'zamtel'>('airtel');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -284,7 +284,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
       // Reset cart immediately
       setCart([]);
-      setMobileCheckoutOpen(true);
+      setMobileCheckoutOpen(false);
       setNewCustName('');
       setNewCustPhone('');
       setIsAddingNewCustomer(false);
@@ -561,28 +561,35 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         </div>
       )}
 
-      {paymentType === 'momo' && (
-        <label className="block text-[11px] font-bold text-slate-600">
-          Mobile Money reference (optional)
-          <input
-            value={paymentReference}
-            maxLength={80}
-            onChange={(e) => setPaymentReference(e.target.value)}
-            className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs"
-            placeholder="Transaction reference"
-          />
-        </label>
-      )}
-      <label className="block text-[11px] font-bold text-slate-600">
-        Sale note (optional)
-        <input
-          value={saleNote}
-          maxLength={200}
-          onChange={(e) => setSaleNote(e.target.value)}
-          className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs"
-          placeholder="Add a note to this receipt"
-        />
-      </label>
+      <details className="rounded-xl border border-slate-200 bg-slate-50 px-3">
+        <summary className="min-h-[40px] cursor-pointer py-3 text-xs font-bold text-slate-600">
+          More details (optional)
+        </summary>
+        <div className="space-y-3 pb-3">
+          {paymentType === 'momo' && (
+            <label className="block text-[11px] font-bold text-slate-600">
+              Mobile Money reference
+              <input
+                value={paymentReference}
+                maxLength={80}
+                onChange={(e) => setPaymentReference(e.target.value)}
+                className="mt-1 min-h-[40px] w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
+                placeholder="Transaction reference"
+              />
+            </label>
+          )}
+          <label className="block text-[11px] font-bold text-slate-600">
+            Sale note
+            <input
+              value={saleNote}
+              maxLength={200}
+              onChange={(e) => setSaleNote(e.target.value)}
+              className="mt-1 min-h-[40px] w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
+              placeholder="Add a note to this receipt"
+            />
+          </label>
+        </div>
+      </details>
 
       {/* Save Sale Primary CTA */}
       <button
@@ -603,7 +610,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           ? 'Add an item to start a sale.'
           : paymentType === 'credit' && !selectedCustomerId && !newCustName.trim()
             ? 'Choose who is buying on credit above to save this sale.'
-            : 'Saves instantly — works offline, syncs when you have network.'}
+            : 'Offline entries stay on this device until they sync.'}
       </p>
     </div>
   );
@@ -657,49 +664,56 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         </div>
       )}
 
-      {/* Live "today" strip — updates the moment a sale is recorded */}
-      <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            Today
+      <details className="mb-4 rounded-2xl border border-slate-200 bg-white px-3 shadow-xs">
+        <summary className="flex min-h-[44px] cursor-pointer items-center justify-between gap-3 py-2 text-sm font-bold text-slate-700">
+          <span>Today’s summary</span>
+          <span className="text-xs font-semibold text-slate-500">
+            Sales: {formatKwacha(today.total)}
           </span>
-          <p className="text-sm font-black text-slate-900 tabular-nums leading-tight">
-            {formatKwacha(today.total)}
-          </p>
-          <span className="text-[10px] text-slate-500">
-            {today.count} {today.count === 1 ? 'sale' : 'sales'}
-          </span>
+        </summary>
+        <div className="grid grid-cols-2 gap-2 pb-3 sm:grid-cols-4">
+          <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Today
+            </span>
+            <p className="text-sm font-black text-slate-900 tabular-nums leading-tight">
+              {formatKwacha(today.total)}
+            </p>
+            <span className="text-[10px] text-slate-500">
+              {today.count} {today.count === 1 ? 'sale' : 'sales'}
+            </span>
+          </div>
+          <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Cash & MoMo
+            </span>
+            <p className="text-sm font-black text-emerald-800 tabular-nums leading-tight">
+              {formatKwacha(today.cash)}
+            </p>
+            <span className="text-[10px] text-slate-500">Received, including repayments</span>
+          </div>
+          <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              On credit
+            </span>
+            <p className="text-sm font-black text-amber-800 tabular-nums leading-tight">
+              {formatKwacha(today.credit)}
+            </p>
+            <span className="text-[10px] text-slate-500">New credit given</span>
+          </div>
+          <div className="bg-emerald-900 border border-emerald-800 rounded-xl px-3 py-2 shadow-xs">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+              Profit
+            </span>
+            <p className="text-sm font-black text-white tabular-nums leading-tight">
+              {formatKwacha(today.profit)}
+            </p>
+            <span className="text-[10px] text-emerald-200">
+              {today.missingCostRevenue > 0 ? 'Excludes unknown costs' : 'Today'}
+            </span>
+          </div>
         </div>
-        <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            Cash & MoMo
-          </span>
-          <p className="text-sm font-black text-emerald-800 tabular-nums leading-tight">
-            {formatKwacha(today.cash)}
-          </p>
-          <span className="text-[10px] text-slate-500">Received, including repayments</span>
-        </div>
-        <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            On credit
-          </span>
-          <p className="text-sm font-black text-amber-800 tabular-nums leading-tight">
-            {formatKwacha(today.credit)}
-          </p>
-          <span className="text-[10px] text-slate-500">New credit given</span>
-        </div>
-        <div className="bg-emerald-900 border border-emerald-800 rounded-xl px-3 py-2 shadow-xs">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
-            Profit
-          </span>
-          <p className="text-sm font-black text-white tabular-nums leading-tight">
-            {formatKwacha(today.profit)}
-          </p>
-          <span className="text-[10px] text-emerald-200">
-            {today.missingCostRevenue > 0 ? 'Excludes unknown costs' : 'Today'}
-          </span>
-        </div>
-      </div>
+      </details>
 
       {/* Responsive Grid: Left side catalog, Right side sticky receipt on desktop */}
       <div className="lg:grid lg:grid-cols-12 lg:gap-6 items-start">
@@ -739,7 +753,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center space-x-1.5 text-xs font-bold text-slate-600 uppercase tracking-wider">
               <Sparkles className="w-3.5 h-3.5 text-emerald-700" />
-              <span>{t.recentItems}</span>
+              <span>{t.pickItems}</span>
             </div>
             <span className="text-xs text-slate-400 font-medium">
               {sortedItems.length} {sortedItems.length === 1 ? 'item' : 'items'}
@@ -997,21 +1011,25 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         {cart.length > 0 && (
           <div className="fixed bottom-16 left-0 right-0 z-30 bg-white border-t border-slate-200 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] max-w-lg mx-auto rounded-t-2xl px-4 pt-3 pb-4 max-h-[72vh] overflow-y-auto overscroll-contain">
             <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-2" />
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center space-x-2">
-                <span className="bg-emerald-100 text-emerald-800 text-xs font-extrabold px-2 py-0.5 rounded-md">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="whitespace-nowrap bg-emerald-100 text-emerald-800 text-xs font-extrabold px-2 py-0.5 rounded-md">
                   {totalItemsCount} {totalItemsCount === 1 ? 'item' : 'items'}
                 </span>
-                <span className="text-xs font-extrabold text-slate-900 tabular-nums">
+                <span className="whitespace-nowrap text-xs font-extrabold text-slate-900 tabular-nums">
                   {formatKwacha(totalAmount)}
                 </span>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex shrink-0 items-center gap-1 sm:gap-3">
                 <button
                   onClick={() => setMobileCheckoutOpen(!mobileCheckoutOpen)}
                   aria-expanded={mobileCheckoutOpen}
                   aria-controls="mobile-checkout"
-                  className="min-h-[40px] text-xs font-bold text-emerald-800"
+                  className={`min-h-[44px] whitespace-nowrap rounded-xl px-3 text-xs font-bold ${
+                    mobileCheckoutOpen
+                      ? 'bg-emerald-50 text-emerald-800'
+                      : 'bg-emerald-800 text-white shadow-sm'
+                  }`}
                 >
                   {mobileCheckoutOpen ? 'Add items' : 'Review sale'}
                 </button>
@@ -1088,7 +1106,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           onCancel={() => setShowClearConfirm(false)}
           onConfirm={() => {
             setCart([]);
-            setMobileCheckoutOpen(true);
+            setMobileCheckoutOpen(false);
             setShowClearConfirm(false);
           }}
         />
