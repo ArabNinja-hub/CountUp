@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { cleanForFirestore, reconcile, replayQueuedWrites } from './sync';
+import {
+  cleanForFirestore,
+  reconcile,
+  replayQueuedWrites,
+  rebaseQueuedProjections,
+  isTransientSyncError,
+  PendingSyncAction,
+} from './sync';
 
 interface Doc {
   id: string;
@@ -140,4 +147,133 @@ describe('reconcile', () => {
       reconcile(remote, local, [{ path: `${payments}/p2` }], payments).map((d) => d.id)
     ).toEqual(['p1', 'p2']);
   });
+});
+
+describe('rebase after an explicitly reviewed sync conflict', () => {
+  it('recalculates only pending previews, never changes the original deltas or partial metadata patches', () => {
+    const customer = `${SHOP}/customers/a`;
+    const queue: PendingSyncAction[] = [
+      {
+        id: 'sale',
+        type: 'sale',
+        path: `${SALES}/s`,
+        data: { id: 's' },
+        timestamp: 1,
+        writes: [
+          { path: `${SALES}/s`, data: { id: 's', totalAmount: 2 } },
+          { path: customer, data: { id: 'a', totalOwed: 4 } },
+        ],
+        adjustments: [{ kind: 'credit', path: customer, deltaNgwee: 200, updatedAt: 'then' }],
+      },
+      {
+        id: 'payment',
+        type: 'payment',
+        path: `${SHOP}/credit_payments/p`,
+        data: { id: 'p', amount: 2 },
+        timestamp: 2,
+        writes: [
+          { path: `${SHOP}/credit_payments/p`, data: { id: 'p', amount: 2 } },
+          { path: customer, data: { id: 'a', totalOwed: 2 } },
+        ],
+        adjustments: [{ kind: 'credit', path: customer, deltaNgwee: -200, updatedAt: 'then' }],
+      },
+      {
+        id: 'edit',
+        type: 'customer',
+        path: customer,
+        data: { name: 'Renamed' },
+        timestamp: 3,
+        writes: [{ path: customer, data: { name: 'Renamed' } }],
+      },
+    ];
+    const before = JSON.stringify(queue);
+    const result = rebaseQueuedProjections(queue, [
+      { path: customer, data: { id: 'a', name: 'Server', totalOwed: 1 } },
+    ]);
+    expect(result.queue[0].writes?.[1].data).toMatchObject({ totalOwed: 3 });
+    expect(result.queue[1].writes?.[1].data).toMatchObject({ totalOwed: 1 });
+    expect(result.queue[1].writes?.[0].data).toEqual({ id: 'p', amount: 2 });
+    expect(result.queue[2].writes?.[0].data).toEqual({ name: 'Renamed' });
+    expect(result.documents.find((entry) => entry.path === customer)?.data).toMatchObject({
+      totalOwed: 1,
+      name: 'Renamed',
+    });
+    expect(JSON.stringify(queue)).toBe(before);
+    expect(result.queue[1].adjustments?.[0]).toMatchObject({ deltaNgwee: -200 });
+  });
+
+  it('keeps a later overpayment intact and previews a stale recount without overwriting stock', () => {
+    const customer = `${SHOP}/customers/a`;
+    const item = `${ITEMS}/a`;
+    const movement = `${SHOP}/stock_movements/m`;
+    const queue: PendingSyncAction[] = [
+      {
+        id: 'pay',
+        type: 'payment',
+        path: `${SHOP}/credit_payments/p`,
+        data: { id: 'p', amount: 3 },
+        timestamp: 1,
+        writes: [
+          { path: `${SHOP}/credit_payments/p`, data: { id: 'p', amount: 3 } },
+          { path: customer, data: { id: 'a', totalOwed: 0 } },
+        ],
+        adjustments: [{ kind: 'credit', path: customer, deltaNgwee: -300, updatedAt: 'then' }],
+      },
+      {
+        id: 'count',
+        type: 'stock_update',
+        path: item,
+        data: { id: 'a', quantity: 12 },
+        timestamp: 2,
+        writes: [
+          { path: item, data: { id: 'a', quantity: 12 } },
+          { path: movement, data: { id: 'm' } },
+        ],
+        adjustments: [
+          {
+            kind: 'stock',
+            path: item,
+            delta: 2,
+            setTo: 12,
+            updatedAt: 'then',
+            movement: {
+              path: movement,
+              data: {
+                id: 'm',
+                shopId: 'shop_0962838581',
+                itemId: 'a',
+                itemName: 'Tea',
+                type: 'adjustment',
+                delta: 2,
+                previousQuantity: 10,
+                newQuantity: 12,
+                reason: 'count',
+                createdAt: 'then',
+              },
+            },
+          },
+        ],
+      },
+    ];
+    const result = rebaseQueuedProjections(queue, [
+      { path: customer, data: { id: 'a', totalOwed: 1 } },
+      { path: item, data: { id: 'a', quantity: 8 } },
+    ]);
+    expect(result.documents.find((entry) => entry.path === customer)?.data?.totalOwed).toBe(0);
+    expect(result.queue[0].writes?.[0].data).toEqual({ id: 'p', amount: 3 });
+    expect(result.queue[0].adjustments?.[0]).toMatchObject({ deltaNgwee: -300 });
+    expect(result.documents.find((entry) => entry.path === item)?.data?.quantity).toBe(8);
+    expect(result.documents.find((entry) => entry.path === movement)?.data).toMatchObject({
+      recountNeeded: true,
+      requestedQuantity: 12,
+      delta: 0,
+    });
+  });
+});
+
+it('only identifies transient Firebase failures as automatic-retry candidates', () => {
+  expect(isTransientSyncError({ code: 'unavailable' })).toBe(true);
+  expect(isTransientSyncError({ code: 'auth/network-request-failed' })).toBe(true);
+  expect(isTransientSyncError({ code: 'permission-denied' })).toBe(false);
+  expect(isTransientSyncError(new Error('A financial conflict'))).toBe(false);
 });

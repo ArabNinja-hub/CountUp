@@ -56,6 +56,9 @@ jobs:
           set -euo pipefail
           test -f dist/index.html
           test -f dist/404.html
+          # Offline reopening requires the built static-shell worker.
+          test -f dist/sw.js
+          grep -q '"index.html"' dist/sw.js
           # Without this, Pages post-processes the build with Jekyll (~80s slower).
           test -f dist/.nojekyll
           # The base path must be baked into the emitted URLs, or Pages renders

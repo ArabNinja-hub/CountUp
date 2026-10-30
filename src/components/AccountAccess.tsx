@@ -25,8 +25,16 @@ function accountError(error: unknown): string {
 }
 
 export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { user, shop, linkEmailAccount, resetEmailPassword, pendingSyncCount, isOnline } =
-    useShop();
+  const {
+    user,
+    shop,
+    linkEmailAccount,
+    needsShopAccountRecovery,
+    restoreShopAccount,
+    resetEmailPassword,
+    pendingSyncCount,
+    isOnline,
+  } = useShop();
   const { notify } = useToast();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -37,17 +45,22 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (busy) return;
-    if (password !== confirm) {
+    if (!needsShopAccountRecovery && password !== confirm) {
       setError('The passwords do not match.');
       return;
     }
     setBusy(true);
     setError('');
     try {
-      await linkEmailAccount(email, password);
-      notify('Email access enabled', {
-        detail: 'Your existing shop and Firebase ownership were kept.',
-      });
+      if (needsShopAccountRecovery) {
+        await restoreShopAccount(email, password);
+        notify('Shop account reconnected', { detail: 'Pending entries can now sync.' });
+      } else {
+        await linkEmailAccount(email, password);
+        notify('Email access enabled', {
+          detail: 'Your existing shop and Firebase ownership were kept.',
+        });
+      }
       setPassword('');
       setConfirm('');
       onClose();
@@ -58,11 +71,15 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     }
   };
   const recover = async () => {
-    if (!user?.email) return;
+    const address = user?.email || (needsShopAccountRecovery ? email.trim() : '');
+    if (!address) {
+      setError('Enter your linked email address first.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await resetEmailPassword(user.email);
+      await resetEmailPassword(address);
       notify('Password reset email requested', { detail: 'Check your email inbox.' });
     } catch (err) {
       setError(accountError(err));
@@ -96,7 +113,63 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             <X className="w-4 h-4" />
           </button>
         </div>
-        {linked ? (
+        {needsShopAccountRecovery ? (
+          <div className="space-y-3">
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 p-3 rounded-xl">
+              This shop's original cloud session is missing. Keep this browser's data; unsynced
+              entries remain here. Sign in using the email already linked to this shop.
+            </p>
+            {user ? (
+              <p className="text-xs text-slate-700">
+                A different account is active on this device. Contact support before changing
+                accounts so no local entries or anonymous identity are lost.
+              </p>
+            ) : (
+              <form onSubmit={submit} className="space-y-3">
+                <label className="block text-xs font-bold text-slate-700">
+                  Linked email
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-300 p-3 text-sm"
+                  />
+                </label>
+                <label className="block text-xs font-bold text-slate-700">
+                  Password
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-300 p-3 text-sm"
+                  />
+                </label>
+                <button
+                  disabled={busy || !isOnline}
+                  className="w-full min-h-[44px] rounded-xl bg-emerald-800 text-white text-xs font-bold disabled:opacity-50"
+                >
+                  {busy ? 'Reconnecting…' : 'Reconnect shop account'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void recover()}
+                  disabled={busy || !isOnline}
+                  className="w-full min-h-[44px] text-xs font-bold text-emerald-800 disabled:opacity-50"
+                >
+                  Forgot password?
+                </button>
+              </form>
+            )}
+            <p className="text-xs text-slate-600">
+              If no email was linked, only the original Firebase session can open the cloud shop. Do
+              not clear browser data; contact support for help.
+            </p>
+          </div>
+        ) : linked ? (
           <div className="space-y-3">
             <p className="text-sm text-slate-700">
               Signed in as <strong>{user.email || 'a Firebase account'}</strong>.

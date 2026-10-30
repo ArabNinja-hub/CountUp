@@ -4,7 +4,8 @@ import { copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
-import { BASE_PATH } from './base-path';
+import { BASE_PATH } from './base-path.ts';
+import { writeOfflineWorker } from './scripts/offline-shell.ts';
 
 /**
  * GitHub Pages has no SPA rewrite: any path it cannot resolve falls back to
@@ -13,14 +14,17 @@ import { BASE_PATH } from './base-path';
  */
 function spaFallback(): Plugin {
   let outDir = '';
+  let workerTemplate = '';
   return {
-    name: 'countup:spa-fallback',
+    name: 'countup:app-shell',
     apply: 'build',
     configResolved(config) {
       outDir = path.resolve(config.root, config.build.outDir);
+      workerTemplate = path.resolve(config.root, 'src/offline-worker.js');
     },
     async closeBundle() {
       await copyFile(path.join(outDir, 'index.html'), path.join(outDir, '404.html'));
+      await writeOfflineWorker(outDir, workerTemplate);
     },
   };
 }

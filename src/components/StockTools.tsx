@@ -68,15 +68,24 @@ export const StockTools: React.FC<{
             Stock recount needed
           </h3>
           <p className="text-xs text-amber-900">
-            Sales were kept, but another device recorded stock changes at the same time. Count the
-            actual stock and use Adjust stock before marking the notice reviewed.
+            Stock changed on another device. Count the actual stock and use Adjust stock before
+            marking each notice reviewed. Sales were kept.
           </p>
           {openConflicts.map((conflict) => (
             <div key={conflict.id} className="flex flex-wrap items-center gap-2 text-xs">
               <span className="flex-1 min-w-[150px] font-semibold">
-                {conflict.itemName}: {conflict.shortfall}{' '}
-                {conflict.shortfall === 1 ? 'unit' : 'units'} short (requested {conflict.requested},
-                had {conflict.available})
+                {conflict.kind === 'recount' ? (
+                  <>
+                    {conflict.itemName}: the count of {conflict.requested} was not applied. Stock
+                    changed from {conflict.observed} to {conflict.available}; count it again.
+                  </>
+                ) : (
+                  <>
+                    {conflict.itemName}: {conflict.shortfall}{' '}
+                    {conflict.shortfall === 1 ? 'unit' : 'units'} short (requested{' '}
+                    {conflict.requested}, had {conflict.available})
+                  </>
+                )}
               </span>
               <button
                 onClick={() => void markRecounted(conflict.id)}
