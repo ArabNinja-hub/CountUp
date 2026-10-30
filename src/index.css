@@ -1,6 +1,15 @@
 @import 'tailwindcss';
 
 @layer base {
+  /* Keep focused controls clear of the mobile navigation and feedback toast. */
+  html {
+    scroll-padding-bottom: 11rem;
+  }
+  @media (min-width: 768px) {
+    html {
+      scroll-padding-bottom: 2rem;
+    }
+  }
   body {
     font-family:
       'Plus Jakarta Sans',

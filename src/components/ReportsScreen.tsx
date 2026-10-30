@@ -19,6 +19,13 @@ import { Expense, Sale } from '../types';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
 import { formatKwacha, formatKwachaCompact, formatWhen, isToday } from '../utils/format';
+import {
+  dailyLedger,
+  isInReportPeriod,
+  reportPeriodBounds,
+  summarizeLedger,
+} from '../utils/ledger';
+import { addKwacha } from '../utils/money';
 
 export const ReportsScreen: React.FC = () => {
   const {
@@ -44,29 +51,12 @@ export const ReportsScreen: React.FC = () => {
 
   // Filter window based on timeView
   const { filteredSales, filteredPayments, filteredExpenses } = useMemo(() => {
-    const now = new Date();
-    let startDate: Date;
-
-    if (timeView === 'day') {
-      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    } else if (timeView === 'week') {
-      // Start on Monday without mutating `now` (preserves the month view below)
-      const day = now.getDay(); // 0 = Sunday
-      const mondayOffset = day === 0 ? -6 : 1 - day;
-      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      monday.setDate(monday.getDate() + mondayOffset);
-      monday.setHours(0, 0, 0, 0);
-      startDate = monday;
-    } else {
-      // Month
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    }
-
-    const startTime = startDate.getTime();
-
-    const fSales = sales.filter((s) => new Date(s.createdAt).getTime() >= startTime);
-    const fPayments = creditPayments.filter((p) => new Date(p.createdAt).getTime() >= startTime);
-    const fExpenses = expenses.filter((e) => new Date(e.createdAt).getTime() >= startTime);
+    const bounds = reportPeriodBounds(timeView);
+    const fSales = sales.filter((s) => isInReportPeriod(s.createdAt, s.localDate, bounds));
+    const fPayments = creditPayments.filter((p) =>
+      isInReportPeriod(p.createdAt, p.localDate, bounds)
+    );
+    const fExpenses = expenses.filter((e) => isInReportPeriod(e.createdAt, undefined, bounds));
 
     return {
       filteredSales: fSales,
@@ -75,42 +65,23 @@ export const ReportsScreen: React.FC = () => {
     };
   }, [sales, creditPayments, expenses, timeView]);
 
-  // Calculations
-  const totalSalesAmount = useMemo(() => {
-    return filteredSales.reduce((sum, s) => sum + s.totalAmount, 0);
-  }, [filteredSales]);
-
-  const totalCost = useMemo(() => {
-    return filteredSales.reduce((sum, s) => sum + s.totalCost, 0);
-  }, [filteredSales]);
-
-  const grossProfit = totalSalesAmount - totalCost;
-
-  const totalExpensesAmount = useMemo(() => {
-    return filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
-  }, [filteredExpenses]);
-
-  // Net Profit = Gross Profit - Expenses
-  const netProfit = grossProfit - totalExpensesAmount;
-
-  // Cash Received = Cash Sales + Credit Payments received
-  const cashSales = filteredSales
-    .filter((s) => s.paymentType === 'cash')
-    .reduce((sum, s) => sum + s.totalAmount, 0);
-
-  // Mobile Money (MoMo) Received
-  const momoSales = filteredSales
-    .filter((s) => s.paymentType === 'momo')
-    .reduce((sum, s) => sum + s.totalAmount, 0);
-
-  const paymentsReceived = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
-  const totalCashInHand = cashSales + paymentsReceived;
-  const totalMomoInWallet = momoSales;
-
-  // Credit Given Out in period
-  const creditSalesGiven = filteredSales
-    .filter((s) => s.paymentType === 'credit')
-    .reduce((sum, s) => sum + s.totalAmount, 0);
+  // ShopBook's accounting rules: credit sales are not money received and
+  // repayments are not another sale. Older CountUp payments default to cash.
+  const ledger = useMemo(
+    () => summarizeLedger(filteredSales, filteredPayments, []),
+    [filteredSales, filteredPayments]
+  );
+  const totalSalesAmount = ledger.sales;
+  const grossProfit = ledger.profit;
+  const totalExpensesAmount = addKwacha(...filteredExpenses.map((expense) => expense.amount));
+  const netProfit = addKwacha(grossProfit, -totalExpensesAmount);
+  const totalCashInHand = ledger.cashReceived;
+  const totalMomoInWallet = ledger.momoReceived;
+  const creditSalesGiven = ledger.creditSales;
+  const dailyRows = useMemo(
+    () => dailyLedger(filteredSales, filteredPayments),
+    [filteredSales, filteredPayments]
+  );
 
   // ---- Business Health score -------------------------------------------------
   const health = useMemo(() => {
@@ -118,9 +89,10 @@ export const ReportsScreen: React.FC = () => {
     const target = timeView === 'day' ? 10 : timeView === 'week' ? 60 : 250;
     const salesScore = count === 0 ? 0 : Math.min(100, Math.round((count / target) * 100));
 
-    const margin = totalSalesAmount > 0 ? grossProfit / totalSalesAmount : 0;
+    const knownCostRevenue = addKwacha(totalSalesAmount, -ledger.missingCostRevenue);
+    const margin = knownCostRevenue > 0 ? grossProfit / knownCostRevenue : 0;
     const profitScore =
-      totalSalesAmount === 0 ? 0 : Math.max(0, Math.min(100, Math.round((margin / 0.35) * 100)));
+      knownCostRevenue === 0 ? 0 : Math.max(0, Math.min(100, Math.round((margin / 0.35) * 100)));
 
     const creditRatio = totalSalesAmount > 0 ? creditSalesGiven / totalSalesAmount : 0;
     const cashScore =
@@ -143,8 +115,17 @@ export const ReportsScreen: React.FC = () => {
       stockScore,
       overall,
       marginPct: Math.round(margin * 100),
+      hasKnownCost: knownCostRevenue > 0,
     };
-  }, [filteredSales, timeView, totalSalesAmount, grossProfit, creditSalesGiven, items]);
+  }, [
+    filteredSales,
+    timeView,
+    totalSalesAmount,
+    grossProfit,
+    creditSalesGiven,
+    items,
+    ledger.missingCostRevenue,
+  ]);
 
   // ---- Trend series (sales & profit over the selected window) ----------------
   const trendData: TrendPoint[] = useMemo(() => {
@@ -162,18 +143,11 @@ export const ReportsScreen: React.FC = () => {
     }
 
     if (timeView === 'week') {
-      const day = now.getDay();
-      const mondayOffset = day === 0 ? -6 : 1 - day;
-      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      monday.setDate(monday.getDate() + mondayOffset);
-      const base = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate()).getTime();
       const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
       const arr = labels.map((label) => ({ label, sales: 0, profit: 0 }));
       filteredSales.forEach((s) => {
-        const d = new Date(s.createdAt);
-        const idx = Math.floor(
-          (new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - base) / 86400000
-        );
+        const d = new Date(s.localDate ? `${s.localDate}T12:00:00` : s.createdAt);
+        const idx = (d.getDay() + 6) % 7;
         if (idx >= 0 && idx < 7) {
           arr[idx].sales += s.totalAmount;
           arr[idx].profit += s.profit;
@@ -192,7 +166,7 @@ export const ReportsScreen: React.FC = () => {
       profit: 0,
     }));
     filteredSales.forEach((s) => {
-      const d = new Date(s.createdAt);
+      const d = new Date(s.localDate ? `${s.localDate}T12:00:00` : s.createdAt);
       if (d.getMonth() === month && d.getFullYear() === year) {
         arr[d.getDate() - 1].sales += s.totalAmount;
         arr[d.getDate() - 1].profit += s.profit;
@@ -232,8 +206,16 @@ export const ReportsScreen: React.FC = () => {
 
   const healthBars = [
     { key: 'sales', label: 'Sales Activity', value: health.salesScore },
-    { key: 'profit', label: `Profit Margin (${health.marginPct}%)`, value: health.profitScore },
-    { key: 'cash', label: 'Cash Collection', value: health.cashScore },
+    {
+      key: 'profit',
+      label: health.hasKnownCost
+        ? `Profit Margin (${health.marginPct}%${ledger.missingCostRevenue > 0 ? ', known costs' : ''})`
+        : totalSalesAmount > 0
+          ? 'Profit Margin (costs needed)'
+          : 'Profit Margin',
+      value: health.profitScore,
+    },
+    { key: 'cash', label: 'Sales Paid Immediately', value: health.cashScore },
     { key: 'stock', label: 'Stock Health', value: health.stockScore },
   ];
 
@@ -345,18 +327,38 @@ export const ReportsScreen: React.FC = () => {
     }
   };
 
+  const handleRestoreExpense = async (expense: Expense) => {
+    try {
+      await restoreExpense(expense);
+      notify('Expense restored');
+    } catch (err) {
+      notify('Could not restore the expense', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
+    }
+  };
   const handleDeleteExpense = async () => {
     if (!expenseToDelete) return;
     setIsDeletingExpense(true);
     const removed = expenseToDelete;
-    await deleteExpense(removed.id);
-    setIsDeletingExpense(false);
-    setExpenseToDelete(null);
-    notify(`Expense removed — ${formatKwacha(removed.amount)}`, {
-      kind: 'info',
-      detail: 'Your profit for this period has been recalculated.',
-      action: { label: 'Undo', onClick: () => void restoreExpense(removed) },
-    });
+    try {
+      await deleteExpense(removed.id);
+      setExpenseToDelete(null);
+      notify(`Expense removed — ${formatKwacha(removed.amount)}`, {
+        kind: 'info',
+        detail: 'Your profit for this period has been recalculated.',
+        action: { label: 'Undo', onClick: () => void handleRestoreExpense(removed) },
+      });
+    } catch (err) {
+      setExpenseToDelete(null);
+      notify('Could not remove the expense', {
+        kind: 'error',
+        detail: err instanceof Error ? err.message : 'Please try again.',
+      });
+    } finally {
+      setIsDeletingExpense(false);
+    }
   };
 
   // Generate WhatsApp-friendly summary text
@@ -366,7 +368,7 @@ export const ReportsScreen: React.FC = () => {
 💵 Cash & MoMo received: ${formatKwacha(totalCashInHand + totalMomoInWallet)}
 🤝 Credit given: ${formatKwacha(creditSalesGiven)}
 🧾 Expenses: ${formatKwacha(totalExpensesAmount)}
-📈 Net Profit: ${formatKwacha(netProfit)}
+📈 Estimated net profit: ${filteredSales.length > 0 && ledger.missingCostRevenue === ledger.sales ? 'Not available (costs missing)' : formatKwacha(netProfit)}${ledger.missingCostRevenue > 0 ? ` (excludes ${formatKwacha(ledger.missingCostRevenue)} with unknown costs)` : ''}
 
 _Recorded with Countup Zambia_`;
 
@@ -382,7 +384,7 @@ _Recorded with Countup Zambia_`;
   return (
     <div className="w-full space-y-4">
       {/* Top Header: Period selector + Export/Share actions */}
-      <div className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
         {/* Time Tabs */}
         <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-xl">
           <button
@@ -554,14 +556,19 @@ _Recorded with Countup Zambia_`;
         <div className="bg-emerald-900 border border-emerald-800 rounded-2xl p-4 shadow-xs text-white">
           <div className="flex items-center justify-between text-emerald-300">
             <span className="text-[11px] font-bold uppercase tracking-wider">
-              {t.totalProfit} (Net)
+              Estimated net profit
             </span>
             <ArrowUpRight className="w-4 h-4 text-emerald-300" />
           </div>
           <p className="text-2xl font-black text-white tracking-tight mt-1 tabular-nums">
-            {formatKwacha(netProfit)}
+            {filteredSales.length > 0 && ledger.missingCostRevenue === ledger.sales
+              ? 'Not available'
+              : formatKwacha(netProfit)}
           </p>
           <span className="text-xs text-emerald-200 font-medium">
+            {ledger.missingCostRevenue > 0
+              ? `${formatKwacha(ledger.missingCostRevenue)} of sales excluded — cost not recorded. `
+              : ''}
             After {formatKwachaCompact(totalExpensesAmount)} expenses
           </span>
         </div>
@@ -569,7 +576,7 @@ _Recorded with Countup Zambia_`;
         {/* Cash in Hand */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Cash in Hand</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">Cash received</span>
             <Banknote className="w-4 h-4 text-emerald-700" />
           </div>
           <p className="text-2xl font-black text-emerald-900 tracking-tight mt-1 tabular-nums">
@@ -579,13 +586,15 @@ _Recorded with Countup Zambia_`;
               maximumFractionDigits: 2,
             })}
           </p>
-          <span className="text-xs text-slate-500 font-medium">Physical cash in drawer</span>
+          <span className="text-xs text-slate-500 font-medium">Sales and repayments recorded</span>
         </div>
 
         {/* MoMo in Phone */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">MoMo in Phone</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">
+              Mobile Money received
+            </span>
             <Smartphone className="w-4 h-4 text-sky-600" />
           </div>
           <p className="text-2xl font-black text-sky-900 tracking-tight mt-1 tabular-nums">
@@ -595,9 +604,48 @@ _Recorded with Countup Zambia_`;
               maximumFractionDigits: 2,
             })}
           </p>
-          <span className="text-xs text-slate-500 font-medium">Airtel, MTN &amp; Zamtel SIM</span>
+          <span className="text-xs text-slate-500 font-medium">
+            Recorded manually; not a wallet balance
+          </span>
         </div>
       </div>
+
+      <details className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+        <summary className="cursor-pointer text-sm font-bold text-slate-900">
+          Day-by-day totals
+        </summary>
+        <p className="text-xs text-slate-500 mt-2">
+          Sales include credit; money received includes repayments but not credit sales.
+        </p>
+        {dailyRows.length === 0 ? (
+          <p className="text-xs text-slate-500 mt-3">No activity yet.</p>
+        ) : (
+          <div className="overflow-x-auto mt-3">
+            <table className="w-full min-w-[560px] text-xs text-left">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="py-2">Date</th>
+                  <th>Sales</th>
+                  <th>Cash received</th>
+                  <th>MoMo received</th>
+                  <th>Credit given</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyRows.map((row) => (
+                  <tr key={row.date} className="border-b border-slate-100">
+                    <td className="py-2 font-semibold">{row.date}</td>
+                    <td>{formatKwacha(row.sales)}</td>
+                    <td>{formatKwacha(row.cashReceived)}</td>
+                    <td>{formatKwacha(row.momoReceived)}</td>
+                    <td>{formatKwacha(row.creditSales)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </details>
 
       {/* Secondary Row: Credit Given & Expenses summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -728,6 +776,16 @@ _Recorded with Countup Zambia_`;
                       <p className="text-[11px] text-slate-600 mt-1 truncate">
                         {sale.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}
                       </p>
+                      {sale.receiptNumber && (
+                        <p className="text-[10px] text-slate-400 break-all">
+                          Receipt {sale.receiptNumber}
+                        </p>
+                      )}
+                      {(sale.paymentReference || sale.note) && (
+                        <p className="text-[10px] text-slate-500">
+                          {[sale.paymentReference, sale.note].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
                     </div>
 
                     <div className="text-right shrink-0">

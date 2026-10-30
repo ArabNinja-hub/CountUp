@@ -22,6 +22,8 @@ import {
 import { Language } from '../types';
 import { DeleteShopModal } from './DeleteShopModal';
 import { ChangePinModal } from './ChangePinModal';
+import { DataTools } from './DataTools';
+import { AccountAccess } from './AccountAccess';
 import icon from '/brand/icon.png';
 
 // Header takes no props; the plan and admin screens live in Settings now.
@@ -45,6 +47,8 @@ export const Header: React.FC = () => {
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
+  const [showDataTools, setShowDataTools] = useState(false);
+  const [showAccountAccess, setShowAccountAccess] = useState(false);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
 
@@ -252,6 +256,17 @@ export const Header: React.FC = () => {
                     </button>
                   )}
 
+                  <button
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      setShowAccountAccess(true);
+                    }}
+                    className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
+                  >
+                    <KeyRound className="w-4 h-4 text-emerald-700" />
+                    <span>Account &amp; cloud access</span>
+                  </button>
+
                   {/* Change PIN */}
                   <button
                     onClick={() => {
@@ -264,16 +279,16 @@ export const Header: React.FC = () => {
                     <span>Change PIN</span>
                   </button>
 
-                  {/* Export Data */}
+                  {/* One place for backups, CSV exports and ShopBook import. */}
                   <button
                     onClick={() => {
                       setShowSettingsMenu(false);
-                      window.dispatchEvent(new CustomEvent('export-data'));
+                      setShowDataTools(true);
                     }}
                     className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 hover:bg-slate-50 text-slate-700 transition-colors"
                   >
                     <Download className="w-4 h-4 text-slate-500" />
-                    <span>Export My Data</span>
+                    <span>Data &amp; backups</span>
                   </button>
                 </div>
 
@@ -330,6 +345,8 @@ export const Header: React.FC = () => {
         </div>
       )}
 
+      {showAccountAccess && <AccountAccess onClose={() => setShowAccountAccess(false)} />}
+      {showDataTools && <DataTools onClose={() => setShowDataTools(false)} />}
       {showPinModal && <ChangePinModal onClose={() => setShowPinModal(false)} />}
       {showDeleteModal && <DeleteShopModal onClose={() => setShowDeleteModal(false)} />}
     </header>

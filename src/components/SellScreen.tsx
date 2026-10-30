@@ -21,7 +21,9 @@ import {
 import { Item, PaymentType, Customer } from '../types';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
-import { formatKwacha, formatKwachaCompact, isToday, sanitizePhoneInput } from '../utils/format';
+import { formatKwacha, formatKwachaCompact, sanitizePhoneInput } from '../utils/format';
+import { addKwacha, localDateKey, multiplyKwacha } from '../utils/money';
+import { summarizeLedger } from '../utils/ledger';
 
 interface CartItem {
   item: Item;
@@ -34,11 +36,21 @@ interface SellScreenProps {
 }
 
 export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock }) => {
-  const { items, customers, addCustomer, recordSale, t, subscription, isShopDeactivated, sales } =
-    useShop();
+  const {
+    items,
+    customers,
+    addCustomer,
+    recordSale,
+    t,
+    subscription,
+    isShopDeactivated,
+    sales,
+    creditPayments,
+  } = useShop();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [mobileCheckoutOpen, setMobileCheckoutOpen] = useState(true);
   const [paymentType, setPaymentType] = useState<PaymentType>('cash');
   const [momoOperator, setMomoOperator] = useState<'airtel' | 'mtn' | 'zamtel'>('airtel');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -46,6 +58,9 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   const [newCustName, setNewCustName] = useState('');
   const [newCustPhone, setNewCustPhone] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [paymentReference, setPaymentReference] = useState('');
+  const [saleNote, setSaleNote] = useState('');
   const [creditError, setCreditError] = useState('');
   const [customerQuery, setCustomerQuery] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -56,6 +71,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   // Success modal
   const [lastCompletedSale, setLastCompletedSale] = useState<{
     total: number;
+    receiptNumber?: string;
     paymentType: PaymentType;
     momoOperator?: 'airtel' | 'mtn' | 'zamtel';
     customerName?: string;
@@ -64,17 +80,23 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   // Live "today" figures — recomputed from the sales collection, which the context
   // keeps in sync in real time, so the numbers change the instant a sale is saved.
   const today = useMemo(() => {
-    const todaySales = sales.filter((s) => isToday(s.createdAt));
-    const sum = (type: PaymentType) =>
-      todaySales.filter((s) => s.paymentType === type).reduce((t, s) => t + s.totalAmount, 0);
+    const date = localDateKey();
+    const todaySales = sales.filter(
+      (sale) => (sale.localDate || localDateKey(new Date(sale.createdAt))) === date
+    );
+    const todayPayments = creditPayments.filter(
+      (payment) => (payment.localDate || localDateKey(new Date(payment.createdAt))) === date
+    );
+    const summary = summarizeLedger(todaySales, todayPayments, []);
     return {
       count: todaySales.length,
-      total: todaySales.reduce((t, s) => t + s.totalAmount, 0),
-      cash: sum('cash') + sum('momo'),
-      credit: sum('credit'),
-      profit: todaySales.reduce((t, s) => t + s.profit, 0),
+      total: summary.sales,
+      cash: summary.moneyReceived,
+      credit: summary.creditSales,
+      profit: summary.profit,
+      missingCostRevenue: summary.missingCostRevenue,
     };
-  }, [sales]);
+  }, [sales, creditPayments]);
 
   // Filter & sort items: Most recently sold items appear first!
   const sortedItems = useMemo(() => {
@@ -154,12 +176,25 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
   // Calculations
   const totalAmount = useMemo(() => {
-    return cart.reduce((sum, ci) => sum + ci.item.sellingPrice * ci.quantity, 0);
+    return addKwacha(...cart.map((ci) => multiplyKwacha(ci.item.sellingPrice, ci.quantity)));
   }, [cart]);
 
   const totalCost = useMemo(() => {
-    return cart.reduce((sum, ci) => sum + ci.item.buyingPrice * ci.quantity, 0);
+    return addKwacha(
+      ...cart.map((ci) =>
+        ci.item.buyingPriceKnown === false ? 0 : multiplyKwacha(ci.item.buyingPrice, ci.quantity)
+      )
+    );
   }, [cart]);
+
+  const missingCostRevenue = useMemo(() => {
+    return addKwacha(
+      ...cart.map((ci) =>
+        ci.item.buyingPriceKnown === false ? multiplyKwacha(ci.item.sellingPrice, ci.quantity) : 0
+      )
+    );
+  }, [cart]);
+  const estimatedProfit = addKwacha(totalAmount, -totalCost, -missingCostRevenue);
 
   const totalItemsCount = useMemo(() => {
     return cart.reduce((sum, ci) => sum + ci.quantity, 0);
@@ -167,7 +202,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
   // Handle Save Sale
   const handleSaveSale = async () => {
-    if (cart.length === 0 || isSaving) return;
+    if (cart.length === 0 || savingRef.current) return;
 
     if (!subscription.canRecordSales) {
       onOpenPlan();
@@ -187,6 +222,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       }
     }
 
+    savingRef.current = true;
     setIsSaving(true);
     try {
       let customerObj: Customer | undefined;
@@ -211,22 +247,26 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         sellingPrice: ci.item.sellingPrice,
       }));
 
-      await recordSale({
+      const recorded = await recordSale({
         items: saleItems,
         itemsCount: totalItemsCount,
         totalAmount,
         totalCost,
-        profit: totalAmount - totalCost,
+        profit: estimatedProfit,
+        missingCostRevenue,
         paymentType,
         momoOperator: paymentType === 'momo' ? momoOperator : undefined,
         customerId: customerObj?.id,
         customerName: customerObj?.name,
         customerPhone: customerObj?.phone,
+        paymentReference: paymentType === 'momo' ? paymentReference.trim() : '',
+        note: saleNote.trim(),
       });
 
       // Show instant receipt confirmation
       setLastCompletedSale({
-        total: totalAmount,
+        total: recorded.totalAmount,
+        receiptNumber: recorded.receiptNumber,
         paymentType,
         momoOperator: paymentType === 'momo' ? momoOperator : undefined,
         customerName: customerObj?.name,
@@ -244,11 +284,14 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
 
       // Reset cart immediately
       setCart([]);
+      setMobileCheckoutOpen(true);
       setNewCustName('');
       setNewCustPhone('');
       setIsAddingNewCustomer(false);
       setSelectedCustomerId('');
       setCustomerQuery('');
+      setPaymentReference('');
+      setSaleNote('');
     } catch (err) {
       // e.g. stock ran out between adding to the cart and saving
       notify('Sale not saved', {
@@ -256,6 +299,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         detail: err instanceof Error ? err.message : 'Please try again.',
       });
     } finally {
+      savingRef.current = false;
       setIsSaving(false);
     }
   };
@@ -517,6 +561,29 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         </div>
       )}
 
+      {paymentType === 'momo' && (
+        <label className="block text-[11px] font-bold text-slate-600">
+          Mobile Money reference (optional)
+          <input
+            value={paymentReference}
+            maxLength={80}
+            onChange={(e) => setPaymentReference(e.target.value)}
+            className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs"
+            placeholder="Transaction reference"
+          />
+        </label>
+      )}
+      <label className="block text-[11px] font-bold text-slate-600">
+        Sale note (optional)
+        <input
+          value={saleNote}
+          maxLength={200}
+          onChange={(e) => setSaleNote(e.target.value)}
+          className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs"
+          placeholder="Add a note to this receipt"
+        />
+      </label>
+
       {/* Save Sale Primary CTA */}
       <button
         onClick={handleSaveSale}
@@ -610,7 +677,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           <p className="text-sm font-black text-emerald-800 tabular-nums leading-tight">
             {formatKwacha(today.cash)}
           </p>
-          <span className="text-[10px] text-slate-500">Money in hand</span>
+          <span className="text-[10px] text-slate-500">Received, including repayments</span>
         </div>
         <div className="bg-white border border-slate-200/90 rounded-xl px-3 py-2 shadow-xs">
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -619,7 +686,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           <p className="text-sm font-black text-amber-800 tabular-nums leading-tight">
             {formatKwacha(today.credit)}
           </p>
-          <span className="text-[10px] text-slate-500">Still to be paid</span>
+          <span className="text-[10px] text-slate-500">New credit given</span>
         </div>
         <div className="bg-emerald-900 border border-emerald-800 rounded-xl px-3 py-2 shadow-xs">
           <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
@@ -628,7 +695,9 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           <p className="text-sm font-black text-white tabular-nums leading-tight">
             {formatKwacha(today.profit)}
           </p>
-          <span className="text-[10px] text-emerald-200">Today</span>
+          <span className="text-[10px] text-emerald-200">
+            {today.missingCostRevenue > 0 ? 'Excludes unknown costs' : 'Today'}
+          </span>
         </div>
       </div>
 
@@ -720,8 +789,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                 return (
                   <div
                     key={item.id}
+                    role="button"
+                    tabIndex={isOutOfStock ? -1 : 0}
+                    aria-label={`Add ${item.name} to cart`}
+                    aria-disabled={isOutOfStock}
                     onClick={() => !isOutOfStock && addToCart(item)}
-                    className={`relative p-3 rounded-2xl border text-left flex flex-col justify-between transition-all select-none min-h-[120px] ${
+                    onKeyDown={(event) => {
+                      if (!isOutOfStock && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        addToCart(item);
+                      }
+                    }}
+                    className={`relative p-3 rounded-2xl border text-left flex flex-col justify-between transition-all select-none min-h-[120px] focus-visible:outline-2 focus-visible:outline-emerald-600 ${
                       isOutOfStock
                         ? 'bg-slate-50 border-slate-200 opacity-60 cursor-not-allowed'
                         : inCart
@@ -885,11 +964,18 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                     <span className="tabular-nums font-medium">{formatKwacha(totalAmount)}</span>
                   </div>
                   <div className="flex justify-between text-slate-500">
-                    <span>Profit on this sale</span>
+                    <span>
+                      {missingCostRevenue > 0 ? 'Profit on known costs' : 'Profit on this sale'}
+                    </span>
                     <span className="tabular-nums text-emerald-700 font-semibold">
-                      +{formatKwacha(totalAmount - totalCost)}
+                      {formatKwacha(estimatedProfit)}
                     </span>
                   </div>
+                  {missingCostRevenue > 0 && (
+                    <p className="text-[11px] text-amber-800">
+                      Profit excludes {formatKwacha(missingCostRevenue)} in sales with unknown cost.
+                    </p>
+                  )}
                   <div className="flex justify-between text-sm font-extrabold text-slate-900 pt-1 border-t border-slate-100">
                     <span>Total Due</span>
                     <span className="tabular-nums text-emerald-900 text-base">
@@ -910,11 +996,8 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       <div className="lg:hidden">
         {cart.length > 0 && (
           <div className="fixed bottom-16 left-0 right-0 z-30 bg-white border-t border-slate-200 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] max-w-lg mx-auto rounded-t-2xl px-4 pt-3 pb-4 max-h-[72vh] overflow-y-auto overscroll-contain">
-            {/* Grab Handle */}
             <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-2" />
-
-            {/* Header of Cart */}
-            <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center space-x-2">
                 <span className="bg-emerald-100 text-emerald-800 text-xs font-extrabold px-2 py-0.5 rounded-md">
                   {totalItemsCount} {totalItemsCount === 1 ? 'item' : 'items'}
@@ -923,36 +1006,66 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
                   {formatKwacha(totalAmount)}
                 </span>
               </div>
-              <button
-                onClick={() => setShowClearConfirm(true)}
-                className="text-xs text-slate-400 hover:text-rose-600 flex items-center space-x-1"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>{t.clearCart}</span>
-              </button>
-            </div>
-
-            {/* Horizontal Cart chips */}
-            <div className="flex overflow-x-auto space-x-2 pb-2 mb-2 no-scrollbar">
-              {cart.map((ci) => (
-                <div
-                  key={ci.item.id}
-                  className="shrink-0 bg-slate-100 border border-slate-200 text-slate-800 rounded-lg px-2.5 py-1 text-xs flex items-center space-x-1.5"
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setMobileCheckoutOpen(!mobileCheckoutOpen)}
+                  aria-expanded={mobileCheckoutOpen}
+                  aria-controls="mobile-checkout"
+                  className="min-h-[40px] text-xs font-bold text-emerald-800"
                 >
-                  <span className="font-semibold truncate max-w-[110px]">{ci.item.name}</span>
-                  <span className="text-emerald-800 font-bold tabular-nums">x{ci.quantity}</span>
+                  {mobileCheckoutOpen ? 'Add items' : 'Review sale'}
+                </button>
+                {mobileCheckoutOpen && (
                   <button
-                    onClick={() => deleteFromCart(ci.item.id)}
-                    className="text-slate-400 hover:text-slate-700 ml-1 text-sm font-bold"
+                    onClick={() => setShowClearConfirm(true)}
+                    className="min-h-[40px] text-xs text-slate-500 hover:text-rose-600 flex items-center space-x-1"
                   >
-                    ×
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{t.clearCart}</span>
                   </button>
-                </div>
-              ))}
+                )}
+              </div>
             </div>
-
-            {/* Mobile Checkout Controls */}
-            {renderCheckoutControls()}
+            {mobileCheckoutOpen && (
+              <div id="mobile-checkout" className="pt-2 border-t border-slate-100">
+                <div className="flex overflow-x-auto space-x-2 pb-2 mb-2 no-scrollbar">
+                  {cart.map((ci) => (
+                    <div
+                      key={ci.item.id}
+                      className="shrink-0 bg-slate-100 border border-slate-200 text-slate-800 rounded-lg px-2 text-xs flex items-center gap-1"
+                    >
+                      <span className="font-semibold truncate max-w-[110px]">{ci.item.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeFromCart(ci.item.id)}
+                        aria-label={`Decrease ${ci.item.name} quantity`}
+                        className="w-9 h-9 flex items-center justify-center text-slate-600"
+                      >
+                        <Minus className="w-4 h-4" />
+                      </button>
+                      <span className="text-emerald-800 font-bold tabular-nums">{ci.quantity}</span>
+                      <button
+                        type="button"
+                        onClick={() => addToCart(ci.item)}
+                        aria-label={`Increase ${ci.item.name} quantity`}
+                        className="w-9 h-9 flex items-center justify-center text-emerald-800"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteFromCart(ci.item.id)}
+                        aria-label={`Remove ${ci.item.name} from sale`}
+                        className="w-9 h-9 flex items-center justify-center text-slate-500 text-base font-bold"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {renderCheckoutControls()}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -975,6 +1088,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           onCancel={() => setShowClearConfirm(false)}
           onConfirm={() => {
             setCart([]);
+            setMobileCheckoutOpen(true);
             setShowClearConfirm(false);
           }}
         />
@@ -988,6 +1102,11 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
               <CheckCircle2 className="w-8 h-8" />
             </div>
             <h3 className="text-lg font-black text-slate-900 tracking-tight">Sale Recorded!</h3>
+            {lastCompletedSale.receiptNumber && (
+              <p className="mt-1 text-[10px] text-slate-500 break-all">
+                Receipt {lastCompletedSale.receiptNumber}
+              </p>
+            )}
             <p className="text-2xl font-black text-emerald-800 my-1 tabular-nums">
               {formatKwacha(lastCompletedSale.total)}
             </p>

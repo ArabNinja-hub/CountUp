@@ -31,13 +31,18 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
     }
 
     setIsSaving(true);
-    const ok = await changePin(currentPin, newPin);
-    setIsSaving(false);
-    if (!ok) {
-      setError('That is not your current PIN. Please try again.');
-      return;
+    try {
+      const ok = await changePin(currentPin, newPin);
+      if (!ok) {
+        setError('That is not your current PIN. Please try again.');
+        return;
+      }
+      onClose();
+    } catch {
+      setError('Could not save the PIN on this device. Free some storage and try again.');
+    } finally {
+      setIsSaving(false);
     }
-    onClose();
   };
 
   const inputClass =

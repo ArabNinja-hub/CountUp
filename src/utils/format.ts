@@ -46,6 +46,12 @@ export function sanitizePhoneInput(raw: string): string {
   return raw.replace(/\D/g, '').slice(0, 12);
 }
 
+/** Use one national form for both 097... and +260 97... shop identities. */
+export function normalizeZambianPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  return /^260\d{9}$/.test(digits) ? `0${digits.slice(3)}` : digits;
+}
+
 export function parseMoney(raw: string): number {
   const value = parseFloat(raw);
   return Number.isFinite(value) && value > 0 ? value : 0;

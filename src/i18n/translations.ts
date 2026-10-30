@@ -4,6 +4,7 @@ export interface Translations {
   appName: string;
   tagline: string;
   // Tabs
+  tabHome: string;
   tabSell: string;
   tabStock: string;
   tabCredit: string;
@@ -140,6 +141,7 @@ export const translations: Record<Language, Translations> = {
   en: {
     appName: 'Countup',
     tagline: 'Your Smart Sales Book',
+    tabHome: 'Home',
     tabSell: 'Sell',
     tabStock: 'Stock',
     tabCredit: 'Credit',
@@ -267,6 +269,7 @@ export const translations: Record<Language, Translations> = {
   bem: {
     appName: 'Countup',
     tagline: 'Icitabo Cenu Ca Malonda',
+    tabHome: 'Pakalamba',
     tabSell: 'Shitisheni',
     tabStock: 'Ifipe (Stock)',
     tabCredit: 'Amakongole',
@@ -394,6 +397,7 @@ export const translations: Record<Language, Translations> = {
   nya: {
     appName: 'Countup',
     tagline: 'Buku Lanu la Malonda',
+    tabHome: 'Pakhomo',
     tabSell: 'Gulitsani',
     tabStock: 'Katundu (Stock)',
     tabCredit: 'Mangawa',

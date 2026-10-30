@@ -1,11 +1,34 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Shop, Item, Sale, Customer, CreditPayment, Expense, Language, ActiveTab } from '../types';
+import {
+  Shop,
+  Item,
+  Sale,
+  Customer,
+  CreditPayment,
+  Expense,
+  Language,
+  ActiveTab,
+  StockMovement,
+  StockConflict,
+} from '../types';
 import { translations, Translations } from '../i18n/translations';
 import { getSubscriptionInfo } from '../config/plans';
 import { auth, db, testConnection } from '../firebase/config';
 import { useToast } from '../components/Toast';
-import { reconcile } from '../utils/sync';
-import { signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
+import { cleanForFirestore, reconcile, replayQueuedWrites } from '../utils/sync';
+import { addKwacha, localDateKey, multiplyKwacha, toNgwee } from '../utils/money';
+import { normalizeZambianPhone } from '../utils/format';
+import { prepareShopBookImport, ShopBookImport } from '../services/shopBookImport';
+import {
+  signInAnonymously,
+  onAuthStateChanged,
+  User,
+  EmailAuthProvider,
+  linkWithCredential,
+  signInWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+} from 'firebase/auth';
 import {
   doc,
   setDoc,
@@ -15,7 +38,9 @@ import {
   collection,
   onSnapshot,
   query,
+  where,
   getDocs,
+  runTransaction,
   DocumentData,
 } from 'firebase/firestore';
 
@@ -26,12 +51,29 @@ import {
  */
 type QueuePayload = object;
 
+type SyncAdjustment =
+  | {
+      kind: 'stock';
+      path: string;
+      delta: number;
+      setTo?: number;
+      updatedAt: string;
+      lastSoldAt?: string;
+      metadata?: object;
+      movement: { path: string; data: StockMovement };
+    }
+  | { kind: 'credit'; path: string; deltaNgwee: number; updatedAt: string };
+
 interface PendingSyncAction {
   id: string;
   type: 'sale' | 'item' | 'customer' | 'payment' | 'expense' | 'stock_update';
   path: string;
   data: QueuePayload;
   timestamp: number;
+  /** A whole sale/payment/stock operation, committed as one batch. */
+  writes?: { path: string; data: QueuePayload }[];
+  /** Deltas are applied transactionally to the latest server values, once per operation. */
+  adjustments?: SyncAdjustment[];
 }
 
 interface ShopContextType {
@@ -42,6 +84,11 @@ interface ShopContextType {
   isAdmin: boolean;
   loginWithPhoneAndPin: (phone: string, pin: string) => Promise<boolean>;
   registerNewShop: (name: string, phone: string, pin: string) => Promise<boolean>;
+  linkEmailAccount: (email: string, password: string) => Promise<void>;
+  loginWithEmail: (email: string, password: string) => Promise<Shop[]>;
+  cancelEmailLogin: () => Promise<void>;
+  selectEmailShop: (shop: Shop) => void;
+  resetEmailPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
   /** Permanently deletes this shop and every record that belongs to it. */
   deleteShopAccount: () => Promise<boolean>;
@@ -57,25 +104,41 @@ interface ShopContextType {
 
   // Data
   items: Item[];
+  archivedItems: Item[];
+  stockMovements: StockMovement[];
+  stockConflicts: StockConflict[];
+  resolveStockConflict: (conflictId: string) => Promise<void>;
   sales: Sale[];
   customers: Customer[];
   creditPayments: CreditPayment[];
   expenses: Expense[];
+  importShopBook: (raw: string) => Promise<ShopBookImport>;
 
   // Actions
-  recordSale: (saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>) => Promise<string>;
+  recordSale: (saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>) => Promise<Sale>;
   /** Undo a sale recorded today: restores stock and credit. Returns the voided sale. */
   voidSale: (saleId: string) => Promise<Sale>;
   addItem: (itemData: Omit<Item, 'id' | 'shopId' | 'createdAt' | 'updatedAt'>) => Promise<string>;
   updateItem: (itemId: string, patch: Partial<Item>) => Promise<void>;
   quickRestock: (itemId: string, quantityToAdd: number) => Promise<void>;
+  adjustStock: (
+    itemId: string,
+    mode: 'add' | 'subtract' | 'set',
+    quantity: number,
+    reason: string
+  ) => Promise<void>;
   deleteItem: (itemId: string) => Promise<void>;
   restoreItem: (item: Item) => Promise<void>;
   addCustomer: (name: string, phone?: string) => Promise<Customer>;
+  updateCustomer: (
+    customerId: string,
+    patch: Pick<Customer, 'name' | 'phone' | 'notes'>
+  ) => Promise<void>;
   recordCreditPayment: (
     customerId: string,
     amount: number,
-    note?: string
+    note?: string,
+    paymentMethod?: 'cash' | 'momo'
   ) => Promise<{ applied: number; remaining: number }>;
   addExpense: (category: Expense['category'], amount: number, note?: string) => Promise<void>;
   deleteExpense: (expenseId: string) => Promise<void>;
@@ -108,13 +171,61 @@ function isTodayIso(iso: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toDateString() === new Date().toDateString();
 }
 
+/** Legacy shops may have been created with the international form in their ID. */
+function shopIdsForPhone(phone: string): string[] {
+  const national = normalizeZambianPhone(phone);
+  const candidates = [national];
+  if (/^0\d{9}$/.test(national)) candidates.push(`260${national.slice(1)}`);
+  return [...new Set(candidates)].map((candidate) => `shop_${candidate}`);
+}
+
+function readInitialCache() {
+  const read = <T,>(key: string, fallback: T): T => {
+    const value = localStorage.getItem(key);
+    return value ? (JSON.parse(value) as T) : fallback;
+  };
+  const queue = read<PendingSyncAction[]>('countup_pending_queue', []);
+  let shop = read<Shop | null>('countup_active_shop', null);
+  for (const action of queue) {
+    for (const write of action.writes ?? [{ path: action.path, data: action.data }]) {
+      const [collectionName, id, ...rest] = write.path.split('/');
+      if (collectionName !== 'shops' || !id || rest.length) continue;
+      const data = write.data as Partial<Shop>;
+      if (!shop && data.id === id && data.name && data.ownerUid && data.pin) shop = data as Shop;
+      else if (shop?.id === id && typeof data.pin === 'string') shop = { ...shop, pin: data.pin };
+    }
+  }
+  const root = shop ? `shops/${shop.id}` : '';
+  const replay = <T extends { id: string }>(cached: T[], collectionName: string) =>
+    root ? replayQueuedWrites(cached, queue, `${root}/${collectionName}`) : cached;
+  const allItems = replay(
+    [...read<Item[]>('countup_items', []), ...read<Item[]>('countup_archived_items', [])],
+    'items'
+  );
+  return {
+    shop,
+    queue,
+    items: allItems.filter((item) => !item.isDeleted),
+    archivedItems: allItems.filter((item) => item.isDeleted),
+    movements: replay(read<StockMovement[]>('countup_stock_movements', []), 'stock_movements'),
+    conflicts: replay(read<StockConflict[]>('countup_stock_conflicts', []), 'stock_conflicts'),
+    sales: replay(read<(Sale & { isDeleted?: boolean })[]>('countup_sales', []), 'sales').filter(
+      (sale) => !sale.isDeleted
+    ),
+    customers: replay(read<Customer[]>('countup_customers', []), 'customers'),
+    payments: replay(read<CreditPayment[]>('countup_payments', []), 'credit_payments'),
+    expenses: replay(
+      read<(Expense & { isDeleted?: boolean })[]>('countup_expenses', []),
+      'expenses'
+    ).filter((expense) => !expense.isDeleted),
+  };
+}
+
 export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { notify } = useToast();
+  const [initial] = useState(readInitialCache);
   const [user, setUser] = useState<User | null>(null);
-  const [shop, setShop] = useState<Shop | null>(() => {
-    const cached = localStorage.getItem('countup_active_shop');
-    return cached ? JSON.parse(cached) : null;
-  });
+  const [shop, setShop] = useState<Shop | null>(initial.shop);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
@@ -122,35 +233,21 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const saved = localStorage.getItem('countup_language') as Language;
     return saved === 'bem' || saved === 'nya' ? saved : 'en';
   });
-  const [activeTab, setActiveTab] = useState<ActiveTab>('sell');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('home');
 
-  // Business state
-  const [items, setItems] = useState<Item[]>(() => {
-    const cached = localStorage.getItem('countup_items');
-    return cached ? JSON.parse(cached) : [];
-  });
-  const [sales, setSales] = useState<Sale[]>(() => {
-    const cached = localStorage.getItem('countup_sales');
-    return cached ? JSON.parse(cached) : [];
-  });
-  const [customers, setCustomers] = useState<Customer[]>(() => {
-    const cached = localStorage.getItem('countup_customers');
-    return cached ? JSON.parse(cached) : [];
-  });
-  const [creditPayments, setCreditPayments] = useState<CreditPayment[]>(() => {
-    const cached = localStorage.getItem('countup_payments');
-    return cached ? JSON.parse(cached) : [];
-  });
-  const [expenses, setExpenses] = useState<Expense[]>(() => {
-    const cached = localStorage.getItem('countup_expenses');
-    return cached ? JSON.parse(cached) : [];
-  });
+  // Recover from the durable queue as well as the cache: a tab can close after
+  // an operation was queued but before React's cache effects have run.
+  const [items, setItems] = useState<Item[]>(initial.items);
+  const [archivedItems, setArchivedItems] = useState<Item[]>(initial.archivedItems);
+  const [stockMovements, setStockMovements] = useState<StockMovement[]>(initial.movements);
+  const [stockConflicts, setStockConflicts] = useState<StockConflict[]>(initial.conflicts);
+  const [sales, setSales] = useState<Sale[]>(initial.sales);
+  const [customers, setCustomers] = useState<Customer[]>(initial.customers);
+  const [creditPayments, setCreditPayments] = useState<CreditPayment[]>(initial.payments);
+  const [expenses, setExpenses] = useState<Expense[]>(initial.expenses);
 
   // Offline queue
-  const [pendingQueue, setPendingQueue] = useState<PendingSyncAction[]>(() => {
-    const cached = localStorage.getItem('countup_pending_queue');
-    return cached ? JSON.parse(cached) : [];
-  });
+  const [pendingQueue, setPendingQueue] = useState<PendingSyncAction[]>(initial.queue);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [lastOfflineNotice, setLastOfflineNotice] = useState<string | null>(null);
@@ -170,7 +267,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      void syncNow();
+      void ensureFirebaseAuth().then(() => syncNow());
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -204,6 +301,18 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     localStorage.setItem('countup_items', JSON.stringify(items));
   }, [items]);
+
+  useEffect(() => {
+    localStorage.setItem('countup_archived_items', JSON.stringify(archivedItems));
+  }, [archivedItems]);
+
+  useEffect(() => {
+    localStorage.setItem('countup_stock_movements', JSON.stringify(stockMovements));
+  }, [stockMovements]);
+
+  useEffect(() => {
+    localStorage.setItem('countup_stock_conflicts', JSON.stringify(stockConflicts));
+  }, [stockConflicts]);
 
   useEffect(() => {
     localStorage.setItem('countup_sales', JSON.stringify(sales));
@@ -245,6 +354,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // An anonymous Firebase identity is the only cloud key for a legacy shop.
+  // Remember it so switching accounts cannot silently abandon that identity.
+  useEffect(() => {
+    if (shop && user?.isAnonymous && (shop.ownerUid === user.uid || shop.id === user.uid)) {
+      localStorage.setItem('countup_legacy_uid', user.uid);
+    }
+  }, [shop, user]);
+
   // Platform-owner detection: the `admins` collection is the only source of truth
   // (see firestore.rules). Grant access by creating admins/<uid> in the Firebase
   // console — never by a hardcoded email or phone number in the client.
@@ -273,6 +390,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // re-subscribe on every change (a re-subscribe per sale drops real-time updates).
   const itemsRef = React.useRef(items);
   itemsRef.current = items;
+  const archivedItemsRef = React.useRef(archivedItems);
+  archivedItemsRef.current = archivedItems;
+  const movementsRef = React.useRef(stockMovements);
+  movementsRef.current = stockMovements;
+  const conflictsRef = React.useRef(stockConflicts);
+  conflictsRef.current = stockConflicts;
   const salesRef = React.useRef(sales);
   salesRef.current = sales;
   const customersRef = React.useRef(customers);
@@ -283,6 +406,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   expensesRef.current = expenses;
   const queueRef = React.useRef(pendingQueue);
   queueRef.current = pendingQueue;
+  const remoteRef = React.useRef<{
+    shopId: string;
+    items?: Item[];
+    sales?: Sale[];
+    customers?: Customer[];
+    payments?: CreditPayment[];
+    expenses?: Expense[];
+    movements?: StockMovement[];
+    conflicts?: StockConflict[];
+  }>({ shopId: '' });
 
   // ---------------------------------------------------------------
   // REAL-TIME SYNC
@@ -297,6 +430,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!shop?.id || !user) return;
 
     const shopId = shop.id;
+    remoteRef.current = { shopId };
     const warn = (label: string) => (err: unknown) => {
       console.warn(`Real-time ${label} listener:`, err);
     };
@@ -306,8 +440,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (docSnap) => {
         if (!docSnap.exists()) return;
         const data = docSnap.data() as Shop;
-        // Never let the server drop the local PIN before it has been pushed.
-        setShop((prev) => ({ ...data, pin: data.pin || prev?.pin || '' }));
+        // A listener may emit an older PIN while a change is still queued.
+        const pendingPin = queueRef.current
+          .flatMap((action) => action.writes ?? [{ path: action.path, data: action.data }])
+          .filter((write) => write.path === `shops/${shopId}`)
+          .map((write) => (write.data as { pin?: unknown }).pin)
+          .filter((pin): pin is string => typeof pin === 'string')
+          .at(-1);
+        setShop((prev) => ({ ...data, pin: pendingPin ?? data.pin ?? prev?.pin ?? '' }));
       },
       warn('shop')
     );
@@ -316,13 +456,54 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       collection(db, 'shops', shopId, 'items'),
       (snap) => {
         const remote: Item[] = [];
-        snap.forEach((d) => {
-          const data = d.data() as Item & { isDeleted?: boolean };
-          if (!data.isDeleted) remote.push(data);
-        });
-        setItems(reconcile(remote, itemsRef.current, queueRef.current, `shops/${shopId}/items`));
+        snap.forEach((d) => remote.push(d.data() as Item));
+        remoteRef.current.items = remote;
+        const merged = reconcile(
+          remote,
+          [...itemsRef.current, ...archivedItemsRef.current],
+          queueRef.current,
+          `shops/${shopId}/items`
+        );
+        setItems(merged.filter((item) => !item.isDeleted));
+        setArchivedItems(merged.filter((item) => item.isDeleted));
       },
       warn('items')
+    );
+
+    const unsubMovements = onSnapshot(
+      collection(db, 'shops', shopId, 'stock_movements'),
+      (snap) => {
+        const remote: StockMovement[] = [];
+        snap.forEach((d) => remote.push(d.data() as StockMovement));
+        remoteRef.current.movements = remote;
+        const merged = reconcile(
+          remote,
+          movementsRef.current,
+          queueRef.current,
+          `shops/${shopId}/stock_movements`
+        );
+        merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        setStockMovements(merged);
+      },
+      warn('stock movements')
+    );
+
+    const unsubConflicts = onSnapshot(
+      collection(db, 'shops', shopId, 'stock_conflicts'),
+      (snap) => {
+        const remote: StockConflict[] = [];
+        snap.forEach((d) => remote.push(d.data() as StockConflict));
+        remoteRef.current.conflicts = remote;
+        setStockConflicts(
+          reconcile(
+            remote,
+            conflictsRef.current,
+            queueRef.current,
+            `shops/${shopId}/stock_conflicts`
+          )
+        );
+      },
+      warn('stock conflicts')
     );
 
     const unsubSales = onSnapshot(
@@ -333,6 +514,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = d.data() as Sale & { isDeleted?: boolean };
           if (!data.isDeleted) remote.push(data);
         });
+        remoteRef.current.sales = remote;
         const merged = reconcile(
           remote,
           salesRef.current,
@@ -350,6 +532,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (snap) => {
         const remote: Customer[] = [];
         snap.forEach((d) => remote.push(d.data() as Customer));
+        remoteRef.current.customers = remote;
         setCustomers(
           reconcile(remote, customersRef.current, queueRef.current, `shops/${shopId}/customers`)
         );
@@ -362,6 +545,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (snap) => {
         const remote: CreditPayment[] = [];
         snap.forEach((d) => remote.push(d.data() as CreditPayment));
+        remoteRef.current.payments = remote;
         setCreditPayments(
           reconcile(
             remote,
@@ -382,6 +566,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = d.data() as Expense & { isDeleted?: boolean };
           if (!data.isDeleted) remote.push(data);
         });
+        remoteRef.current.expenses = remote;
         setExpenses(
           reconcile(remote, expensesRef.current, queueRef.current, `shops/${shopId}/expenses`)
         );
@@ -392,12 +577,55 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => {
       unsubShop();
       unsubItems();
+      unsubMovements();
+      unsubConflicts();
       unsubSales();
       unsubCustomers();
       unsubPayments();
       unsubExpenses();
     };
   }, [shop?.id, user]);
+
+  // A snapshot can arrive before its queued operation is acknowledged. Reapply
+  // the latest server snapshots when the queue changes so a reconciled stock
+  // shortfall or concurrent balance becomes visible immediately after sync.
+  useEffect(() => {
+    if (!shop?.id || remoteRef.current.shopId !== shop.id) return;
+    const remote = remoteRef.current;
+    const root = `shops/${shop.id}`;
+    if (remote.items) {
+      const merged = reconcile(
+        remote.items,
+        [...itemsRef.current, ...archivedItemsRef.current],
+        pendingQueue,
+        `${root}/items`
+      );
+      setItems(merged.filter((item) => !item.isDeleted));
+      setArchivedItems(merged.filter((item) => item.isDeleted));
+    }
+    if (remote.sales)
+      setSales(reconcile(remote.sales, salesRef.current, pendingQueue, `${root}/sales`));
+    if (remote.customers)
+      setCustomers(
+        reconcile(remote.customers, customersRef.current, pendingQueue, `${root}/customers`)
+      );
+    if (remote.payments)
+      setCreditPayments(
+        reconcile(remote.payments, paymentsRef.current, pendingQueue, `${root}/credit_payments`)
+      );
+    if (remote.expenses)
+      setExpenses(
+        reconcile(remote.expenses, expensesRef.current, pendingQueue, `${root}/expenses`)
+      );
+    if (remote.movements)
+      setStockMovements(
+        reconcile(remote.movements, movementsRef.current, pendingQueue, `${root}/stock_movements`)
+      );
+    if (remote.conflicts)
+      setStockConflicts(
+        reconcile(remote.conflicts, conflictsRef.current, pendingQueue, `${root}/stock_conflicts`)
+      );
+  }, [pendingQueue, shop?.id]);
 
   // Live shop directory for the platform owner (was a one-off fetch, so plan
   // extensions made on one screen never showed up on another without a reload).
@@ -418,81 +646,231 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsub();
   }, [isAdmin, user]);
 
-  // Drain the offline queue.
-  //
-  // Reads the queue from a ref and guards with a ref, not component state: the old
-  // version captured a stale (usually empty) queue in a timeout, so writes made
-  // offline could sit in localStorage forever and never reach Firestore.
+  // Drain in FIFO order. New entries added while a sync is running must never
+  // be overwritten by the snapshot of the queue being drained. Each new sale,
+  // repayment or stock adjustment is one atomic Firestore batch.
   const syncingRef = React.useRef(false);
   const syncNow = useCallback(async () => {
-    if (!navigator.onLine || syncingRef.current) return;
-    const queued = queueRef.current;
-    if (queued.length === 0) return;
-
+    if (
+      !navigator.onLine ||
+      !auth.currentUser ||
+      syncingRef.current ||
+      queueRef.current.length === 0
+    )
+      return;
     syncingRef.current = true;
     setIsSyncing(true);
-
-    const remaining: PendingSyncAction[] = [];
-
-    for (const action of queued) {
-      try {
-        await setDoc(doc(db, action.path), action.data as DocumentData, { merge: true });
-      } catch (err) {
-        console.warn('Sync failed for action, keeping in queue:', action.id, err);
-        remaining.push(action);
-      }
-    }
-
-    queueRef.current = remaining;
-    setPendingQueue(remaining);
-    syncingRef.current = false;
-    setIsSyncing(false);
-
-    if (remaining.length === 0) {
-      setLastOfflineNotice(null);
-      notify(
-        `All ${queued.length} saved ${queued.length === 1 ? 'entry' : 'entries'} synced to the cloud`,
-        {
-          kind: 'success',
+    let synced = 0;
+    let failed = false;
+    let failureReason = '';
+    try {
+      while (queueRef.current.length > 0) {
+        const action = queueRef.current[0];
+        try {
+          const writes = action.writes ?? [{ path: action.path, data: action.data }];
+          if (action.adjustments?.length) {
+            const adjustments = action.adjustments;
+            const parts = action.path.split('/');
+            const shopRoot = `shops/${parts[1]}`;
+            await runTransaction(db, async (transaction) => {
+              const marker = doc(db, `${shopRoot}/sync_operations/${action.id}`);
+              const markerSnapshot = await transaction.get(marker);
+              if (markerSnapshot.exists()) return; // Safe retry after an interrupted acknowledgement.
+              const snapshots = await Promise.all(
+                adjustments.map((adjustment) => transaction.get(doc(db, adjustment.path)))
+              );
+              if (snapshots.some((snapshot) => !snapshot.exists()))
+                throw new Error('A stock item or customer needed by this entry no longer exists.');
+              const calculated = adjustments.map((adjustment, index) => {
+                const current = snapshots[index].data();
+                if (adjustment.kind === 'credit') {
+                  const next = toNgwee(Number(current.totalOwed ?? 0)) + adjustment.deltaNgwee;
+                  if (next < 0)
+                    throw new Error(
+                      'A repayment or void conflicts with a newer customer balance. Review the account before retrying.'
+                    );
+                  return { adjustment, next: next / 100, previous: 0, shortfall: 0 };
+                }
+                const previous = Number(current.quantity);
+                if (!Number.isSafeInteger(previous) || previous < 0)
+                  throw new Error('Invalid stock quantity on the server.');
+                const requested = adjustment.setTo ?? previous + adjustment.delta;
+                return {
+                  adjustment,
+                  previous,
+                  next: Math.max(0, requested),
+                  shortfall: Math.max(0, -requested),
+                };
+              });
+              const dynamicPaths = new Set(
+                adjustments.flatMap((adjustment) =>
+                  adjustment.kind === 'stock'
+                    ? [adjustment.path, adjustment.movement.path]
+                    : [adjustment.path]
+                )
+              );
+              for (const write of writes) {
+                if (!dynamicPaths.has(write.path))
+                  transaction.set(
+                    doc(db, write.path),
+                    cleanForFirestore(write.data) as DocumentData,
+                    { merge: true }
+                  );
+              }
+              for (const [index, entry] of calculated.entries()) {
+                const adjustment = entry.adjustment;
+                if (adjustment.kind === 'credit') {
+                  transaction.set(
+                    doc(db, adjustment.path),
+                    { totalOwed: entry.next, updatedAt: adjustment.updatedAt },
+                    { merge: true }
+                  );
+                } else {
+                  transaction.set(
+                    doc(db, adjustment.path),
+                    cleanForFirestore({
+                      ...adjustment.metadata,
+                      quantity: entry.next,
+                      updatedAt: adjustment.updatedAt,
+                      ...(adjustment.lastSoldAt ? { lastSoldAt: adjustment.lastSoldAt } : {}),
+                    }),
+                    { merge: true }
+                  );
+                  transaction.set(
+                    doc(db, adjustment.movement.path),
+                    cleanForFirestore({
+                      ...adjustment.movement.data,
+                      previousQuantity: entry.previous,
+                      newQuantity: entry.next,
+                    })
+                  );
+                  if (entry.shortfall > 0) {
+                    const conflictId = `${action.id}_${index}`;
+                    transaction.set(doc(db, `${shopRoot}/stock_conflicts/${conflictId}`), {
+                      id: conflictId,
+                      itemId: adjustment.movement.data.itemId,
+                      itemName: adjustment.movement.data.itemName,
+                      requested: Math.abs(adjustment.delta),
+                      available: entry.previous,
+                      shortfall: entry.shortfall,
+                      relatedSaleId: adjustment.movement.data.relatedSaleId || '',
+                      createdAt: adjustment.updatedAt,
+                      resolved: false,
+                    });
+                  }
+                }
+              }
+              transaction.set(marker, { appliedAt: new Date().toISOString() });
+            });
+          } else {
+            const batch = writeBatch(db);
+            for (const write of writes) {
+              let data = cleanForFirestore(write.data) as DocumentData;
+              const parts = write.path.split('/');
+              // A shop created without any Firebase session uses its ID as a
+              // temporary owner. Bind it to the first authenticated UID before
+              // creating the remote document; never change an existing owner.
+              if (
+                parts.length === 2 &&
+                parts[0] === 'shops' &&
+                data.ownerUid === parts[1] &&
+                auth.currentUser
+              ) {
+                const ownerUid = auth.currentUser.uid;
+                data = { ...data, ownerUid };
+                setShop((previous) =>
+                  previous?.id === parts[1] && previous.ownerUid === parts[1]
+                    ? { ...previous, ownerUid }
+                    : previous
+                );
+              }
+              batch.set(doc(db, write.path), data, { merge: true });
+            }
+            await batch.commit();
+          }
+          // Remove only this acknowledged entry; preserve anything enqueued in flight.
+          const next = queueRef.current.filter((entry) => entry.id !== action.id);
+          localStorage.setItem('countup_pending_queue', JSON.stringify(next));
+          queueRef.current = next;
+          setPendingQueue(next);
+          synced++;
+        } catch (err) {
+          console.warn('Sync failed; this and later entries remain queued:', action.id, err);
+          failed = true;
+          failureReason = err instanceof Error ? err.message : '';
+          break; // Later operations may depend on this one.
         }
-      );
-    } else if (navigator.onLine) {
+      }
+    } finally {
+      syncingRef.current = false;
+      setIsSyncing(false);
+    }
+    if (failed) {
       setLastOfflineNotice(
-        `${remaining.length} ${remaining.length === 1 ? 'entry' : 'entries'} could not sync yet. Tap Sync to retry.`
+        `${queueRef.current.length} entries could not sync yet. ${failureReason || 'Tap Sync to retry.'}`
       );
       notify('Some entries are still waiting to sync', {
         kind: 'error',
-        detail: 'They are safe on this phone. Tap the sync button in the header to retry.',
+        detail: failureReason || 'They remain on this phone. Tap the sync button to retry.',
       });
+    } else if (synced > 0) {
+      setLastOfflineNotice(null);
     }
   }, [notify]);
 
-  const queueAction = useCallback(
-    (type: PendingSyncAction['type'], path: string, data: QueuePayload) => {
+  useEffect(() => {
+    if (user && isOnline && pendingQueue.length) void syncNow();
+  }, [user, isOnline, pendingQueue.length, syncNow]);
+
+  const queueWrites = useCallback(
+    (
+      type: PendingSyncAction['type'],
+      writes: { path: string; data: QueuePayload }[],
+      adjustments?: SyncAdjustment[]
+    ) => {
+      if (!writes.length) return;
       const action: PendingSyncAction = {
-        id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
         type,
-        path,
-        data,
+        path: writes[0].path,
+        data: cleanForFirestore(writes[0].data),
+        writes: writes.map((write) => ({ ...write, data: cleanForFirestore(write.data) })),
+        ...(adjustments?.length ? { adjustments: cleanForFirestore(adjustments) } : {}),
         timestamp: Date.now(),
       };
       const next = [...queueRef.current, action];
+      // Persist before reporting success. A full/disabled localStorage must not
+      // silently discard a sale or its associated writes.
+      localStorage.setItem('countup_pending_queue', JSON.stringify(next));
       queueRef.current = next;
       setPendingQueue(next);
-
-      if (!navigator.onLine) {
+      if (!navigator.onLine)
         setLastOfflineNotice('Saved on this phone. Will sync when internet returns.');
-      } else {
-        // Push in the background; failures stay queued and are retried.
-        setTimeout(() => void syncNow(), 50);
-      }
+      else setTimeout(() => void syncNow(), 50);
     },
     [syncNow]
   );
 
+  const queueAction = useCallback(
+    (type: PendingSyncAction['type'], path: string, data: QueuePayload) =>
+      queueWrites(type, [{ path, data }]),
+    [queueWrites]
+  );
+
+  const persistOperation = async (
+    type: PendingSyncAction['type'],
+    writes: { path: string; data: QueuePayload }[],
+    adjustments?: SyncAdjustment[]
+  ) => {
+    queueWrites(type, writes, adjustments);
+    if (navigator.onLine && auth.currentUser) void syncNow();
+  };
+
   // Safe helper to obtain a Firebase auth user if Anonymous is enabled or user logged in
   const ensureFirebaseAuth = async (): Promise<User | null> => {
     if (auth.currentUser) return auth.currentUser;
+    // Do not wait for a network-dependent auth request when creating a shop offline.
+    if (!navigator.onLine) return null;
     try {
       const cred = await signInAnonymously(auth);
       return cred.user;
@@ -510,29 +888,27 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginWithPhoneAndPin = async (phone: string, pin: string): Promise<boolean> => {
     setIsLoading(true);
     try {
-      const cleanPhone = phone.replace(/\D/g, '');
-      const shopId = `shop_${cleanPhone}`;
+      const cleanPhone = normalizeZambianPhone(phone);
 
       // Ensure an authenticated Firebase session exists if enabled
       const currentUser = await ensureFirebaseAuth();
 
-      // Check remote Firestore first if online
+      // Check both the canonical ID and IDs created by older international-format registrations.
       if (navigator.onLine && currentUser) {
-        try {
-          const shopSnap = await getDoc(doc(db, 'shops', shopId));
-          if (shopSnap.exists()) {
-            const shopData = shopSnap.data() as Shop;
-            if (shopData.pin === pin) {
-              setShop(shopData);
-              setIsLoading(false);
-              return true;
-            } else {
-              setIsLoading(false);
-              return false; // Wrong PIN
+        for (const shopId of shopIdsForPhone(cleanPhone)) {
+          try {
+            const shopSnap = await getDoc(doc(db, 'shops', shopId));
+            if (shopSnap.exists()) {
+              const shopData = shopSnap.data() as Shop;
+              if (shopData.pin === pin) {
+                setShop(shopData);
+                setIsLoading(false);
+                return true;
+              }
             }
+          } catch (e) {
+            console.warn('Remote check note:', e);
           }
-        } catch (e) {
-          console.warn('Remote check note:', e);
         }
       }
 
@@ -540,7 +916,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cached = localStorage.getItem('countup_active_shop');
       if (cached) {
         const localShop = JSON.parse(cached) as Shop;
-        if (localShop.ownerPhone.replace(/\D/g, '') === cleanPhone && localShop.pin === pin) {
+        if (normalizeZambianPhone(localShop.ownerPhone) === cleanPhone && localShop.pin === pin) {
           setShop(localShop);
           setIsLoading(false);
           return true;
@@ -558,25 +934,29 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Register a new shop (starts 30-day free trial automatically)
   const registerNewShop = async (name: string, phone: string, pin: string): Promise<boolean> => {
+    if (queueRef.current.length || syncingRef.current) {
+      notify('Sync pending entries before creating another shop', { kind: 'error' });
+      return false;
+    }
     setIsLoading(true);
     try {
-      const cleanPhone = phone.replace(/\D/g, '');
+      const cleanPhone = normalizeZambianPhone(phone);
       const shopId = `shop_${cleanPhone}`;
 
       const currentUser = await ensureFirebaseAuth();
 
-      // Refuse to overwrite a shop that already exists for this phone number.
-      // Without this check, re-registering a known number silently replaced the
-      // existing shop's records (or failed on a security rule with an obscure error).
+      // Check both current and legacy ID formats without changing existing shops.
       if (navigator.onLine && currentUser) {
-        try {
-          const existing = await getDoc(doc(db, 'shops', shopId));
-          if (existing.exists()) {
-            setIsLoading(false);
-            return false;
+        for (const candidateId of shopIdsForPhone(cleanPhone)) {
+          try {
+            const existing = await getDoc(doc(db, 'shops', candidateId));
+            if (existing.exists()) {
+              setIsLoading(false);
+              return false;
+            }
+          } catch (e) {
+            console.warn('Shop availability check note:', e);
           }
-        } catch (e) {
-          console.warn('Shop availability check note:', e);
         }
       }
 
@@ -586,7 +966,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const newShop: Shop = {
         id: shopId,
         name: name.trim(),
-        ownerPhone: phone.trim(),
+        ownerPhone: cleanPhone,
         ownerUid: currentUser?.uid || shopId,
         pin: pin.trim(),
         planStatus: 'trial',
@@ -598,25 +978,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currency: 'ZMW',
       };
 
-      // A new shop starts with an empty stock book — the owner enters their own items.
-      setShop(newShop);
-      setItems([]);
-      setSales([]);
-      setCustomers([]);
-      setCreditPayments([]);
-      setExpenses([]);
-
-      // Persist to Firestore or queue for the next connection
+      // Persist to Firestore or queue for the next connection before entering the shop.
+      // If localStorage is full, the UI must not claim that an offline shop was saved.
       if (navigator.onLine && currentUser) {
         try {
           await setDoc(doc(db, 'shops', shopId), newShop);
         } catch (e) {
           const code = (e as { code?: string })?.code;
           if (code === 'permission-denied') {
-            // The number is already registered to another account. Don't leave the
-            // user in a shop that only exists on this phone.
-            setShop(null);
-            localStorage.removeItem('countup_active_shop');
+            // The number is already registered to another account. Do not enter
+            // a shop that cannot be saved to the cloud.
             setIsLoading(false);
             return false;
           }
@@ -627,6 +998,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         queueAction('item', `shops/${shopId}`, newShop);
       }
 
+      // A new shop starts with an empty stock book — the owner enters their own items.
+      setShop(newShop);
+      setItems([]);
+      setArchivedItems([]);
+      setStockMovements([]);
+      setStockConflicts([]);
+      setSales([]);
+      setCustomers([]);
+      setCreditPayments([]);
+      setExpenses([]);
       setIsLoading(false);
       return true;
     } catch (error) {
@@ -636,10 +1017,103 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const linkEmailAccount = async (email: string, password: string) => {
+    const current = auth.currentUser;
+    if (!navigator.onLine || !current || !shop)
+      throw new Error('Connect to the internet and sign in to your shop first.');
+    if (queueRef.current.length || syncingRef.current)
+      throw new Error('Sync all pending entries before enabling account access.');
+    if (current.uid !== shop.ownerUid && current.uid !== shop.id)
+      throw new Error('Only the shop owner can enable account access.');
+    if (!current.isAnonymous) throw new Error('This Firebase account is already linked.');
+    if (!email.trim() || password.length < 8)
+      throw new Error('Enter an email and a password of at least 8 characters.');
+    // Linking preserves the Firebase UID: existing Firestore ownership and admin
+    // grants do not change, and no PIN or password is copied into the database.
+    const result = await linkWithCredential(
+      current,
+      EmailAuthProvider.credential(email.trim(), password)
+    );
+    setUser(result.user);
+    localStorage.removeItem('countup_legacy_uid');
+  };
+
+  const loginWithEmail = async (email: string, password: string): Promise<Shop[]> => {
+    if (!navigator.onLine) throw new Error('Email sign-in needs an internet connection.');
+    if (queueRef.current.length || syncingRef.current)
+      throw new Error('Sync pending entries before switching accounts.');
+    if (
+      auth.currentUser?.isAnonymous &&
+      localStorage.getItem('countup_legacy_uid') === auth.currentUser.uid
+    ) {
+      throw new Error(
+        'This device owns a phone-and-PIN shop. Log in to that shop and enable email access before switching accounts, so its anonymous identity is not lost.'
+      );
+    }
+    const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+    try {
+      const snapshot = await getDocs(
+        query(collection(db, 'shops'), where('ownerUid', '==', result.user.uid))
+      );
+      const owned = snapshot.docs.map((entry) => entry.data() as Shop);
+      if (!owned.length)
+        throw new Error(
+          'This account does not own a CountUp shop. ShopBook accounts must be linked separately and their backup imported.'
+        );
+      return owned;
+    } catch (error) {
+      await signOut(auth);
+      throw error;
+    }
+  };
+  const cancelEmailLogin = async () => {
+    // Signing in may return several shops. If the user backs out before
+    // selecting one, do not leave that account silently active on this device.
+    if (!shop && auth.currentUser && !auth.currentUser.isAnonymous) await signOut(auth);
+  };
+  const selectEmailShop = (selected: Shop) => {
+    if (!auth.currentUser || selected.ownerUid !== auth.currentUser.uid)
+      throw new Error('This account cannot open that shop.');
+    itemsRef.current = [];
+    setItems([]);
+    archivedItemsRef.current = [];
+    setArchivedItems([]);
+    movementsRef.current = [];
+    setStockMovements([]);
+    conflictsRef.current = [];
+    setStockConflicts([]);
+    salesRef.current = [];
+    setSales([]);
+    customersRef.current = [];
+    setCustomers([]);
+    paymentsRef.current = [];
+    setCreditPayments([]);
+    expensesRef.current = [];
+    setExpenses([]);
+    setActiveTab('home');
+    setShop(selected);
+  };
+  const resetEmailPassword = async (email: string) => {
+    if (!navigator.onLine) throw new Error('Password recovery needs an internet connection.');
+    if (!email.trim()) throw new Error('Enter your email address first.');
+    await sendPasswordResetEmail(auth, email.trim());
+  };
+
   const logout = async () => {
+    if (queueRef.current.length || syncingRef.current) {
+      notify('Sync your pending entries before logging out', {
+        kind: 'error',
+        detail: 'This protects unsynced records on this phone.',
+      });
+      return;
+    }
+    if (auth.currentUser && !auth.currentUser.isAnonymous) await signOut(auth);
     localStorage.removeItem('countup_active_shop');
     setShop(null);
     setItems([]);
+    setArchivedItems([]);
+    setStockMovements([]);
+    setStockConflicts([]);
     setSales([]);
     setCustomers([]);
     setCreditPayments([]);
@@ -652,30 +1126,38 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!/^\d{4}$/.test(newPin)) return false;
     if (shop.pin !== currentPin.trim()) return false;
 
-    const updatedShop: Shop = { ...shop, pin: newPin };
-    setShop(updatedShop);
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, 'shops', shop.id), { pin: newPin }, { merge: true });
-      } catch {
-        queueAction('item', `shops/${shop.id}`, { pin: newPin });
-      }
-    } else {
-      queueAction('item', `shops/${shop.id}`, { pin: newPin });
-    }
+    // Keep PIN changes in FIFO order with earlier offline changes, and persist
+    // the queue before reporting success or updating the local shop.
+    await persistOperation('item', [{ path: `shops/${shop.id}`, data: { pin: newPin } }]);
+    setShop({ ...shop, pin: newPin });
     return true;
   };
 
   // Permanently delete the shop document and all of its records.
   // Backs the deletion right promised in the Privacy Policy.
   const deleteShopAccount = async (): Promise<boolean> => {
-    if (!shop) return false;
+    if (
+      !shop ||
+      !navigator.onLine ||
+      !auth.currentUser ||
+      queueRef.current.length ||
+      syncingRef.current
+    )
+      return false;
     const activeShop = shop;
     setIsLoading(true);
 
     if (navigator.onLine && auth.currentUser) {
-      const subcollections = ['items', 'sales', 'customers', 'credit_payments', 'expenses'];
+      const subcollections = [
+        'items',
+        'sales',
+        'customers',
+        'credit_payments',
+        'expenses',
+        'stock_movements',
+        'stock_conflicts',
+        'sync_operations',
+      ];
       try {
         for (const name of subcollections) {
           const snap = await getDocs(collection(db, 'shops', activeShop.id, name));
@@ -694,6 +1176,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     for (const key of [
       'countup_active_shop',
       'countup_items',
+      'countup_archived_items',
+      'countup_stock_movements',
+      'countup_stock_conflicts',
       'countup_sales',
       'countup_customers',
       'countup_payments',
@@ -704,10 +1189,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     setShop(null);
     setItems([]);
+    setArchivedItems([]);
+    setStockMovements([]);
+    setStockConflicts([]);
     setSales([]);
     setCustomers([]);
     setCreditPayments([]);
     setExpenses([]);
+    queueRef.current = [];
     setPendingQueue([]);
     setIsLoading(false);
     return true;
@@ -733,477 +1222,681 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     ? { ...planSubscription, canRecordSales: false }
     : planSubscription;
 
-  // Record a sale (under 15-second flow)
-  const recordSale = async (
-    saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>
-  ): Promise<string> => {
+  // New records have stable IDs across retries and devices.
+  const createRecordId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
+  const makeMovement = (
+    item: Item,
+    type: StockMovement['type'],
+    next: number,
+    reason: string,
+    now: string,
+    relatedSaleId?: string
+  ): StockMovement => ({
+    id: createRecordId('movement'),
+    shopId: item.shopId,
+    itemId: item.id,
+    itemName: item.name,
+    type,
+    delta: next - item.quantity,
+    previousQuantity: item.quantity,
+    newQuantity: next,
+    reason,
+    ...(relatedSaleId ? { relatedSaleId } : {}),
+    createdAt: now,
+  });
+
+  const recordSale = async (saleData: Omit<Sale, 'id' | 'shopId' | 'createdAt'>): Promise<Sale> => {
     if (!shop) throw new Error('No active shop');
-    if (shop.isDeactivated) throw new Error('This shop has been deactivated');
-
-    // Guard rail: the cart must never contain more than the stock on hand, or the
-    // stock book silently drifts out of step with reality.
-    for (const sold of saleData.items) {
-      const stockItem = items.find((i) => i.id === sold.itemId);
-      if (!stockItem) throw new Error(`"${sold.name}" is no longer in your stock book.`);
-      if (sold.quantity > stockItem.quantity) {
+    if (!subscription.canRecordSales) throw new Error('New sales are locked for this shop.');
+    // A conflicting stock line can write the item, movement and a conflict record.
+    // Reserve room for the sale, customer and idempotency marker under Firestore's
+    // 500-write transaction limit even if every line needs a recount.
+    if (!saleData.items.length || saleData.items.length > 160)
+      throw new Error('A sale must contain between 1 and 160 products.');
+    if (new Set(saleData.items.map((line) => line.itemId)).size !== saleData.items.length)
+      throw new Error('A product appears more than once in the cart.');
+    const liveItems = itemsRef.current;
+    const lines = saleData.items.map((line) => {
+      const item = liveItems.find((candidate) => candidate.id === line.itemId);
+      if (!item) throw new Error(`"${line.name}" is no longer in your stock book.`);
+      if (
+        !Number.isSafeInteger(line.quantity) ||
+        line.quantity <= 0 ||
+        line.quantity > item.quantity
+      )
         throw new Error(
-          `Only ${stockItem.quantity} of "${stockItem.name}" left in stock — reduce the quantity to continue.`
+          `Only ${item.quantity} of "${item.name}" left in stock — reduce the quantity to continue.`
         );
-      }
-    }
-
-    const saleId = `sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const nowIso = new Date().toISOString();
-
-    const newSale: Sale = {
+      if (toNgwee(item.sellingPrice) <= 0)
+        throw new Error(`Enter a valid selling price for ${item.name}.`);
+      return {
+        itemId: item.id,
+        name: item.name,
+        quantity: line.quantity,
+        buyingPrice: item.buyingPrice,
+        buyingPriceKnown: item.buyingPriceKnown !== false,
+        sellingPrice: item.sellingPrice,
+        unitLabel: item.unitLabel || '',
+      };
+    });
+    const creditCustomer =
+      saleData.paymentType === 'credit'
+        ? customersRef.current.find((customer) => customer.id === saleData.customerId)
+        : undefined;
+    if (saleData.paymentType === 'credit' && !creditCustomer)
+      throw new Error('Choose a customer before saving a credit sale.');
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const saleId = createRecordId('sale');
+    const totalAmount = addKwacha(
+      ...lines.map((line) => multiplyKwacha(line.sellingPrice, line.quantity))
+    );
+    const totalCost = addKwacha(
+      ...lines.map((line) =>
+        line.buyingPriceKnown ? multiplyKwacha(line.buyingPrice, line.quantity) : 0
+      )
+    );
+    const missingCostRevenue = addKwacha(
+      ...lines.map((line) =>
+        line.buyingPriceKnown ? 0 : multiplyKwacha(line.sellingPrice, line.quantity)
+      )
+    );
+    const newSale: Sale = cleanForFirestore({
+      ...saleData,
       id: saleId,
       shopId: shop.id,
-      ...saleData,
-      createdAt: nowIso,
-    };
-
-    // 1. Reduce stock for sold items & update lastSoldAt for quick re-access
-    const updatedItems = items.map((item) => {
-      const soldItem = saleData.items.find((si) => si.itemId === item.id);
-      if (soldItem) {
-        const newQty = Math.max(0, item.quantity - soldItem.quantity);
-        return {
-          ...item,
-          quantity: newQty,
-          lastSoldAt: nowIso,
-          updatedAt: nowIso,
-        };
-      }
-      return item;
-    });
-
-    setItems(updatedItems);
-    setSales((prev) => [newSale, ...prev]);
-
-    // 2. If sale is "On credit", update customer's balance
-    if (saleData.paymentType === 'credit' && saleData.customerId) {
-      setCustomers((prev) =>
-        prev.map((c) => {
-          if (c.id === saleData.customerId) {
-            return {
-              ...c,
-              totalOwed: c.totalOwed + saleData.totalAmount,
-              updatedAt: nowIso,
-            };
+      items: lines,
+      itemsCount: lines.reduce((sum, line) => sum + line.quantity, 0),
+      totalAmount,
+      totalCost,
+      profit: addKwacha(totalAmount, -totalCost, -missingCostRevenue),
+      missingCostRevenue,
+      ...(creditCustomer
+        ? {
+            customerId: creditCustomer.id,
+            customerName: creditCustomer.name,
+            customerPhone: creditCustomer.phone || '',
           }
-          return c;
-        })
-      );
-    }
-
-    // 3. Persist to Firestore or queue.
-    //
-    // One atomic batch: the sale, the new stock levels and the credit balance land
-    // together. Written one-by-one, a dropped connection halfway through left a sale
-    // recorded against stock that never went down, and the real-time listeners
-    // reflected that broken half-state on screen.
-    const salePath = `shops/${shop.id}/sales/${saleId}`;
-    const stockUpdates = saleData.items
-      .map((sold) => updatedItems.find((i) => i.id === sold.itemId))
-      .filter((i): i is Item => Boolean(i));
-    const creditCustomer =
-      saleData.paymentType === 'credit' && saleData.customerId
-        ? customers.find((c) => c.id === saleData.customerId)
-        : undefined;
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        const batch = writeBatch(db);
-        batch.set(doc(db, salePath), newSale);
-        for (const item of stockUpdates) {
-          batch.set(doc(db, `shops/${shop.id}/items/${item.id}`), item, { merge: true });
-        }
-        if (creditCustomer) {
-          batch.set(
-            doc(db, `shops/${shop.id}/customers/${creditCustomer.id}`),
-            {
-              totalOwed: creditCustomer.totalOwed + saleData.totalAmount,
-              updatedAt: nowIso,
-            },
-            { merge: true }
-          );
-        }
-        await batch.commit();
-      } catch (err) {
-        console.warn('Sale sync error, queuing locally:', err);
-        queueAction('sale', salePath, newSale);
-        for (const item of stockUpdates) {
-          queueAction('stock_update', `shops/${shop.id}/items/${item.id}`, item);
-        }
-        if (creditCustomer) {
-          queueAction('customer', `shops/${shop.id}/customers/${creditCustomer.id}`, {
-            totalOwed: creditCustomer.totalOwed + saleData.totalAmount,
+        : {}),
+      receiptNumber: `CU-${localDateKey(now).replace(/-/g, '')}-${saleId.slice(5)}`,
+      localDate: localDateKey(now),
+      createdAt: nowIso,
+    });
+    const updatedItems = liveItems.map((item) => {
+      const line = lines.find((candidate) => candidate.itemId === item.id);
+      return line
+        ? {
+            ...item,
+            quantity: item.quantity - line.quantity,
+            lastSoldAt: nowIso,
             updatedAt: nowIso,
-          });
-        }
-      }
-    } else {
-      queueAction('sale', salePath, newSale);
-      for (const item of stockUpdates) {
-        queueAction('stock_update', `shops/${shop.id}/items/${item.id}`, item);
-      }
-      if (creditCustomer) {
-        queueAction('customer', `shops/${shop.id}/customers/${creditCustomer.id}`, {
-          totalOwed: creditCustomer.totalOwed + saleData.totalAmount,
-          updatedAt: nowIso,
-        });
-      }
+          }
+        : item;
+    });
+    const writes: { path: string; data: object }[] = [
+      { path: `shops/${shop.id}/sales/${saleId}`, data: newSale },
+    ];
+    const adjustments: SyncAdjustment[] = [];
+    const movements: StockMovement[] = [];
+    for (const line of lines) {
+      const item = liveItems.find((candidate) => candidate.id === line.itemId)!;
+      const movement = makeMovement(
+        item,
+        'sale',
+        item.quantity - line.quantity,
+        `Sale ${newSale.receiptNumber}`,
+        nowIso,
+        saleId
+      );
+      const itemPath = `shops/${shop.id}/items/${item.id}`;
+      const movementPath = `shops/${shop.id}/stock_movements/${movement.id}`;
+      movements.push(movement);
+      writes.push(
+        { path: itemPath, data: updatedItems.find((candidate) => candidate.id === item.id)! },
+        { path: movementPath, data: movement }
+      );
+      adjustments.push({
+        kind: 'stock',
+        path: itemPath,
+        delta: -line.quantity,
+        updatedAt: nowIso,
+        lastSoldAt: nowIso,
+        movement: { path: movementPath, data: movement },
+      });
     }
-
-    return saleId;
+    if (creditCustomer) {
+      const next = addKwacha(creditCustomer.totalOwed, totalAmount);
+      const customerPath = `shops/${shop.id}/customers/${creditCustomer.id}`;
+      writes.push({
+        path: customerPath,
+        data: { ...creditCustomer, totalOwed: next, updatedAt: nowIso },
+      });
+      adjustments.push({
+        kind: 'credit',
+        path: customerPath,
+        deltaNgwee: toNgwee(totalAmount),
+        updatedAt: nowIso,
+      });
+    }
+    await persistOperation('sale', writes, adjustments);
+    itemsRef.current = updatedItems;
+    setItems(updatedItems);
+    salesRef.current = [newSale, ...salesRef.current];
+    setSales(salesRef.current);
+    movementsRef.current = [...movements, ...movementsRef.current];
+    setStockMovements(movementsRef.current);
+    if (creditCustomer) {
+      customersRef.current = customersRef.current.map((customer) =>
+        customer.id === creditCustomer.id
+          ? {
+              ...customer,
+              totalOwed: addKwacha(customer.totalOwed, totalAmount),
+              updatedAt: nowIso,
+            }
+          : customer
+      );
+      setCustomers(customersRef.current);
+    }
+    return newSale;
   };
 
-  // Void a sale recorded by mistake.
-  //
-  // Puts the stock back, takes the amount off the customer's credit balance if it
-  // was a credit sale, and hides the sale from reports — all in one atomic batch so
-  // the ledger and the stock book can never disagree afterwards. Limited to today's
-  // sales on purpose: a shopkeeper should not be able to rewrite last week's books.
   const voidSale = async (saleId: string): Promise<Sale> => {
     if (!shop) throw new Error('No active shop');
-    const sale = sales.find((s) => s.id === saleId);
+    const sale = salesRef.current.find((entry) => entry.id === saleId);
     if (!sale) throw new Error('That sale is no longer in your records.');
-    if (!isTodayIso(sale.createdAt)) {
+    if (!isTodayIso(sale.createdAt))
       throw new Error('Only sales recorded today can be undone. Older sales stay in your reports.');
-    }
-
-    const nowIso = new Date().toISOString();
-
-    // Restore stock for every item in the sale (skip items since deleted).
-    const restoredItems: Item[] = [];
-    for (const sold of sale.items) {
-      const live = items.find((i) => i.id === sold.itemId);
-      if (!live) continue;
-      restoredItems.push({
-        ...live,
-        quantity: live.quantity + sold.quantity,
-        updatedAt: nowIso,
-      });
-    }
-
     const creditCustomer =
       sale.paymentType === 'credit' && sale.customerId
-        ? customers.find((c) => c.id === sale.customerId)
+        ? customersRef.current.find((c) => c.id === sale.customerId)
         : undefined;
-    const restoredOwed = creditCustomer
-      ? Math.max(0, Number((creditCustomer.totalOwed - sale.totalAmount).toFixed(2)))
-      : undefined;
-
-    // Optimistic local state first — the shopkeeper sees the correction instantly.
-    setSales((prev) => prev.filter((s) => s.id !== saleId));
-    setItems((prev) => prev.map((i) => restoredItems.find((r) => r.id === i.id) ?? i));
-    if (creditCustomer && restoredOwed !== undefined) {
-      setCustomers((prev) =>
-        prev.map((c) =>
-          c.id === creditCustomer.id ? { ...c, totalOwed: restoredOwed, updatedAt: nowIso } : c
-        )
+    if (creditCustomer && toNgwee(creditCustomer.totalOwed) < toNgwee(sale.totalAmount)) {
+      throw new Error(
+        'This credit sale has already been partly repaid. Reconcile the repayment before undoing it.'
       );
     }
-
-    const salePath = `shops/${shop.id}/sales/${saleId}`;
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        const batch = writeBatch(db);
-        batch.set(doc(db, salePath), { isDeleted: true }, { merge: true });
-        for (const item of restoredItems) {
-          batch.set(doc(db, `shops/${shop.id}/items/${item.id}`), item, { merge: true });
-        }
-        if (creditCustomer && restoredOwed !== undefined) {
-          batch.set(
-            doc(db, `shops/${shop.id}/customers/${creditCustomer.id}`),
-            { totalOwed: restoredOwed, updatedAt: nowIso },
-            { merge: true }
-          );
-        }
-        await batch.commit();
-        return sale;
-      } catch (e) {
-        console.warn('Void sale sync note, queued for retry:', e);
-      }
+    const nowIso = new Date().toISOString();
+    const allItems = [...itemsRef.current, ...archivedItemsRef.current];
+    const writes: { path: string; data: object }[] = [
+      { path: `shops/${shop.id}/sales/${saleId}`, data: { isDeleted: true } },
+    ];
+    const adjustments: SyncAdjustment[] = [];
+    const restored = new Map<string, Item>();
+    const movements: StockMovement[] = [];
+    for (const line of sale.items) {
+      const item = allItems.find((candidate) => candidate.id === line.itemId);
+      if (!item) continue; // Historical records remain even if old stock was permanently removed.
+      const updated = { ...item, quantity: item.quantity + line.quantity, updatedAt: nowIso };
+      const movement = makeMovement(
+        item,
+        'void',
+        updated.quantity,
+        `Undo sale ${sale.receiptNumber || sale.id}`,
+        nowIso,
+        saleId
+      );
+      const path = `shops/${shop.id}/items/${item.id}`;
+      const movementPath = `shops/${shop.id}/stock_movements/${movement.id}`;
+      restored.set(item.id, updated);
+      movements.push(movement);
+      writes.push({ path, data: updated }, { path: movementPath, data: movement });
+      adjustments.push({
+        kind: 'stock',
+        path,
+        delta: line.quantity,
+        updatedAt: nowIso,
+        movement: { path: movementPath, data: movement },
+      });
     }
-
-    queueAction('sale', salePath, { isDeleted: true });
-    for (const item of restoredItems) {
-      queueAction('stock_update', `shops/${shop.id}/items/${item.id}`, item);
-    }
-    if (creditCustomer && restoredOwed !== undefined) {
-      queueAction('customer', `shops/${shop.id}/customers/${creditCustomer.id}`, {
-        totalOwed: restoredOwed,
+    if (creditCustomer) {
+      const path = `shops/${shop.id}/customers/${creditCustomer.id}`;
+      writes.push({
+        path,
+        data: {
+          ...creditCustomer,
+          totalOwed: addKwacha(creditCustomer.totalOwed, -sale.totalAmount),
+          updatedAt: nowIso,
+        },
+      });
+      adjustments.push({
+        kind: 'credit',
+        path,
+        deltaNgwee: -toNgwee(sale.totalAmount),
         updatedAt: nowIso,
       });
+    }
+    await persistOperation('sale', writes, adjustments);
+    salesRef.current = salesRef.current.filter((entry) => entry.id !== saleId);
+    setSales(salesRef.current);
+    itemsRef.current = itemsRef.current.map((item) => restored.get(item.id) ?? item);
+    setItems(itemsRef.current);
+    archivedItemsRef.current = archivedItemsRef.current.map(
+      (item) => restored.get(item.id) ?? item
+    );
+    setArchivedItems(archivedItemsRef.current);
+    movementsRef.current = [...movements, ...movementsRef.current];
+    setStockMovements(movementsRef.current);
+    if (creditCustomer) {
+      customersRef.current = customersRef.current.map((c) =>
+        c.id === creditCustomer.id
+          ? { ...c, totalOwed: addKwacha(c.totalOwed, -sale.totalAmount), updatedAt: nowIso }
+          : c
+      );
+      setCustomers(customersRef.current);
     }
     return sale;
   };
 
-  // Add Item to Stock
   const addItem = async (
     itemData: Omit<Item, 'id' | 'shopId' | 'createdAt' | 'updatedAt'>
   ): Promise<string> => {
     if (!shop) throw new Error('No active shop');
-    const itemId = `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    if (
+      !itemData.name.trim() ||
+      !Number.isSafeInteger(itemData.quantity) ||
+      itemData.quantity < 0 ||
+      !Number.isSafeInteger(itemData.lowStockThreshold) ||
+      itemData.lowStockThreshold < 0 ||
+      toNgwee(itemData.sellingPrice) <= 0 ||
+      toNgwee(itemData.buyingPrice) < 0
+    )
+      throw new Error('Enter a valid name, prices and whole stock quantities.');
     const nowIso = new Date().toISOString();
-
-    const newItem: Item = {
-      id: itemId,
-      shopId: shop.id,
+    const item: Item = {
       ...itemData,
+      id: createRecordId('item'),
+      shopId: shop.id,
+      name: itemData.name.trim(),
       createdAt: nowIso,
       updatedAt: nowIso,
     };
-
-    setItems((prev) => [newItem, ...prev]);
-
-    const path = `shops/${shop.id}/items/${itemId}`;
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), newItem);
-      } catch {
-        queueAction('item', path, newItem);
-      }
-    } else {
-      queueAction('item', path, newItem);
-    }
-
-    return itemId;
-  };
-
-  // Update Item
-  const updateItem = async (itemId: string, patch: Partial<Item>) => {
-    if (!shop) return;
-    const nowIso = new Date().toISOString();
-    setItems((prev) =>
-      prev.map((i) => (i.id === itemId ? { ...i, ...patch, updatedAt: nowIso } : i))
+    const movement = makeMovement(
+      { ...item, quantity: 0 },
+      'initial',
+      item.quantity,
+      'Initial stock',
+      nowIso
     );
+    await persistOperation('item', [
+      { path: `shops/${shop.id}/items/${item.id}`, data: item },
+      { path: `shops/${shop.id}/stock_movements/${movement.id}`, data: movement },
+    ]);
+    itemsRef.current = [item, ...itemsRef.current];
+    setItems(itemsRef.current);
+    movementsRef.current = [movement, ...movementsRef.current];
+    setStockMovements(movementsRef.current);
+    return item.id;
+  };
 
+  const saveItemChange = async (
+    itemId: string,
+    patch: Partial<Item>,
+    movementType: StockMovement['type'] = 'adjustment',
+    reason = 'Stock level edited',
+    setQuantity = false
+  ) => {
+    if (!shop) throw new Error('No active shop');
+    const item = itemsRef.current.find((candidate) => candidate.id === itemId);
+    if (!item) throw new Error('That product is no longer in your stock book.');
+    // Only editable business fields are accepted; IDs and ownership never change.
+    const {
+      name,
+      unitLabel,
+      buyingPrice,
+      buyingPriceKnown,
+      sellingPrice,
+      quantity,
+      lowStockThreshold,
+    } = patch;
+    const editable = cleanForFirestore({
+      name,
+      unitLabel,
+      buyingPrice,
+      buyingPriceKnown,
+      sellingPrice,
+      quantity,
+      lowStockThreshold,
+    });
+    const nowIso = new Date().toISOString();
+    const updated: Item = { ...item, ...editable, updatedAt: nowIso };
+    if (
+      !updated.name.trim() ||
+      !Number.isSafeInteger(updated.quantity) ||
+      updated.quantity < 0 ||
+      !Number.isSafeInteger(updated.lowStockThreshold) ||
+      updated.lowStockThreshold < 0 ||
+      toNgwee(updated.sellingPrice) <= 0 ||
+      toNgwee(updated.buyingPrice) < 0
+    )
+      throw new Error('Enter a valid name, prices and whole stock quantities.');
     const path = `shops/${shop.id}/items/${itemId}`;
-    const updated = items.find((i) => i.id === itemId);
-    if (updated) {
-      const merged = { ...updated, ...patch, updatedAt: nowIso };
-      if (navigator.onLine && auth.currentUser) {
-        try {
-          await setDoc(doc(db, path), merged, { merge: true });
-        } catch {
-          queueAction('item', path, merged);
-        }
-      } else {
-        queueAction('item', path, merged);
-      }
+    if (updated.quantity !== item.quantity || setQuantity) {
+      const movement = makeMovement(
+        item,
+        movementType,
+        updated.quantity,
+        reason.trim() || 'Stock adjustment',
+        nowIso
+      );
+      const movementPath = `shops/${shop.id}/stock_movements/${movement.id}`;
+      const metadata = { ...editable };
+      delete metadata.quantity;
+      await persistOperation(
+        'stock_update',
+        [
+          { path, data: updated },
+          { path: movementPath, data: movement },
+        ],
+        [
+          {
+            kind: 'stock',
+            path,
+            delta: updated.quantity - item.quantity,
+            ...(setQuantity ? { setTo: updated.quantity } : {}),
+            updatedAt: nowIso,
+            metadata,
+            movement: { path: movementPath, data: movement },
+          },
+        ]
+      );
+      movementsRef.current = [movement, ...movementsRef.current];
+      setStockMovements(movementsRef.current);
+    } else {
+      const metadata = { ...editable };
+      delete metadata.quantity;
+      await persistOperation('item', [{ path, data: { ...metadata, updatedAt: nowIso } }]);
     }
+    itemsRef.current = itemsRef.current.map((candidate) =>
+      candidate.id === itemId ? updated : candidate
+    );
+    setItems(itemsRef.current);
   };
 
-  // Quick Restock (+5, +10, etc.)
-  const quickRestock = async (itemId: string, quantityToAdd: number) => {
-    const item = items.find((i) => i.id === itemId);
-    if (!item) return;
-    const newQty = item.quantity + quantityToAdd;
-    await updateItem(itemId, { quantity: newQty });
+  const updateItem = async (itemId: string, patch: Partial<Item>) =>
+    saveItemChange(
+      itemId,
+      patch,
+      'adjustment',
+      'Stock level edited',
+      patch.quantity !== undefined &&
+        patch.quantity !== itemsRef.current.find((item) => item.id === itemId)?.quantity
+    );
+  const adjustStock = async (
+    itemId: string,
+    mode: 'add' | 'subtract' | 'set',
+    quantity: number,
+    reason: string
+  ) => {
+    const item = itemsRef.current.find((candidate) => candidate.id === itemId);
+    if (!item) throw new Error('That product is no longer in your stock book.');
+    if (!Number.isSafeInteger(quantity) || quantity < 0 || (mode !== 'set' && quantity === 0))
+      throw new Error('Enter a valid whole stock quantity.');
+    const next =
+      mode === 'set'
+        ? quantity
+        : mode === 'add'
+          ? item.quantity + quantity
+          : item.quantity - quantity;
+    if (next < 0) throw new Error('You cannot remove more stock than is on hand.');
+    await saveItemChange(
+      itemId,
+      { quantity: next },
+      mode === 'add' ? 'restock' : 'adjustment',
+      reason,
+      mode === 'set'
+    );
   };
+  const quickRestock = async (itemId: string, quantityToAdd: number) =>
+    adjustStock(itemId, 'add', quantityToAdd, 'Quick restock');
 
-  // Delete Item (soft delete: the document is flagged, never destroyed, so an
-  // accidental removal can be undone from the toast that follows)
   const deleteItem = async (itemId: string) => {
     if (!shop) return;
-    const path = `shops/${shop.id}/items/${itemId}`;
-    setItems((prev) => prev.filter((i) => i.id !== itemId));
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), { isDeleted: true }, { merge: true });
-        return;
-      } catch (e) {
-        console.warn('Delete item sync note, queued for retry:', e);
-      }
-    }
-    queueAction('item', path, { isDeleted: true });
+    const item = itemsRef.current.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    const archived = { ...item, isDeleted: true };
+    await persistOperation('item', [
+      { path: `shops/${shop.id}/items/${itemId}`, data: { isDeleted: true } },
+    ]);
+    itemsRef.current = itemsRef.current.filter((candidate) => candidate.id !== itemId);
+    setItems(itemsRef.current);
+    archivedItemsRef.current = [
+      archived,
+      ...archivedItemsRef.current.filter((candidate) => candidate.id !== itemId),
+    ];
+    setArchivedItems(archivedItemsRef.current);
   };
-
-  // Put a deleted item back exactly as it was (undo)
   const restoreItem = async (item: Item) => {
     if (!shop) return;
-    const path = `shops/${shop.id}/items/${item.id}`;
-    const restored: Item = { ...item, updatedAt: new Date().toISOString() };
-    setItems((prev) => (prev.some((i) => i.id === item.id) ? prev : [restored, ...prev]));
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), { ...restored, isDeleted: false }, { merge: true });
-        return;
-      } catch (e) {
-        console.warn('Restore item sync note, queued for retry:', e);
-      }
-    }
-    queueAction('item', path, { ...restored, isDeleted: false });
+    const restored: Item = { ...item, isDeleted: false, updatedAt: new Date().toISOString() };
+    await persistOperation('item', [
+      {
+        path: `shops/${shop.id}/items/${item.id}`,
+        data: { isDeleted: false, updatedAt: restored.updatedAt },
+      },
+    ]);
+    archivedItemsRef.current = archivedItemsRef.current.filter(
+      (candidate) => candidate.id !== item.id
+    );
+    setArchivedItems(archivedItemsRef.current);
+    itemsRef.current = [
+      restored,
+      ...itemsRef.current.filter((candidate) => candidate.id !== item.id),
+    ];
+    setItems(itemsRef.current);
+  };
+  const resolveStockConflict = async (conflictId: string) => {
+    if (!shop) return;
+    await persistOperation('stock_update', [
+      { path: `shops/${shop.id}/stock_conflicts/${conflictId}`, data: { resolved: true } },
+    ]);
+    conflictsRef.current = conflictsRef.current.map((conflict) =>
+      conflict.id === conflictId ? { ...conflict, resolved: true } : conflict
+    );
+    setStockConflicts(conflictsRef.current);
   };
 
-  // Add Customer to Credit Book
   const addCustomer = async (name: string, phone?: string): Promise<Customer> => {
     if (!shop) throw new Error('No active shop');
-    const customerId = `cust_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    if (!name.trim()) throw new Error('Enter a customer name.');
     const nowIso = new Date().toISOString();
-
-    const newCustomer: Customer = {
-      id: customerId,
+    const customer: Customer = {
+      id: createRecordId('cust'),
       shopId: shop.id,
       name: name.trim(),
-      phone: phone?.trim(),
+      phone: phone?.trim() || '',
+      notes: '',
       totalOwed: 0,
       createdAt: nowIso,
       updatedAt: nowIso,
     };
-
-    setCustomers((prev) => [newCustomer, ...prev]);
-
-    const path = `shops/${shop.id}/customers/${customerId}`;
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), newCustomer);
-      } catch {
-        queueAction('customer', path, newCustomer);
-      }
-    } else {
-      queueAction('customer', path, newCustomer);
-    }
-
-    return newCustomer;
+    await persistOperation('customer', [
+      { path: `shops/${shop.id}/customers/${customer.id}`, data: customer },
+    ]);
+    customersRef.current = [customer, ...customersRef.current];
+    setCustomers(customersRef.current);
+    return customer;
+  };
+  const updateCustomer = async (
+    customerId: string,
+    patch: Pick<Customer, 'name' | 'phone' | 'notes'>
+  ) => {
+    if (!shop) throw new Error('No active shop');
+    const customer = customersRef.current.find((candidate) => candidate.id === customerId);
+    if (!customer || !patch.name.trim()) throw new Error('Enter a customer name.');
+    const updated = {
+      ...customer,
+      name: patch.name.trim(),
+      phone: patch.phone?.trim() || '',
+      notes: patch.notes?.trim() || '',
+      updatedAt: new Date().toISOString(),
+    };
+    await persistOperation('customer', [
+      {
+        path: `shops/${shop.id}/customers/${customerId}`,
+        data: {
+          name: updated.name,
+          phone: updated.phone,
+          notes: updated.notes,
+          updatedAt: updated.updatedAt,
+        },
+      },
+    ]);
+    customersRef.current = customersRef.current.map((candidate) =>
+      candidate.id === customerId ? updated : candidate
+    );
+    setCustomers(customersRef.current);
   };
 
-  // Record Credit Payment
-  //
-  // Returns what was actually applied. Over-paying used to be accepted, silently
-  // clamped to a zero balance and still stored the inflated amount — the ledger no
-  // longer adds up as soon as that happens, so it is refused here instead.
   const recordCreditPayment = async (
     customerId: string,
     amount: number,
-    note?: string
+    note?: string,
+    paymentMethod: 'cash' | 'momo' = 'cash'
   ): Promise<{ applied: number; remaining: number }> => {
     if (!shop) throw new Error('No active shop');
-    const customer = customers.find((c) => c.id === customerId);
+    const customer = customersRef.current.find((candidate) => candidate.id === customerId);
     if (!customer) throw new Error('That customer is no longer in your credit book.');
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw new Error('Enter an amount greater than zero.');
-    }
-    if (amount > customer.totalOwed) {
+    const cents = toNgwee(amount);
+    if (cents <= 0) throw new Error('Enter an amount greater than zero.');
+    if (cents > toNgwee(customer.totalOwed))
       throw new Error(
         `${customer.name} only owes K ${customer.totalOwed.toFixed(2)} — enter that amount or less.`
       );
-    }
-
-    const paymentId = `pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const nowIso = new Date().toISOString();
-
-    const newPayment: CreditPayment = {
-      id: paymentId,
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const payment: CreditPayment = {
+      id: createRecordId('pay'),
       shopId: shop.id,
       customerId,
       customerName: customer.name,
       amount,
-      note,
+      paymentMethod,
+      note: note?.trim() || '',
       createdAt: nowIso,
+      localDate: localDateKey(now),
     };
-
-    setCreditPayments((prev) => [newPayment, ...prev]);
-
-    // Update customer owed amount
-    const newTotalOwed = Math.max(0, Number((customer.totalOwed - amount).toFixed(2)));
-    setCustomers((prev) =>
-      prev.map((c) =>
-        c.id === customerId ? { ...c, totalOwed: newTotalOwed, updatedAt: nowIso } : c
-      )
-    );
-
-    const paymentPath = `shops/${shop.id}/credit_payments/${paymentId}`;
+    const remaining = addKwacha(customer.totalOwed, -amount);
     const customerPath = `shops/${shop.id}/customers/${customerId}`;
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        // Atomic: a payment must never land without its matching balance change.
-        const batch = writeBatch(db);
-        batch.set(doc(db, paymentPath), newPayment);
-        batch.set(
-          doc(db, customerPath),
-          { totalOwed: newTotalOwed, updatedAt: nowIso },
-          { merge: true }
-        );
-        await batch.commit();
-      } catch {
-        queueAction('payment', paymentPath, newPayment);
-        queueAction('customer', customerPath, { totalOwed: newTotalOwed, updatedAt: nowIso });
-      }
-    } else {
-      queueAction('payment', paymentPath, newPayment);
-      queueAction('customer', customerPath, { totalOwed: newTotalOwed, updatedAt: nowIso });
-    }
-
-    return { applied: amount, remaining: newTotalOwed };
+    await persistOperation(
+      'payment',
+      [
+        { path: `shops/${shop.id}/credit_payments/${payment.id}`, data: payment },
+        { path: customerPath, data: { ...customer, totalOwed: remaining, updatedAt: nowIso } },
+      ],
+      [{ kind: 'credit', path: customerPath, deltaNgwee: -cents, updatedAt: nowIso }]
+    );
+    paymentsRef.current = [payment, ...paymentsRef.current];
+    setCreditPayments(paymentsRef.current);
+    customersRef.current = customersRef.current.map((candidate) =>
+      candidate.id === customerId
+        ? { ...candidate, totalOwed: remaining, updatedAt: nowIso }
+        : candidate
+    );
+    setCustomers(customersRef.current);
+    return { applied: amount, remaining };
   };
 
-  // Add Expense
   const addExpense = async (category: Expense['category'], amount: number, note?: string) => {
-    if (!shop) return;
-    const expenseId = `exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const nowIso = new Date().toISOString();
-
-    const newExpense: Expense = {
-      id: expenseId,
+    if (!shop) throw new Error('No active shop');
+    if (toNgwee(amount) <= 0) throw new Error('Enter an amount greater than zero.');
+    const expense: Expense = {
+      id: createRecordId('exp'),
       shopId: shop.id,
       category,
       amount,
-      note,
-      createdAt: nowIso,
+      note: note?.trim() || '',
+      createdAt: new Date().toISOString(),
     };
-
-    setExpenses((prev) => [newExpense, ...prev]);
-
-    const path = `shops/${shop.id}/expenses/${expenseId}`;
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), newExpense);
-      } catch {
-        queueAction('expense', path, newExpense);
-      }
-    } else {
-      queueAction('expense', path, newExpense);
-    }
+    await persistOperation('expense', [
+      { path: `shops/${shop.id}/expenses/${expense.id}`, data: expense },
+    ]);
+    expensesRef.current = [expense, ...expensesRef.current];
+    setExpenses(expensesRef.current);
   };
-
-  // Expenses are soft-deleted like stock items: without a write the row simply
-  // reappeared on the next real-time snapshot, so the delete looked broken.
   const deleteExpense = async (expenseId: string) => {
     if (!shop) return;
-    const path = `shops/${shop.id}/expenses/${expenseId}`;
-    setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
-
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), { isDeleted: true }, { merge: true });
-        return;
-      } catch (e) {
-        console.warn('Delete expense sync note, queued for retry:', e);
-      }
-    }
-    queueAction('expense', path, { isDeleted: true });
+    await persistOperation('expense', [
+      { path: `shops/${shop.id}/expenses/${expenseId}`, data: { isDeleted: true } },
+    ]);
+    expensesRef.current = expensesRef.current.filter((expense) => expense.id !== expenseId);
+    setExpenses(expensesRef.current);
   };
-
   const restoreExpense = async (expense: Expense) => {
     if (!shop) return;
-    const path = `shops/${shop.id}/expenses/${expense.id}`;
-    setExpenses((prev) => (prev.some((e) => e.id === expense.id) ? prev : [expense, ...prev]));
+    await persistOperation('expense', [
+      { path: `shops/${shop.id}/expenses/${expense.id}`, data: { ...expense, isDeleted: false } },
+    ]);
+    expensesRef.current = [
+      expense,
+      ...expensesRef.current.filter((candidate) => candidate.id !== expense.id),
+    ];
+    setExpenses(expensesRef.current);
+  };
 
-    if (navigator.onLine && auth.currentUser) {
-      try {
-        await setDoc(doc(db, path), { ...expense, isDeleted: false }, { merge: true });
-        return;
-      } catch (e) {
-        console.warn('Restore expense sync note, queued for retry:', e);
-      }
-    }
-    queueAction('expense', path, { ...expense, isDeleted: false });
+  /** Import is an online, all-or-nothing transaction. No existing document is overwritten. */
+  const importShopBook = async (raw: string): Promise<ShopBookImport> => {
+    if (!shop || !auth.currentUser || !navigator.onLine)
+      throw new Error('Connect to the internet and sign in as the shop owner to import.');
+    if (auth.currentUser.uid !== shop.ownerUid && auth.currentUser.uid !== shop.id)
+      throw new Error('Only the shop owner can import a backup.');
+    if (queueRef.current.length || syncingRef.current)
+      throw new Error('Sync all pending CountUp entries before importing a backup.');
+    const prepared = prepareShopBookImport(raw, shop.id);
+    const writes: { path: string; data: object }[] = [
+      ...prepared.items.map((item) => ({ path: `shops/${shop.id}/items/${item.id}`, data: item })),
+      ...prepared.customers.map((customer) => ({
+        path: `shops/${shop.id}/customers/${customer.id}`,
+        data: customer,
+      })),
+      ...prepared.sales.map((sale) => ({ path: `shops/${shop.id}/sales/${sale.id}`, data: sale })),
+      ...prepared.creditPayments.map((payment) => ({
+        path: `shops/${shop.id}/credit_payments/${payment.id}`,
+        data: payment,
+      })),
+      ...prepared.stockMovements.map((movement) => ({
+        path: `shops/${shop.id}/stock_movements/${movement.id}`,
+        data: movement,
+      })),
+    ];
+    if (writes.length > 400)
+      throw new Error(
+        'This backup contains more than 400 records. Import is limited to 400 records so it can be atomic; contact support before importing a larger backup.'
+      );
+    if (!writes.length) return prepared;
+    await runTransaction(db, async (transaction) => {
+      const refs = writes.map((write) => doc(db, write.path));
+      const existing = await Promise.all(refs.map((ref) => transaction.get(ref)));
+      if (existing.some((snapshot) => snapshot.exists()))
+        throw new Error(
+          'Some of these ShopBook records are already in this shop. Nothing was imported.'
+        );
+      writes.forEach((write, index) =>
+        transaction.set(refs[index], cleanForFirestore(write.data) as DocumentData)
+      );
+    });
+    const merge = <T extends { id: string }>(old: T[], added: T[]) => [
+      ...added,
+      ...old.filter((entry) => !added.some((next) => next.id === entry.id)),
+    ];
+    itemsRef.current = merge(
+      itemsRef.current,
+      prepared.items.filter((item) => !item.isDeleted)
+    );
+    setItems(itemsRef.current);
+    archivedItemsRef.current = merge(
+      archivedItemsRef.current,
+      prepared.items.filter((item) => item.isDeleted)
+    );
+    setArchivedItems(archivedItemsRef.current);
+    customersRef.current = merge(customersRef.current, prepared.customers);
+    setCustomers(customersRef.current);
+    salesRef.current = merge(salesRef.current, prepared.sales);
+    setSales(salesRef.current);
+    paymentsRef.current = merge(paymentsRef.current, prepared.creditPayments);
+    setCreditPayments(paymentsRef.current);
+    movementsRef.current = merge(movementsRef.current, prepared.stockMovements);
+    setStockMovements(movementsRef.current);
+    return prepared;
   };
 
   // Admin Controls
@@ -1260,6 +1953,11 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAdmin,
         loginWithPhoneAndPin,
         registerNewShop,
+        linkEmailAccount,
+        loginWithEmail,
+        cancelEmailLogin,
+        selectEmailShop,
+        resetEmailPassword,
         logout,
         deleteShopAccount,
         changePin,
@@ -1269,6 +1967,11 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         activeTab,
         setActiveTab,
         items,
+        archivedItems,
+        stockMovements,
+        stockConflicts,
+        resolveStockConflict,
+        importShopBook,
         sales,
         customers,
         creditPayments,
@@ -1278,9 +1981,11 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         addItem,
         updateItem,
         quickRestock,
+        adjustStock,
         deleteItem,
         restoreItem,
         addCustomer,
+        updateCustomer,
         recordCreditPayment,
         addExpense,
         deleteExpense,

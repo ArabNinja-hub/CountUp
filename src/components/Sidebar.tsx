@@ -1,6 +1,6 @@
 import React from 'react';
 import { useShop } from '../context/ShopContext';
-import { ShoppingBag, Boxes, BookUser, BarChart3, Wifi, WifiOff } from 'lucide-react';
+import { Home, ShoppingBag, Boxes, BookUser, BarChart3, Wifi, WifiOff } from 'lucide-react';
 import { ActiveTab } from '../types';
 import icon from '/brand/icon.png';
 
@@ -18,6 +18,7 @@ export const Sidebar: React.FC = () => {
     icon: React.ComponentType<{ className?: string }>;
     badge?: number;
   }[] = [
+    { id: 'home', label: t.tabHome, icon: Home },
     { id: 'sell', label: t.tabSell, icon: ShoppingBag },
     {
       id: 'stock',

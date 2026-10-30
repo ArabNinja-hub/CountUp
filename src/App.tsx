@@ -9,6 +9,7 @@ import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { Navigation } from './components/Navigation';
 import { SellScreen } from './components/SellScreen';
+import { HomeScreen } from './components/HomeScreen';
 import { StockScreen } from './components/StockScreen';
 import { CreditBookScreen } from './components/CreditBookScreen';
 import { ReportsScreen } from './components/ReportsScreen';
@@ -28,6 +29,9 @@ const MainAppContent: React.FC = () => {
     isLoading,
     sales,
     items,
+    archivedItems,
+    stockMovements,
+    stockConflicts,
     customers,
     creditPayments,
     expenses,
@@ -36,6 +40,7 @@ const MainAppContent: React.FC = () => {
   } = useShop();
 
   const [isPlanOpen, setIsPlanOpen] = useState(false);
+  const [addProductFromHome, setAddProductFromHome] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [legalPage, setLegalPage] = useState<'privacy' | 'terms' | 'security' | null>(null);
 
@@ -48,15 +53,19 @@ const MainAppContent: React.FC = () => {
     const handleExportData = () => {
       // Export all data as JSON
       const exportData = {
-        shop: shopData,
+        format: 'countup-backup-v2',
+        shop: shopData ? { ...shopData, pin: undefined } : null,
         subscription,
         items,
+        archivedItems,
+        stockMovements,
+        stockConflicts,
         sales,
         customers,
         creditPayments,
         expenses,
         exportedAt: new Date().toISOString(),
-        version: '1.0',
+        version: '2.0',
       };
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -80,7 +89,18 @@ const MainAppContent: React.FC = () => {
       window.removeEventListener('open-legal', handleOpenLegal as EventListener);
       window.removeEventListener('export-data', handleExportData as EventListener);
     };
-  }, [shopData, subscription, items, sales, customers, creditPayments, expenses]);
+  }, [
+    shopData,
+    subscription,
+    items,
+    archivedItems,
+    stockMovements,
+    stockConflicts,
+    sales,
+    customers,
+    creditPayments,
+    expenses,
+  ]);
 
   if (isLoading) {
     return (
@@ -145,14 +165,27 @@ const MainAppContent: React.FC = () => {
           <OfflineNotice />
 
           {/* Active Tab Screen */}
-          <main className="flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-3 sm:py-5 pb-24 md:pb-8">
+          <main className="flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-3 sm:py-5 pb-48 md:pb-8">
+            {activeTab === 'home' && (
+              <HomeScreen
+                onAddProduct={() => {
+                  setAddProductFromHome(true);
+                  setActiveTab('stock');
+                }}
+              />
+            )}
             {activeTab === 'sell' && (
               <SellScreen
                 onOpenPlan={() => setIsPlanOpen(true)}
                 onGoToStock={() => setActiveTab('stock')}
               />
             )}
-            {activeTab === 'stock' && <StockScreen />}
+            {activeTab === 'stock' && (
+              <StockScreen
+                initialAdd={addProductFromHome}
+                onConsumedInitialAdd={() => setAddProductFromHome(false)}
+              />
+            )}
             {activeTab === 'credit' && <CreditBookScreen />}
             {activeTab === 'reports' && <ReportsScreen />}
           </main>

@@ -4,6 +4,7 @@ import {
   formatKwachaCompact,
   formatWhen,
   isToday,
+  normalizeZambianPhone,
   parseInt0,
   parseMoney,
   sanitizeIntegerInput,
@@ -63,6 +64,14 @@ describe('sanitizePhoneInput', () => {
 
   it('drops everything when no digits were typed', () => {
     expect(sanitizePhoneInput('abc')).toBe('');
+  });
+});
+
+describe('normalizeZambianPhone', () => {
+  it('treats the international and national formats as the same shop number', () => {
+    expect(normalizeZambianPhone('+260 977 000 000')).toBe('0977000000');
+    expect(normalizeZambianPhone('0977 000 000')).toBe('0977000000');
+    expect(normalizeZambianPhone('26097')).toBe('26097');
   });
 });
 
