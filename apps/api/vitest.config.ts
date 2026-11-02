@@ -9,6 +9,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Live PostgreSQL tests need TEST_DATABASE_URL and are run by `npm run test:db:live`.
+    exclude: ['**/node_modules/**', '**/dist/**', 'test/live/**'],
     testTimeout: 120_000,
     hookTimeout: 120_000,
     pool: 'forks',

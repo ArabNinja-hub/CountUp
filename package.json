@@ -23,6 +23,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:db": "vitest run --config apps/api/vitest.config.ts",
+    "test:db:live": "vitest run --config apps/api/vitest.live.config.ts",
     "test:rules": "node scripts/test-firestore-rules.mjs",
     "functions:build": "npm --prefix functions run build",
     "test:watch": "vitest",
