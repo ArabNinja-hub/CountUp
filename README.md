@@ -104,7 +104,7 @@ creating a new anonymous account.
 
 ### Prerequisites
 - **Node.js** 24.12+ recommended (some Firebase packages warn on Node 22)
-- npm (the root app has no lockfile; the separate `functions/` package has its own lockfile)
+- npm (the root app uses the committed `package-lock.json`; the separate `functions/` package has its own `functions/package-lock.json`)
 
 ### Install
 ```bash

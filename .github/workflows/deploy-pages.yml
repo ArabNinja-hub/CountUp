@@ -25,11 +25,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # `cache: npm` and `npm ci` both require the committed root lockfile.
+      # Pin it explicitly so a stray/missing lockfile cannot silently break
+      # dependency caching or installation (and so functions/package-lock.json
+      # is never mistaken for the app lockfile).
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
