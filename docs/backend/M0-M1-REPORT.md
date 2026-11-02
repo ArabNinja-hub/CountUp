@@ -103,7 +103,7 @@ design" required by M0.
 
 **4 modified:** `.env.example`, `package.json`, `package-lock.json`, `tsconfig.json`.
 
-**37 created:**
+**38 created:**
 
 | Area | Files |
 | --- | --- |
@@ -393,8 +393,10 @@ reconciliation item.
 
 - **Branch:** `arena/cb51ea07-countup` (session-fixed dedicated working branch)
 - **Phase 1 base:** `5a2ea63542d046ef163bbf923511d84ddbaca5a7`
-- **Phase 2 commit:** the commit containing this report; the exact hash is recorded in
-  the task delivery message (`git log -1 --format=%H` on the branch above).
+- **Phase 2 implementation commit:** `3bf16fba0531373ac1ee444419bc1c0b9ce2dd98`
+  (42 files: 4 modified, 38 created). The small follow-up commit that records this
+  hash and corrects the file count is the HEAD of the branch; `3bf16fb` is the
+  commit containing all implementation work.
 - **Not done:** no merge to `main`, no push to `main`, no PR, no deployment, no
   production provisioning.
 
