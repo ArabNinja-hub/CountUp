@@ -1,8 +1,22 @@
 import { z } from 'zod';
+import { assertSafeAuditText, auditEvidenceSchema } from './audit-evidence';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from './constants';
 
 const password = z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH);
 const identifier = z.string().trim().min(3).max(254);
+
+/** C-09: notes are bounded and must never carry raw PII into an append-only row. */
+const auditNote = z
+  .string()
+  .max(160)
+  .refine((value) => {
+    try {
+      assertSafeAuditText(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'notes must not contain raw personal identifiers or secrets');
 
 export const signupSchema = z
   .object({
@@ -40,17 +54,18 @@ export const recoveryConfirmSchema = z
   })
   .strict();
 
+/** Strict allowlist only — no `z.record(z.string(), z.unknown())` any more. */
 export const adminVerifySchema = z
   .object({
     decision: z.enum(['approved', 'rejected']),
-    evidence: z.record(z.string(), z.unknown()).default({}),
-    notes: z.string().max(500).optional(),
+    evidence: auditEvidenceSchema.optional().default({}),
+    notes: auditNote.optional(),
   })
   .strict();
 
 export const adminResetSchema = z
   .object({
-    evidence: z.record(z.string(), z.unknown()).default({}),
+    evidence: auditEvidenceSchema.optional().default({}),
   })
   .strict();
 

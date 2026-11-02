@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,11 +9,30 @@ const UP_SUFFIX = '.up.sql';
 const DOWN_SUFFIX = '.down.sql';
 const VERSION_PATTERN = /^\d{4}_[a-z0-9_]+$/;
 
-/** Repo-root /migrations, resolved relative to this module (works under `tsx`). */
-export const DEFAULT_MIGRATIONS_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../../../migrations'
-);
+/**
+ * Repo-root /migrations, found by walking up from the MODULE directory.
+ * A fixed `../../../../` path only works for the unbundled source
+ * (`src/db/migrations.ts`); the esbuild bundle lives in `apps/api/dist/` and
+ * would otherwise resolve to `/home/user/migrations`. Walking up makes the
+ * migration runner work under `tsx`, under vitest AND from the built CLI bundle.
+ */
+function findMigrationsDir(): string {
+  let directory = path.dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 10; depth += 1) {
+    const candidate = path.join(directory, 'migrations');
+    if (existsSync(path.join(candidate, '0001_foundation.up.sql'))) {
+      return candidate;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) {
+      break;
+    }
+    directory = parent;
+  }
+  throw new Error('Cannot locate the versioned migrations directory');
+}
+
+export const DEFAULT_MIGRATIONS_DIR = findMigrationsDir();
 
 export interface Migration {
   version: string;

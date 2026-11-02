@@ -30,6 +30,15 @@ export function normalisePhone(value: string): string {
   return value.replace(/[^+\d]/g, '');
 }
 
+/**
+ * The ONE canonical identifier normaliser. C-03: rate-limit key generation and
+ * credential lookup MUST use the same function, otherwise case/whitespace
+ * variants of one account produce different limiter keys.
+ */
+export function normaliseLoginIdentifier(value: string): string {
+  return value.includes('@') ? normaliseEmail(value) : normalisePhone(value);
+}
+
 export function normaliseIp(value: string | undefined | null): string | null {
   if (value === undefined || value === null || value.length === 0) {
     return null;

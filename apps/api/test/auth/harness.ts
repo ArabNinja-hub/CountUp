@@ -1,14 +1,13 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Client } from 'pg';
 import type { Server } from 'node:http';
+import { Client } from 'pg';
 import { createApp } from '../../src/app';
 import { AuthService } from '../../src/auth/auth-service';
-import { CSRF_HEADER, DEV_PEPPER } from '../../src/auth/constants';
+import { CSRF_HEADER } from '../../src/auth/constants';
 import { AdminAssistedIdentityVerifier } from '../../src/auth/identity-verifier';
 import { PasswordHasher } from '../../src/auth/password';
 import { createSecurityOptions, type SecurityOverrides } from '../../src/auth/security';
-import { loadEnv } from '../../src/config/env';
 import { migrateUp } from '../../src/db/migrations';
 import {
   createPgClientExecutor,
@@ -17,6 +16,7 @@ import {
 } from '../../src/db/query-executor';
 import { createMigratedDatabase, type IsolatedDatabase } from '../isolated-database';
 import { createLiveDatabase, type LiveDatabase } from '../live/live-database';
+import { testEnv } from '../test-env';
 
 export interface CallResult {
   status: number;
@@ -119,7 +119,9 @@ export interface AuthHarness {
   service: AuthService;
   verifier: AdminAssistedIdentityVerifier;
   pepper: string;
+  csrfSecret: string;
   baseUrl: string;
+  allowedOrigins: string[];
   client: TestClient;
   isLivePostgres: boolean;
   newClient(): Promise<TestClient>;
@@ -151,15 +153,20 @@ export async function createAuthHarness(overrides: SecurityOverrides = {}): Prom
     executor = pglite.executor;
   }
 
-  const env = loadEnv({ NODE_ENV: 'test' });
-  const security = createSecurityOptions(env, overrides);
+  const env = testEnv();
+  // C-07: the exact bound origin is registered in the validated allowlist. The
+  // array object is shared with createApp, so it can be filled after listen(0).
+  const originsSupplied = overrides.allowedOrigins !== undefined;
+  const allowedOrigins = overrides.allowedOrigins ?? [];
+  const securityOverrides: SecurityOverrides = { ...overrides, allowedOrigins };
+  const security = createSecurityOptions(env, securityOverrides);
   const verifier = new AdminAssistedIdentityVerifier();
   const service = new AuthService({
     executor,
     passwordHasher: new PasswordHasher(security.pepper),
     verifier,
   });
-  const app = createApp({ env, db: executor, auth: service, security: overrides });
+  const app = createApp({ env, db: executor, auth: service, security: securityOverrides });
   const server: Server = createServer(app);
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -170,6 +177,9 @@ export async function createAuthHarness(overrides: SecurityOverrides = {}): Prom
     throw new Error('failed to bind test server');
   }
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  if (!originsSupplied) {
+    allowedOrigins.push(baseUrl);
+  }
 
   const newClient = async (): Promise<TestClient> => {
     const client = new TestClient(baseUrl);
@@ -181,8 +191,10 @@ export async function createAuthHarness(overrides: SecurityOverrides = {}): Prom
     executor,
     service,
     verifier,
-    pepper: security.pepper ?? DEV_PEPPER,
+    pepper: security.pepper,
+    csrfSecret: security.csrfSecret,
     baseUrl,
+    allowedOrigins,
     client: await newClient(),
     isLivePostgres: live !== undefined,
     newClient,
@@ -195,8 +207,9 @@ export async function createAuthHarness(overrides: SecurityOverrides = {}): Prom
       const passwordHash = await hasher.hashPassword(password);
       return executor.transaction(async (tx) => {
         const created = await tx.query<{ id: string }>(
-          `INSERT INTO users (primary_email, display_name, role, status, identity_status)
-           VALUES ($1, $2, $3, 'active', 'verified') RETURNING id`,
+          `INSERT INTO users
+             (primary_email, display_name, role, status, identity_status, identity_verified_at)
+           VALUES ($1, $2, $3, 'active', 'verified', now()) RETURNING id`,
           [email.toLowerCase(), `seeded-${role}`, role]
         );
         const id = created.rows[0]?.id;

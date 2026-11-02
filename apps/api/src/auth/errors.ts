@@ -12,6 +12,8 @@ export type AuthErrorCode =
   | 'cross_origin'
   | 'rate_limited'
   | 'invalid_token'
+  | 'admin_self_action'
+  | 'admin_tier_protected'
   | 'database_unavailable'
   | 'internal_error';
 
@@ -41,5 +43,13 @@ export const authErrors = {
   crossOrigin: () => new AuthError('cross_origin', 403, 'Cross-origin request rejected'),
   rateLimited: () => new AuthError('rate_limited', 429, 'Too many requests'),
   invalidToken: () => new AuthError('invalid_token', 400, 'Invalid or expired token'),
+  adminSelfAction: () =>
+    new AuthError('admin_self_action', 403, 'Administrators may not target themselves'),
+  adminTierProtected: () =>
+    new AuthError(
+      'admin_tier_protected',
+      403,
+      'Administrator-tier accounts require break-glass recovery'
+    ),
   databaseUnavailable: () => new AuthError('database_unavailable', 503, 'Database not configured'),
 } as const;

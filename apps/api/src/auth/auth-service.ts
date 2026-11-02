@@ -1,4 +1,5 @@
 import type { QueryExecutor, QueryResultRow } from '../db/query-executor';
+import { parseAuditEvidence } from './audit-evidence';
 import { writeSecurityAudit } from './audit';
 import {
   LOCKOUT_MS,
@@ -11,13 +12,14 @@ import {
 import { authErrors, AuthError } from './errors';
 import type { IdentityVerifier, VerificationDecision } from './identity-verifier';
 import { PasswordHasher, assertPasswordPolicy } from './password';
-import { assertPlatformAdmin } from './roles';
+import { assertAdminTargetAllowed } from './roles';
 import {
   generateOpaqueToken,
   hashIdentifier,
   hashToken,
   normaliseEmail,
   normaliseIp,
+  normaliseLoginIdentifier,
   normalisePhone,
 } from './tokens';
 
@@ -118,6 +120,7 @@ interface SessionRow extends QueryResultRow {
 interface RefreshRow extends QueryResultRow {
   session_id: string;
   session_version: number;
+  token_family_id: string;
   idle_expires_at: Date;
   absolute_expires_at: Date;
   revoked_at: Date | null;
@@ -126,6 +129,22 @@ interface RefreshRow extends QueryResultRow {
   role: string;
   user_session_version: number;
 }
+
+interface RefreshHistoryRow extends QueryResultRow {
+  token_hash: string;
+  session_id: string;
+  user_id: string;
+  token_family_id: string;
+  consumed_at: Date | null;
+}
+
+interface RotatedRow extends QueryResultRow {
+  absolute_expires_at: Date;
+  idle_expires_at: Date;
+  token_family_id: string;
+}
+
+type RefreshOutcome = { reuse: true } | { reuse: false; tokens: SessionTokens };
 
 function msFromNow(ms: number): Date {
   return new Date(Date.now() + ms);
@@ -208,10 +227,12 @@ export class AuthService {
     }
   }
 
+  /**
+   * C-10: every credential/session state change and its audit event are one
+   * transaction. `normaliseLoginIdentifier` is also used by the limiter (C-03).
+   */
   async login(input: LoginInput): Promise<{ tokens: SessionTokens; user: AuthenticatedUser }> {
-    const identifier = input.identifier.includes('@')
-      ? normaliseEmail(input.identifier)
-      : normalisePhone(input.identifier);
+    const identifier = normaliseLoginIdentifier(input.identifier);
     const ip = normaliseIp(input.ip);
     const identifierHash = hashIdentifier(identifier);
 
@@ -230,67 +251,97 @@ export class AuthService {
     const row = found.rows[0];
     if (row === undefined) {
       await this.hasher.dummyVerify(input.password);
-      await writeSecurityAudit(this.executor, {
-        action: 'auth.login.failed',
-        actorIp: ip,
-        targetType: 'identity',
-        payload: { identifier_hash: identifierHash, reason: 'unknown_identifier' },
-      });
+      await this.executor.transaction((tx) =>
+        writeSecurityAudit(tx, {
+          action: 'auth.login.failed',
+          actorIp: ip,
+          targetType: 'identity',
+          payload: { identifier_hash: identifierHash, reason: 'unknown_identifier' },
+        })
+      );
       throw authErrors.invalidCredentials();
     }
 
     if (row.locked_until !== null && row.locked_until.getTime() > Date.now()) {
+      await this.executor.transaction((tx) =>
+        writeSecurityAudit(tx, {
+          action: 'auth.login.locked',
+          actorUserId: row.user_id,
+          actorRole: row.role,
+          actorIp: ip,
+          targetType: 'users',
+          targetId: row.user_id,
+          payload: { reason: 'account_locked' },
+        })
+      );
       throw authErrors.accountLocked();
     }
     if (row.status !== 'active') {
+      await this.executor.transaction((tx) =>
+        writeSecurityAudit(tx, {
+          action: 'auth.login.inactive',
+          actorUserId: row.user_id,
+          actorRole: row.role,
+          actorIp: ip,
+          targetType: 'users',
+          targetId: row.user_id,
+          payload: { reason: 'account_inactive' },
+        })
+      );
       throw new AuthError('account_inactive', 403, 'Account is not active');
     }
 
     const passwordOk = await this.hasher.verifyPassword(row.password_hash, input.password);
     if (!passwordOk) {
       const lockUntil = msFromNow(this.config.lockoutMs);
-      const updated = await this.executor.query<{ failed_attempts: number }>(
-        `UPDATE credentials
-            SET failed_attempts = failed_attempts + 1,
-                locked_until = CASE WHEN failed_attempts + 1 >= $2 THEN $3::timestamptz ELSE NULL END
-          WHERE user_id = $1
-          RETURNING failed_attempts`,
-        [row.user_id, this.config.lockoutThreshold, lockUntil]
-      );
-      const failures = updated.rows[0]?.failed_attempts ?? 0;
-      await writeSecurityAudit(this.executor, {
-        action: 'auth.login.failed',
-        actorUserId: row.user_id,
-        actorRole: row.role,
-        actorIp: ip,
-        targetType: 'users',
-        targetId: row.user_id,
-        payload: { identifier_hash: identifierHash, failed_attempts: failures },
+      const failures = await this.executor.transaction(async (tx) => {
+        const updated = await tx.query<{ failed_attempts: number }>(
+          `UPDATE credentials
+              SET failed_attempts = failed_attempts + 1,
+                  locked_until = CASE WHEN failed_attempts + 1 >= $2 THEN $3::timestamptz ELSE NULL END
+            WHERE user_id = $1
+            RETURNING failed_attempts`,
+          [row.user_id, this.config.lockoutThreshold, lockUntil]
+        );
+        const count = updated.rows[0]?.failed_attempts ?? 0;
+        await writeSecurityAudit(tx, {
+          action: 'auth.login.failed',
+          actorUserId: row.user_id,
+          actorRole: row.role,
+          actorIp: ip,
+          targetType: 'users',
+          targetId: row.user_id,
+          payload: { identifier_hash: identifierHash, failed_attempts: count },
+        });
+        return count;
       });
       throw failures >= this.config.lockoutThreshold
         ? authErrors.accountLocked()
         : authErrors.invalidCredentials();
     }
 
-    await this.executor.query(
-      'UPDATE credentials SET failed_attempts = 0, locked_until = NULL WHERE user_id = $1',
-      [row.user_id]
-    );
-
-    const tokens = await this.createSession(
-      row.user_id,
-      row.user_session_version,
-      ip,
-      input.userAgent ?? null
-    );
-    await writeSecurityAudit(this.executor, {
-      action: 'auth.login.succeeded',
-      actorUserId: row.user_id,
-      actorRole: row.role,
-      actorIp: ip,
-      targetType: 'sessions',
-      targetId: tokens.sessionId,
-      payload: { mechanism: 'password' },
+    const tokens = await this.executor.transaction(async (tx) => {
+      await tx.query(
+        'UPDATE credentials SET failed_attempts = 0, locked_until = NULL WHERE user_id = $1',
+        [row.user_id]
+      );
+      const created = await this.createSession(
+        tx,
+        row.user_id,
+        row.user_session_version,
+        ip,
+        input.userAgent ?? null
+      );
+      await writeSecurityAudit(tx, {
+        action: 'auth.login.succeeded',
+        actorUserId: row.user_id,
+        actorRole: row.role,
+        actorIp: ip,
+        targetType: 'sessions',
+        targetId: created.sessionId,
+        payload: { mechanism: 'password' },
+      });
+      return created;
     });
     return { tokens, user: this.toAuthenticatedUser(row) };
   }
@@ -309,6 +360,7 @@ export class AuthService {
   }
 
   private async createSession(
+    executor: QueryExecutor,
     userId: string,
     sessionVersion: number,
     ip: string | null,
@@ -318,16 +370,19 @@ export class AuthService {
     const refreshToken = generateOpaqueToken();
     const absoluteExpiresAt = msFromNow(this.config.sessionAbsoluteMs);
     const idleExpiresAt = msFromNow(this.config.sessionIdleMs);
-    const inserted = await this.executor.query<{
+    const inserted = await executor.query<{
       id: string;
+      token_family_id: string;
       absolute_expires_at: Date;
       idle_expires_at: Date;
     }>(
       `INSERT INTO sessions
          (user_id, session_token_hash, refresh_token_hash, device_label, ip, user_agent,
-          last_seen_at, absolute_expires_at, idle_expires_at, session_version, last_ip)
-       VALUES ($1, $2, $3, $4, $5::inet, $6, now(), $7::timestamptz, $8::timestamptz, $9, $10::inet)
-       RETURNING id, absolute_expires_at, idle_expires_at`,
+          last_seen_at, absolute_expires_at, idle_expires_at, session_version, last_ip,
+          token_family_id)
+       VALUES ($1, $2, $3, $4, $5::inet, $6, now(), $7::timestamptz, $8::timestamptz, $9,
+               $10::inet, gen_random_uuid())
+       RETURNING id, token_family_id, absolute_expires_at, idle_expires_at`,
       [
         userId,
         hashToken(sessionToken),
@@ -345,6 +400,13 @@ export class AuthService {
     if (row === undefined) {
       throw new Error('session insert returned no id');
     }
+    // C-01: every issued refresh hash is recorded so a consumed one is recognised
+    // as reuse even after the session row has been rotated.
+    await executor.query(
+      `INSERT INTO refresh_token_history (token_hash, session_id, user_id, token_family_id)
+       VALUES ($1, $2, $3, $4)`,
+      [hashToken(refreshToken), row.id, userId, row.token_family_id]
+    );
     return {
       sessionId: row.id,
       sessionToken,
@@ -403,74 +465,178 @@ export class AuthService {
     };
   }
 
-  /** Rotates BOTH tokens; the old hashes are overwritten, so old tokens are dead. */
-  async refresh(refreshToken: string): Promise<SessionTokens> {
-    const found = await this.executor.query<RefreshRow>(
-      `SELECT s.id AS session_id, s.session_version, s.idle_expires_at, s.absolute_expires_at,
-              s.revoked_at, u.id AS user_id, u.status::text AS status,
-              u.role::text AS role, u.session_version AS user_session_version
-         FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.refresh_token_hash = $1`,
-      [hashToken(refreshToken)]
-    );
-    const row = found.rows[0];
-    const now = Date.now();
-    if (
-      row === undefined ||
-      row.revoked_at !== null ||
-      row.status !== 'active' ||
-      row.session_version !== row.user_session_version ||
-      row.idle_expires_at.getTime() <= now ||
-      row.absolute_expires_at.getTime() <= now
-    ) {
-      throw authErrors.unauthenticated();
-    }
+  /**
+   * C-01: atomic compare-and-swap rotation.
+   *
+   * `UPDATE ... WHERE refresh_token_hash = $old ... RETURNING` is a single atomic
+   * statement. Two concurrent callers race on the same row: the loser's UPDATE
+   * re-evaluates its WHERE after the winner commits and returns zero rows. The
+   * loser then re-reads `refresh_token_history` and sees the consumed hash —
+   * proof of reuse — so the whole token family is revoked, the user's
+   * session_version is bumped and an alert is written, ALL in the same
+   * transaction, before the request is rejected.
+   */
+  async refresh(refreshToken: string, ip: string | null = null): Promise<SessionTokens> {
+    const oldHash = hashToken(refreshToken);
     const sessionToken = generateOpaqueToken();
     const nextRefreshToken = generateOpaqueToken();
+    const newSessionHash = hashToken(sessionToken);
+    const newRefreshHash = hashToken(nextRefreshToken);
     const idleExpiresAt = msFromNow(this.config.sessionIdleMs);
-    const updated = await this.executor.query<{ absolute_expires_at: Date }>(
-      `UPDATE sessions
-          SET session_token_hash = $2,
-              refresh_token_hash = $3,
-              last_seen_at = now(),
-              idle_expires_at = LEAST($4::timestamptz, absolute_expires_at),
-              rotated_at = now()
-        WHERE id = $1
-        RETURNING absolute_expires_at`,
-      [row.session_id, hashToken(sessionToken), hashToken(nextRefreshToken), idleExpiresAt]
-    );
-    const absoluteExpiresAt = updated.rows[0]?.absolute_expires_at;
-    if (absoluteExpiresAt === undefined) {
+
+    const outcome: RefreshOutcome = await this.executor.transaction(async (tx) => {
+      const history = await tx.query<RefreshHistoryRow>(
+        `SELECT token_hash, session_id, user_id, token_family_id, consumed_at
+           FROM refresh_token_history WHERE token_hash = $1`,
+        [oldHash]
+      );
+      const prior = history.rows[0];
+      if (prior !== undefined && prior.consumed_at !== null) {
+        return this.revokeFamilyForReuse(tx, prior, oldHash, ip);
+      }
+
+      const found = await tx.query<RefreshRow>(
+        `SELECT s.id AS session_id, s.session_version, s.token_family_id,
+                s.idle_expires_at, s.absolute_expires_at, s.revoked_at,
+                u.id AS user_id, u.status::text AS status,
+                u.role::text AS role, u.session_version AS user_session_version
+           FROM sessions s JOIN users u ON u.id = s.user_id
+          WHERE s.refresh_token_hash = $1`,
+        [oldHash]
+      );
+      const row = found.rows[0];
+      if (row !== undefined) {
+        const now = Date.now();
+        const valid =
+          row.revoked_at === null &&
+          row.status === 'active' &&
+          row.session_version === row.user_session_version &&
+          row.idle_expires_at.getTime() > now &&
+          row.absolute_expires_at.getTime() > now;
+        if (valid) {
+          const updated = await tx.query<RotatedRow>(
+            `UPDATE sessions
+                SET session_token_hash = $2,
+                    refresh_token_hash = $3,
+                    last_seen_at = now(),
+                    idle_expires_at = LEAST($4::timestamptz, absolute_expires_at),
+                    last_ip = $7::inet,
+                    rotated_at = now()
+              WHERE id = $1
+                AND refresh_token_hash = $5
+                AND revoked_at IS NULL
+                AND session_version = $6
+                AND idle_expires_at > now()
+                AND absolute_expires_at > now()
+              RETURNING absolute_expires_at, idle_expires_at, token_family_id`,
+            [
+              row.session_id,
+              newSessionHash,
+              newRefreshHash,
+              idleExpiresAt,
+              oldHash,
+              row.session_version,
+              ip,
+            ]
+          );
+          const rotated = updated.rows[0];
+          if (rotated !== undefined) {
+            await tx.query(
+              `UPDATE refresh_token_history SET consumed_at = now()
+                WHERE token_hash = $1 AND consumed_at IS NULL`,
+              [oldHash]
+            );
+            await tx.query(
+              `INSERT INTO refresh_token_history (token_hash, session_id, user_id, token_family_id)
+               VALUES ($1, $2, $3, $4)`,
+              [newRefreshHash, row.session_id, row.user_id, rotated.token_family_id]
+            );
+            await writeSecurityAudit(tx, {
+              action: 'auth.session.refreshed',
+              actorUserId: row.user_id,
+              actorRole: row.role,
+              actorIp: ip,
+              targetType: 'sessions',
+              targetId: row.session_id,
+              payload: { rotation: true },
+            });
+            return {
+              reuse: false,
+              tokens: {
+                sessionId: row.session_id,
+                sessionToken,
+                refreshToken: nextRefreshToken,
+                absoluteExpiresAt: rotated.absolute_expires_at,
+                idleExpiresAt: rotated.idle_expires_at,
+              },
+            };
+          }
+        }
+      }
+
+      // No live row (or the CAS lost a race). Re-read with a fresh READ COMMITTED
+      // snapshot: a concurrent winner has now committed the consumed history row.
+      const recheck = await tx.query<RefreshHistoryRow>(
+        `SELECT token_hash, session_id, user_id, token_family_id, consumed_at
+           FROM refresh_token_history WHERE token_hash = $1`,
+        [oldHash]
+      );
+      const consumed = recheck.rows[0];
+      if (consumed !== undefined && consumed.consumed_at !== null) {
+        return this.revokeFamilyForReuse(tx, consumed, oldHash, ip);
+      }
+      throw authErrors.unauthenticated();
+    });
+
+    if (outcome.reuse) {
       throw authErrors.unauthenticated();
     }
-    await writeSecurityAudit(this.executor, {
-      action: 'auth.session.refreshed',
-      actorUserId: row.user_id,
-      actorRole: row.role,
-      targetType: 'sessions',
-      targetId: row.session_id,
-      payload: { rotation: true },
-    });
-    return {
-      sessionId: row.session_id,
-      sessionToken,
-      refreshToken: nextRefreshToken,
-      absoluteExpiresAt,
-      idleExpiresAt,
-    };
+    return outcome.tokens;
   }
 
-  async logout(sessionId: string, userId: string): Promise<void> {
-    await this.executor.query(
-      `UPDATE sessions SET revoked_at = now(), revoke_reason = 'logout'
-        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
-      [sessionId, userId]
+  private async revokeFamilyForReuse(
+    tx: QueryExecutor,
+    history: RefreshHistoryRow,
+    oldHash: string,
+    ip: string | null
+  ): Promise<RefreshOutcome> {
+    await tx.query(
+      'UPDATE refresh_token_history SET reuse_detected_at = now() WHERE token_hash = $1',
+      [oldHash]
     );
-    await writeSecurityAudit(this.executor, {
-      action: 'auth.logout',
-      actorUserId: userId,
+    await tx.query(
+      `UPDATE sessions SET revoked_at = now(), revoke_reason = 'refresh_token_reuse'
+        WHERE token_family_id = $1 AND revoked_at IS NULL`,
+      [history.token_family_id]
+    );
+    await tx.query('UPDATE users SET session_version = session_version + 1 WHERE id = $1', [
+      history.user_id,
+    ]);
+    await writeSecurityAudit(tx, {
+      action: 'auth.session.refresh_reuse_detected',
+      actorUserId: history.user_id,
+      actorIp: ip,
       targetType: 'sessions',
-      targetId: sessionId,
+      targetId: history.session_id,
+      payload: { reuse_detected: true, session_family_revoked: true },
+    });
+    return { reuse: true };
+  }
+
+  async logout(sessionId: string, userId: string, ip: string | null = null): Promise<void> {
+    await this.executor.transaction(async (tx) => {
+      await tx.query(
+        `UPDATE sessions SET revoked_at = now(), revoke_reason = 'logout'
+          WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+        [sessionId, userId]
+      );
+      await writeSecurityAudit(tx, {
+        action: 'auth.logout',
+        actorUserId: userId,
+        actorIp: ip,
+        targetType: 'sessions',
+        targetId: sessionId,
+      });
     });
   }
 
@@ -513,19 +679,19 @@ export class AuthService {
 
   /** Always returns normally — never reveals whether the account exists. */
   async requestPasswordRecovery(identifier: string, ip: string | null): Promise<void> {
-    const normalised = identifier.includes('@')
-      ? normaliseEmail(identifier)
-      : normalisePhone(identifier);
-    const found = await this.executor.query<{ user_id: string }>(
-      `SELECT i.user_id FROM auth_identities i WHERE i.identifier = $1 LIMIT 1`,
-      [normalised]
-    );
-    await writeSecurityAudit(this.executor, {
-      action: 'auth.password_recovery.requested',
-      actorIp: ip,
-      targetType: 'identity',
-      targetId: found.rows[0]?.user_id ?? null,
-      payload: { identifier_hash: hashIdentifier(normalised) },
+    const normalised = normaliseLoginIdentifier(identifier);
+    await this.executor.transaction(async (tx) => {
+      const found = await tx.query<{ user_id: string }>(
+        `SELECT i.user_id FROM auth_identities i WHERE i.identifier = $1 LIMIT 1`,
+        [normalised]
+      );
+      await writeSecurityAudit(tx, {
+        action: 'auth.password_recovery.requested',
+        actorIp: ip,
+        targetType: 'identity',
+        targetId: found.rows[0]?.user_id ?? null,
+        payload: { identifier_hash: hashIdentifier(normalised) },
+      });
     });
   }
 
@@ -533,16 +699,13 @@ export class AuthService {
   async adminIssueResetToken(
     actorUserId: string,
     targetUserId: string,
-    evidence: Record<string, unknown>,
+    evidence: unknown,
     ip: string | null
   ): Promise<string> {
-    const actor = await assertPlatformAdmin(this.executor, actorUserId);
-    const target = await this.executor.query<{ id: string }>('SELECT id FROM users WHERE id = $1', [
-      targetUserId,
-    ]);
-    if (target.rows[0] === undefined) {
-      throw authErrors.forbidden();
-    }
+    // C-05: no self-reset and no admin-to-admin privileged reset over HTTP.
+    const { actor } = await assertAdminTargetAllowed(this.executor, actorUserId, targetUserId);
+    // C-09: strict allowlist, enforced for direct callers too.
+    const safeEvidence = parseAuditEvidence(evidence);
     const token = generateOpaqueToken();
     await this.executor.transaction(async (tx) => {
       await tx.query(
@@ -558,7 +721,7 @@ export class AuthService {
         actorIp: ip,
         targetType: 'users',
         targetId: targetUserId,
-        payload: { evidence },
+        payload: { evidence: safeEvidence },
       });
     });
     return token;
@@ -617,20 +780,22 @@ export class AuthService {
   }
 
   async revokeSession(userId: string, sessionId: string): Promise<boolean> {
-    const { rows } = await this.executor.query<{ id: string }>(
-      `UPDATE sessions SET revoked_at = now(), revoke_reason = 'user_revocation'
-        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING id`,
-      [sessionId, userId]
-    );
-    if (rows[0] !== undefined) {
-      await writeSecurityAudit(this.executor, {
-        action: 'auth.session.revoked',
-        actorUserId: userId,
-        targetType: 'sessions',
-        targetId: sessionId,
-      });
-    }
-    return rows[0] !== undefined;
+    return this.executor.transaction(async (tx) => {
+      const { rows } = await tx.query<{ id: string }>(
+        `UPDATE sessions SET revoked_at = now(), revoke_reason = 'user_revocation'
+          WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING id`,
+        [sessionId, userId]
+      );
+      if (rows[0] !== undefined) {
+        await writeSecurityAudit(tx, {
+          action: 'auth.session.revoked',
+          actorUserId: userId,
+          targetType: 'sessions',
+          targetId: sessionId,
+        });
+      }
+      return rows[0] !== undefined;
+    });
   }
 
   /** Session-version invalidation (ADR-01): all existing tokens stop working. */

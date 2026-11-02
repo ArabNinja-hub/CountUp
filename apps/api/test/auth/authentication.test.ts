@@ -92,7 +92,7 @@ async function adminResetToken(harness: AuthHarness, targetUserId: string): Prom
   const adminLogin = await login(adminClient, adminEmail, PASSWORD);
   expect(adminLogin.status).toBe(200);
   const issued = await adminClient.call('POST', `/auth/admin/password-reset/${targetUserId}`, {
-    body: { evidence: { channel: 'in_person', verified_by: 'pilot-operator' } },
+    body: { evidence: { channel: 'in_person', id_checked: true } },
   });
   expect(issued.status).toBe(200);
   const token = asObject(issued.body).resetToken;
@@ -430,7 +430,7 @@ describe('Phase C — M2 authentication (real PostgreSQL when TEST_DATABASE_URL 
       const ownerAttempt = await h.client.call(
         'POST',
         `/auth/admin/identity-verifications/${ownerId}/verify`,
-        { body: { decision: 'approved', evidence: { forged: true } } }
+        { body: { decision: 'approved', evidence: { verification_method: 'in_person' } } }
       );
       expect(ownerAttempt.status).toBe(403);
       await expect(

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { EnvironmentError, loadEnv } from '../src/config/env';
+import { testEnv } from './test-env';
 import { RequestValidationError, parseWith } from '../src/http/validate';
 import {
   createIsolatedDatabase,
@@ -45,7 +46,7 @@ beforeEach(async () => {
   db = await createIsolatedDatabase();
   running = await start(
     createApp({
-      env: loadEnv({ NODE_ENV: 'test', APP_VERSION: '0.1.0-test' }),
+      env: testEnv({ APP_VERSION: '0.1.0-test' }),
       db: db.executor,
     })
   );
@@ -137,7 +138,7 @@ describe('Express foundation routes', () => {
   });
 
   it('returns 503 when no database is configured', async () => {
-    const withoutDb = await start(createApp({ env: loadEnv({ NODE_ENV: 'test' }) }));
+    const withoutDb = await start(createApp({ env: testEnv() }));
     try {
       const response = await fetch(`${withoutDb.url}/health/ready`);
       expect(response.status).toBe(503);

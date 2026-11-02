@@ -35,6 +35,7 @@ const EXPECTED_VERSIONS = [
   '0005_sync',
   '0006_ops_migration',
   '0007_m2_auth',
+  '0008_m2_security_remediation',
 ];
 
 let db: IsolatedDatabase;
@@ -48,7 +49,7 @@ afterEach(async () => {
 });
 
 describe('versioned migration inventory', () => {
-  it('discovers seven versions, each with a non-empty up AND down script', async () => {
+  it('discovers eight versions, each with a non-empty up AND down script', async () => {
     const migrations = await loadMigrations();
     expect(migrations.map((migration) => migration.version)).toEqual(EXPECTED_VERSIONS);
     for (const migration of migrations) {
@@ -87,12 +88,12 @@ describe('versioned migration inventory', () => {
     await expect(migrateUp(db.executor)).rejects.toThrow(/Checksum mismatch/);
   });
 
-  it('creates all 37 M1/M2 tables plus the schema_migrations ledger', async () => {
+  it('creates all 41 M1/M2/remediation tables plus the schema_migrations ledger', async () => {
     await migrateUp(db.executor);
     const { rows } = await db.executor.query<CountRow>(
       "SELECT count(*)::int AS count FROM pg_tables WHERE schemaname = 'public'"
     );
-    expect(firstRow(rows, 'public table count').count).toBe(38);
+    expect(firstRow(rows, 'public table count').count).toBe(42);
     const blueprintTables = [
       'users',
       'auth_identities',
@@ -131,6 +132,10 @@ describe('versioned migration inventory', () => {
       'restore_drills',
       'export_jobs',
       'identity_verifications',
+      'rate_limit_buckets',
+      'refresh_token_history',
+      'platform_bootstrap',
+      'admin_recovery_grants',
     ];
     for (const table of blueprintTables) {
       const result = await db.executor.query<{ present: boolean }>(
@@ -143,7 +148,7 @@ describe('versioned migration inventory', () => {
 });
 
 describe('up -> down -> up', () => {
-  it('rolls back all seven versions in reverse order and re-applies cleanly', async () => {
+  it('rolls back all eight versions in reverse order and re-applies cleanly', async () => {
     expect(await migrateUp(db.executor)).toEqual(EXPECTED_VERSIONS);
 
     const rolledBack: string[] = [];
@@ -169,7 +174,7 @@ describe('up -> down -> up', () => {
     const restored = await db.executor.query<CountRow>(
       "SELECT count(*)::int AS count FROM pg_tables WHERE schemaname = 'public'"
     );
-    expect(firstRow(restored.rows, 'tables after re-apply').count).toBe(38);
+    expect(firstRow(restored.rows, 'tables after re-apply').count).toBe(42);
   });
 
   it('keeps seeded data identical after a full down/up cycle', async () => {
@@ -194,7 +199,7 @@ describe('up -> down -> up', () => {
 describe('transactional failures', () => {
   it('rolls back DDL and the ledger row when a migration statement fails', async () => {
     const failures = await loadMigrations();
-    expect(failures.length).toBe(7);
+    expect(failures.length).toBe(8);
 
     // Inject a deliberately broken statement into a copy of migration 0001.
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'countup-migrations-'));

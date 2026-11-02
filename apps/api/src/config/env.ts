@@ -4,18 +4,25 @@ import { z } from 'zod';
  * Deployment configuration ONLY. Business settings (trial length, currency, grace
  * period, timezone ...) live in the `system_config` table, not here. See
  * packages/shared/src/system-config.ts and migrations/0001_foundation.up.sql.
+ *
+ * C-04: secrets are OPTIONAL here because migration-only tooling does not need
+ * them, but `createSecurityOptions`/`resolveSecrets` REQUIRE strong values for
+ * every process that serves HTTP or derives a password hash. No fallback secret
+ * is shipped anywhere in the repository.
  */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  PORT: z.coerce.number().int().min(0).max(65535).default(3000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   APP_VERSION: z.string().min(1).default('0.1.0'),
-  // Secrets are REQUIRED in production and must come from the environment only.
-  // In development/test a clearly-labelled, non-secret fallback is used so the
-  // foundation can boot without a .env file; no real credential is committed.
   AUTH_PEPPER: z.string().min(1).optional(),
   CSRF_SECRET: z.string().min(1).optional(),
+  /** Exact, absolute origins only. Validated by createSecurityOptions. */
   PUBLIC_APP_ORIGIN: z.string().min(1).optional(),
+  /** 'auto' = Secure when production or any allowed origin is HTTPS. */
+  COOKIE_SECURE: z.enum(['auto', 'true', 'false']).default('auto'),
+  /** Explicit reverse-proxy hop count; unset means do NOT trust forwarded headers. */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(1).max(10).optional(),
   DATABASE_URL: z
     .string()
     .min(1)

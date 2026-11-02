@@ -35,3 +35,29 @@ export async function assertPlatformAdmin(
   }
   return actor;
 }
+
+/**
+ * C-05 separation of duties. A platform admin may act on an ordinary owner but
+ * NEVER on itself and NEVER on another administrator: a single compromised admin
+ * must not be able to verify itself, take over a peer admin, or unilaterally
+ * control the whole admin tier. Admin-tier recovery goes through the audited,
+ * dual-control break-glass CLI instead.
+ */
+export async function assertAdminTargetAllowed(
+  executor: QueryExecutor,
+  actorUserId: string,
+  targetUserId: string
+): Promise<{ actor: TrustedActor; target: TrustedActor }> {
+  const actor = await assertPlatformAdmin(executor, actorUserId);
+  if (actor.id === targetUserId) {
+    throw authErrors.adminSelfAction();
+  }
+  const target = await loadTrustedActor(executor, targetUserId);
+  if (target === null) {
+    throw authErrors.forbidden();
+  }
+  if (target.role === 'platform_admin') {
+    throw authErrors.adminTierProtected();
+  }
+  return { actor, target };
+}

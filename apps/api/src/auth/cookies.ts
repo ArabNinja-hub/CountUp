@@ -3,14 +3,19 @@ import type { Response } from 'express';
 import { CSRF_COOKIE, REFRESH_COOKIE, SESSION_COOKIE } from './constants';
 import type { SessionTokens } from './auth-service';
 
+/**
+ * C-04: `secure` is an explicit deployment decision, never a NODE_ENV guess.
+ * It is true whenever the app is served over HTTPS (production, an HTTPS origin
+ * allowlist, or COOKIE_SECURE=true).
+ */
 export interface CookiePolicy {
-  isProduction: boolean;
+  secure: boolean;
 }
 
 function baseOptions(policy: CookiePolicy, path: string): CookieSerializeOptions {
   return {
     httpOnly: true,
-    secure: policy.isProduction,
+    secure: policy.secure,
     sameSite: 'lax',
     path,
   };
@@ -59,7 +64,7 @@ export function setCsrfCookie(res: Response, token: string, policy: CookiePolicy
     'Set-Cookie',
     serialize(CSRF_COOKIE, token, {
       httpOnly: false,
-      secure: policy.isProduction,
+      secure: policy.secure,
       sameSite: 'lax',
       path: '/',
     })

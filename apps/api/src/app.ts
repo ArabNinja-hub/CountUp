@@ -10,6 +10,7 @@ import { AuthError } from './auth/errors';
 import { AdminAssistedIdentityVerifier } from './auth/identity-verifier';
 import { csrfGuard, noStore, originGuard } from './auth/middleware';
 import { PasswordHasher } from './auth/password';
+import { InMemoryRateLimiter, PostgresRateLimiter } from './auth/rate-limit';
 import { createAuthRouter } from './auth/routes';
 import {
   createSecurityOptions,
@@ -41,7 +42,15 @@ interface HealthyRow extends QueryResultRow {
 
 export function createApp(options: AppOptions): express.Express {
   const { env, db } = options;
-  const security: SecurityOptions = createSecurityOptions(env, options.security);
+  // C-03: the runtime limiter is ALWAYS shared PostgreSQL state when a DB is
+  // configured. The in-memory implementation is only for a DB-less health boot.
+  const securityOverrides: SecurityOverrides = {
+    ...options.security,
+    limiter:
+      options.security?.limiter ??
+      (db === undefined ? new InMemoryRateLimiter() : new PostgresRateLimiter(db)),
+  };
+  const security: SecurityOptions = createSecurityOptions(env, securityOverrides);
   const service: AuthService | undefined =
     options.auth ??
     (db === undefined
@@ -54,12 +63,17 @@ export function createApp(options: AppOptions): express.Express {
 
   const app = express();
   app.disable('x-powered-by');
+  // Forwarded headers are trusted ONLY with an explicit hop count from config.
+  if (security.trustProxyHops !== null) {
+    app.set('trust proxy', security.trustProxyHops);
+  }
   app.use(express.json({ limit: '32kb' }));
   app.use(noStore);
   app.use(originGuard(security));
   app.use(csrfGuard(security));
 
-  const cookiePolicy = { isProduction: env.NODE_ENV === 'production' };
+  // C-04: explicit deployment decision, not a NODE_ENV guess.
+  const cookiePolicy = { secure: security.secureCookies };
 
   app.get('/auth/csrf', (_req: Request, res: Response) => {
     const token = createCsrfToken(security.csrfSecret);
@@ -136,7 +150,9 @@ export function createApp(options: AppOptions): express.Express {
       res.status(413).json({ error: 'payload_too_large' });
       return;
     }
-    console.error('[countup-api] unhandled error', error);
+    // H-06: never log whole error objects (PGlite errors expose bound `params`).
+    const name = error instanceof Error ? error.name : typeof error;
+    console.error(`[countup-api] unhandled ${name}`);
     res.status(500).json({ error: 'internal_error' });
   });
 

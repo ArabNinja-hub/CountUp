@@ -12,13 +12,18 @@ import { REFRESH_COOKIE } from './constants';
 import { clearSessionCookies, setSessionCookies, type CookiePolicy } from './cookies';
 import { AuthError } from './errors';
 import {
+  adminRateLimit,
   getAuthContext,
+  globalRateLimit,
   loginRateLimit,
+  recoveryConfirmRateLimit,
   recoveryRateLimit,
+  refreshRateLimit,
   requireAuth,
   requireOwner,
   requirePlatformAdmin,
   requireVerified,
+  signupRateLimit,
 } from './middleware';
 import type { SecurityOptions } from './security';
 import {
@@ -81,13 +86,17 @@ function publicUser(user: AuthContext['user']): Record<string, unknown> {
 }
 
 export function createAuthRouter(options: AuthRouterOptions): express.Router {
-  const { service, security, env } = options;
-  const cookiePolicy: CookiePolicy = { isProduction: env.NODE_ENV === 'production' };
+  const { service, security } = options;
+  const cookiePolicy: CookiePolicy = { secure: security.secureCookies };
   const router = express.Router();
   const auth = requireAuth(service);
 
+  // C-03: a shared per-IP budget on EVERY auth route, plus route-specific limits.
+  router.use(globalRateLimit(security));
+
   router.post(
     '/signup',
+    signupRateLimit(security),
     validateBody(signupSchema),
     wrap(async (req, res) => {
       const body = req.body as SignupBody;
@@ -130,12 +139,13 @@ export function createAuthRouter(options: AuthRouterOptions): express.Router {
 
   router.post(
     '/refresh',
+    refreshRateLimit(security),
     wrap(async (req, res) => {
       const refreshToken = parse(req.headers.cookie ?? '')[REFRESH_COOKIE];
       if (refreshToken === undefined) {
         throw new AuthError('unauthenticated', 401, 'Refresh token missing');
       }
-      const tokens = await service.refresh(refreshToken);
+      const tokens = await service.refresh(refreshToken, clientMeta(req).ip);
       setSessionCookies(res, tokens, cookiePolicy);
       res.status(200).json({ rotated: true });
     })
@@ -144,9 +154,9 @@ export function createAuthRouter(options: AuthRouterOptions): express.Router {
   router.post(
     '/logout',
     auth,
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       const current = context(res);
-      await service.logout(current.sessionId, current.user.id);
+      await service.logout(current.sessionId, current.user.id, clientMeta(req).ip);
       clearSessionCookies(res, cookiePolicy);
       res.status(200).json({ loggedOut: true });
     })
@@ -188,6 +198,7 @@ export function createAuthRouter(options: AuthRouterOptions): express.Router {
 
   router.post(
     '/password/recovery/confirm',
+    recoveryConfirmRateLimit(security),
     validateBody(recoveryConfirmSchema),
     wrap(async (req, res) => {
       const body = req.body as RecoveryConfirmBody;
@@ -223,6 +234,7 @@ export function createAuthRouter(options: AuthRouterOptions): express.Router {
     '/admin/identity-verifications/:userId/verify',
     auth,
     requirePlatformAdmin(),
+    adminRateLimit(security),
     validateBody(adminVerifySchema),
     wrap(async (req, res) => {
       const body = req.body as AdminVerifyBody;
@@ -243,6 +255,7 @@ export function createAuthRouter(options: AuthRouterOptions): express.Router {
     '/admin/password-reset/:userId',
     auth,
     requirePlatformAdmin(),
+    adminRateLimit(security),
     validateBody(adminResetSchema),
     wrap(async (req, res) => {
       const body = req.body as AdminResetBody;

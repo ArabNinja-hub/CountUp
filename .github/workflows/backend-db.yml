@@ -2,9 +2,13 @@ name: Backend & Database
 
 # Backend / database CI foundation.
 #   * `backend-db` runs the fast PGlite suites (no secrets, no service container).
+#     It also spawns the real server entry point to prove startup fails closed on
+#     missing/weak secrets, and runs the adversarial C-01..C-10 regression tests.
 #   * `live-postgres` runs the SAME auth tests plus the migration/constraint
 #     validation against a real PostgreSQL 18 service container. It requires
-#     TEST_DATABASE_URL and NEVER falls back to PGlite.
+#     TEST_DATABASE_URL and NEVER falls back to PGlite. The concurrency,
+#     multi-instance limiter, audit-rollback and admin CLI runbook tests require
+#     this real server and are skipped by the PGlite job.
 # Neither job deploys anything or connects to a production database.
 on:
   push:
@@ -53,6 +57,11 @@ jobs:
       - name: Format check
         run: npm run format:check
 
+      # Build first: the adversarial suite also smoke-tests the BUILT admin CLI
+      # bundle (migration-directory resolution from apps/api/dist/).
+      - name: API build
+        run: npm run api:build
+
       - name: Database and backend tests (isolated PGlite)
         run: npm run test:db
 
@@ -61,9 +70,6 @@ jobs:
 
       - name: Production frontend build
         run: npm run build
-
-      - name: API build
-        run: npm run api:build
 
   live-postgres:
     name: Live PostgreSQL 18 & M2 auth integration
@@ -97,6 +103,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+
+      - name: API build
+        run: npm run api:build
 
       # The service healthcheck (pg_isready inside the container) gates job start.
       - name: Live PostgreSQL validation + authentication tests

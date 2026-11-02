@@ -32,6 +32,6 @@ export const ARGON2_OPTIONS = {
 
 export const PASSWORD_ALGO = 'argon2id';
 
-/** Non-secret development fallbacks. Production MUST supply real env secrets. */
-export const DEV_PEPPER = '__COUNTUP_DEV_ONLY_NOT_A_SECRET_PEPPER__';
-export const DEV_CSRF_SECRET = '__COUNTUP_DEV_ONLY_NOT_A_SECRET_CSRF__';
+// C-04: NO development fallback pepper or CSRF secret exists in deployable code.
+// `resolveSecrets()` fails closed when AUTH_PEPPER / CSRF_SECRET are absent, weak
+// or unsafe, in every NODE_ENV. Tests inject explicitly generated values.
