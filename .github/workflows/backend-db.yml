@@ -1,8 +1,11 @@
 name: Backend & Database
 
-# M0/M1 CI foundation. The DB suite runs against a fresh in-memory PGlite database,
-# so no Docker daemon, Testcontainers, PostgreSQL service or secret is required.
-# This workflow never connects to a database and never deploys anything.
+# Backend / database CI foundation.
+#   * `backend-db` runs the fast PGlite suites (no secrets, no service container).
+#   * `live-postgres` runs the SAME auth tests plus the migration/constraint
+#     validation against a real PostgreSQL 18 service container. It requires
+#     TEST_DATABASE_URL and NEVER falls back to PGlite.
+# Neither job deploys anything or connects to a production database.
 on:
   push:
     branches-ignore: [gh-pages]
@@ -18,9 +21,9 @@ permissions:
 
 jobs:
   backend-db:
-    name: Backend foundation & database tests
+    name: Backend foundation & PGlite database tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,3 +61,43 @@ jobs:
 
       - name: Production frontend build
         run: npm run build
+
+      - name: API build
+        run: npm run api:build
+
+  live-postgres:
+    name: Live PostgreSQL 18 & M2 auth integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:55432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # The service healthcheck (pg_isready inside the container) gates job start.
+      - name: Live PostgreSQL validation + authentication tests
+        run: npm run test:db:live

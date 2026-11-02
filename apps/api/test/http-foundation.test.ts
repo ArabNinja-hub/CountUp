@@ -39,6 +39,7 @@ async function start(app: express.Express): Promise<RunningApp> {
 
 let db: IsolatedDatabase;
 let running: RunningApp;
+let csrfToken: string;
 
 beforeEach(async () => {
   db = await createIsolatedDatabase();
@@ -48,7 +49,22 @@ beforeEach(async () => {
       db: db.executor,
     })
   );
+  const csrfResponse = await fetch(`${running.url}/auth/csrf`);
+  expect(csrfResponse.status).toBe(200);
+  csrfToken = ((await csrfResponse.json()) as { csrfToken: string }).csrfToken;
 });
+
+/** All unsafe requests now pass the strict Origin + signed double-submit guards. */
+function postHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    origin: running.url,
+    'sec-fetch-site': 'same-origin',
+    cookie: `countup_csrf=${csrfToken}`,
+    'x-csrf-token': csrfToken,
+    ...extra,
+  };
+}
 
 afterEach(async () => {
   await running.close();
@@ -137,7 +153,7 @@ describe('Express foundation routes', () => {
   it('validates request bodies, strips unknown keys and rejects bad input', async () => {
     const ok = await fetch(`${running.url}/v1/echo`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: JSON.stringify({ message: 'hello', injected: 'DROP TABLE plans;' }),
     });
     expect(ok.status).toBe(200);
@@ -145,7 +161,7 @@ describe('Express foundation routes', () => {
 
     const bad = await fetch(`${running.url}/v1/echo`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: JSON.stringify({ message: '' }),
     });
     expect(bad.status).toBe(400);
@@ -158,7 +174,7 @@ describe('Express foundation routes', () => {
   it('rejects malformed JSON, oversized bodies and unknown routes', async () => {
     const malformed = await fetch(`${running.url}/v1/echo`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: '{not-json',
     });
     expect(malformed.status).toBe(400);
@@ -166,7 +182,7 @@ describe('Express foundation routes', () => {
 
     const oversized = await fetch(`${running.url}/v1/echo`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: JSON.stringify({ message: 'x'.repeat(40_000) }),
     });
     expect(oversized.status).toBe(413);

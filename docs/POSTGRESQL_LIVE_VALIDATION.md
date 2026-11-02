@@ -321,3 +321,19 @@ leaving only `schema_migrations`, and all seven up migrations re-apply cleanly.
 Cross-shop `23503`, append-only `P0001`, transactional DDL/DML rollback, pool
 acquisition/release/shutdown and the API-on-`pg` checks were all re-executed and
 passed. The int8/BIGINT-as-string finding and all limitations in §8 remain in force.
+
+**Final live run after M2 was implemented** (24 authentication integration tests
+added to the same real-server suite, plus 8 unit tests):
+
+```
+$ TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55432/postgres' npm run test:db:live
+ ✓ test/auth/authentication.test.ts (24 tests)
+ ✓ test/live/postgres-live.test.ts (13 tests)
+ ✓ test/auth/security-unit.test.ts (8 tests)
+ Test Files  3 passed (3)
+      Tests  45 passed (45)
+```
+
+Every authentication test that touches the database ran against a freshly created,
+isolated database on the real PostgreSQL 18.6 server via `pg@8.23.1` — not PGlite.
+See `docs/M2_AUTHENTICATION_IMPLEMENTATION.md` §9.

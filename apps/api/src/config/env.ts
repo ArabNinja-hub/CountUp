@@ -10,6 +10,12 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   APP_VERSION: z.string().min(1).default('0.1.0'),
+  // Secrets are REQUIRED in production and must come from the environment only.
+  // In development/test a clearly-labelled, non-secret fallback is used so the
+  // foundation can boot without a .env file; no real credential is committed.
+  AUTH_PEPPER: z.string().min(1).optional(),
+  CSRF_SECRET: z.string().min(1).optional(),
+  PUBLIC_APP_ORIGIN: z.string().min(1).optional(),
   DATABASE_URL: z
     .string()
     .min(1)

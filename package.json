@@ -33,6 +33,7 @@
     "db:migrate:down": "tsx apps/api/src/db/migrate-cli.ts down",
     "db:status": "tsx apps/api/src/db/migrate-cli.ts status",
     "api:dev": "tsx apps/api/src/server.ts",
+    "api:build": "node apps/api/build.mjs",
     "deploy:rules": "firebase deploy --only firestore:rules",
     "deploy": "gh-pages -d dist"
   },
