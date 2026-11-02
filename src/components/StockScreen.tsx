@@ -48,7 +48,7 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
     buyingPrice: '',
     sellingPrice: '',
     quantity: '',
-    lowStockThreshold: '5',
+    lowStockThreshold: '0',
   });
 
   // Calculate stock stats
@@ -85,7 +85,7 @@ export const StockScreen: React.FC<{ initialAdd?: boolean; onConsumedInitialAdd?
       buyingPrice: '',
       sellingPrice: '',
       quantity: '',
-      lowStockThreshold: '5',
+      lowStockThreshold: '0',
     });
     setIsAddModalOpen(true);
   };

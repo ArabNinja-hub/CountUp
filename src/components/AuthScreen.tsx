@@ -32,7 +32,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onOpenHelp, onAdminSigne
   const [errorMessage, setErrorMessage] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [showLegal, setShowLegal] = useState<'privacy' | 'terms' | 'security' | null>(null);
-  const [view, setView] = useState<'phone' | 'email' | 'admin'>('phone');
+  const [view, setView] = useState<'phone' | 'admin'>('phone');
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -63,7 +63,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onOpenHelp, onAdminSigne
     }
   };
 
-  if (view === 'email' || view === 'admin')
+  if (view === 'admin')
     return (
       <AdminLoginPanel
         onBack={() => setView('phone')}
@@ -239,21 +239,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onOpenHelp, onAdminSigne
             </button>
           </form>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3">
+          <div className="mt-4 border-t border-slate-100 pt-3">
             <button
               type="button"
               onClick={() => setView('admin')}
-              className="flex min-h-[44px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-slate-50 px-2 text-xs font-bold text-emerald-800 hover:bg-emerald-50"
+              className="flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-md px-2 text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
             >
-              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-700" />
-              Email sign in
-            </button>
-            <button
-              type="button"
-              onClick={() => setView('admin')}
-              className="flex min-h-[44px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-slate-50 px-2 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-900"
-            >
-              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-700" />
+              <ShieldCheck className="h-4 w-4 shrink-0" />
               Admin sign in
             </button>
           </div>

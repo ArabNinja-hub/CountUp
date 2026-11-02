@@ -3,7 +3,9 @@
 **Countup** is a mobile-first Point-of-Sale and shop-management web app built for
 Zambian kiosks, market stalls, and small shops. It works in **Zambian Kwacha (K)**,
 saves ordinary shop entries offline on a phone, and queues them for cloud sync.
-Email access, backup import and account deletion require an internet connection.
+Shop sign-in uses a phone number and PIN; there is no general shop email sign-in. Email
+linking is retained only for reauthenticating the original shop identity. Email linking,
+backup import and account deletion require an internet connection.
 
 > Record a sale in seconds, track credit customers, manage stock, log expenses, and
 > see your daily profit — all in English, Bemba, or Nyanja.
@@ -22,8 +24,7 @@ offline guide. The complete step-by-step manual is in [docs/USER_GUIDE.md](docs/
 - **Credit Book** — customer statements, balance tracking, cash/Mobile Money repayments and polite **WhatsApp** reminders in 3 languages.
 - **Reports** — daily / weekly / monthly sales, known-cost profit, cash vs. Mobile Money received (including repayments), top sellers and expenses.
 - **Data tools** — JSON and CSV exports, plus an additive import for legacy v1 backups.
-- **Subscriptions** — 30-day free trial, then monthly / 3-month / 6-month plans paid by
-  Mobile Money (Airtel, MTN, Zamtel) through the contact channels in the Plan screen.
+- **Subscriptions** — a 30-day free trial, then monthly / 3-month / 6-month plans paid manually through MTN or Airtel Mobile Money. Payment references are reviewed by an authorized administrator; a submission never activates access by itself.
 - **Offline-first** — after the built app has loaded online once, it can reopen in the same browser offline. Ordinary entries are saved locally and queued for sync; unresolved conflicts can stop the queue.
 - **Localized** — existing navigation and reminders support English, Ichibemba, and Chinyanja; some newer screens are currently English-only.
 - **Platform admin** — the owner account can see every shop, extend plans, and suspend
@@ -74,10 +75,12 @@ clear that storage while entries are pending. Logging out clears the local shop 
 a phone-and-PIN login needs a connection afterwards.
 
 If a previously linked shop loses its cloud session while entries are waiting, use
-**Settings → Account & cloud access** to reconnect the original email account without
-discarding the queue. A different account cannot sync it. A phone-and-PIN-only shop
-still needs its original anonymous Firebase session; an unlinked identity cannot be
-recovered by creating a new anonymous account.
+**Settings → Account & cloud access** to reconnect the original email identity without
+discarding the queue. This recovery flow requires the original shop data to still be
+present in the browser; it is not general email shop sign-in or a new-device restore. A
+different account cannot sync the queue. A phone-and-PIN-only shop still needs its
+original anonymous Firebase session; an unlinked identity cannot be recovered by
+creating a new anonymous account.
 
 ---
 
@@ -89,11 +92,11 @@ recovered by creating a new anonymous account.
 | Build / Dev  | Vite 8 (`@vitejs/plugin-react`, `@tailwindcss/vite`) |
 | Hosting      | GitHub Pages (static); `server.ts` serves `dist/` + the Vite dev middleware locally |
 | Data         | Firebase Firestore (real-time) + localStorage offline cache |
-| Payments     | Contact-based plan top-ups (WhatsApp / phone / email) |
+| Payments     | Manual MTN/Airtel submissions + Firebase Functions review |
 
-> **Note:** the Express app used to proxy the Lipila Mobile Money API. Those routes are
-> gone — the deployed app is static, and the Plan screen hands the shopkeeper contact
-> options instead. See [Deployment](#deployment) for what that means for hosting.
+> **Note:** Customer sales are still entered as business records only. Subscription
+> payments use a separate manual transfer and administrator review flow. No Mobile Money
+> gateway, provider API or automatic verification is connected.
 
 ---
 
@@ -101,7 +104,7 @@ recovered by creating a new anonymous account.
 
 ### Prerequisites
 - **Node.js** 24.12+ recommended (some Firebase packages warn on Node 22)
-- npm (this repo ships `package-lock.json`; use `npm ci` in CI)
+- npm (the root app has no lockfile; the separate `functions/` package has its own lockfile)
 
 ### Install
 ```bash
@@ -136,8 +139,10 @@ npm run check       # typecheck + lint + tests in one go
 
 Tests cover plans, money and ledger calculations, queue reconciliation and recovery,
 static offline-shell caching, single-tab coordination, legacy backup conversion, CSV
-escaping, mocked authentication/transactions and screen behavior. The mock tests are
-not a substitute for testing a real Firebase project.
+escaping, payment validation/review/date arithmetic, entitlement expiry, mocked
+authentication/transactions and screen behavior. The Firestore emulator suite exercises
+shop/payment-record isolation and custom-claim authorization; none of these tests uses
+live Firebase accounts or submits real payments.
 
 To exercise Firestore authorization locally, install Java and the Firebase CLI's
 Firestore emulator, then start it with this repository's `firebase.json` and rules:
@@ -150,7 +155,8 @@ FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 GCLOUD_PROJECT=demo-countup npm run test:
 
 Use the actual emulator port if different. `test:rules` only accepts a local host and
 `demo-*` project, and uses a named database. These tests do not deploy rules or verify
-the live project.
+the live project. `npm run functions:build` typechecks the callable backend against its
+separate `functions/` package.
 
 ---
 
@@ -168,56 +174,59 @@ deployment — it is read by both `vite.config.ts` and `server.ts` through
 `base-path.ts`, so the built asset URLs and the server's mount point can never drift
 apart. Set it to `/` when hosting a custom domain from the site root.
 
-### Support & payment contacts
-`src/config/support.ts` is the single source of truth for the WhatsApp number, phone
-number, and email addresses used by the Plan screen and the legal pages. Change them
-there — never inline. Current values: **+260 96 283 8581** and
-**ronisherbwalya@gmail.com** (the same mailbox is used for support, payments and legal
-mail, because there is no separate department yet).
-
-The legal pages in `src/components/LegalPages.tsx` repeat the email inside their text,
-so update that file too if the address ever changes.
+### Manual payment configuration
+The MTN and Airtel payment numbers are kept in Firebase Functions secrets and returned
+only to a signed-in shop owner by `getManualPaymentInstructions`. They are not embedded
+in the web bundle. Configure `COUNTUP_MTN_PAYMENT_NUMBER` and
+`COUNTUP_AIRTEL_PAYMENT_NUMBER` with the platform-approved values. The Plan screen
+supports only MTN and Airtel; it does not connect to a payment gateway.
 
 ### Firebase
-`firebase-applet-config.json` holds the web app credentials. Security rules live in
-`firestore.rules`. `firebase.json` + `.firebaserc` tell the Firebase CLI which project
-and which (non-default) database those rules belong to.
+`firebase-applet-config.json` holds the web app configuration. Security rules live in
+`firestore.rules`; privileged review and subscription changes run in the Firebase
+Functions code under `functions/`. `firebase.json` + `.firebaserc` tell the Firebase
+CLI which project and which (non-default) database those rules belong to.
 
 Enable **Anonymous** under Firebase Authentication → Sign-in method for the existing
-phone-and-PIN flow. To use optional account access, also enable **Email/Password**.
-While signed in on the existing phone, open Settings → Account & cloud access and link an
-email and password. Linking retains the existing Firebase UID and therefore the shop
-ownership and any admin grant. A linked account can sign in on another device and
-request a password reset by email.
+phone-and-PIN flow. For optional account recovery, also enable **Email/Password**. While
+signed in on the original device, open Settings → Account & cloud access and link an email
+and password. Linking retains the existing Firebase UID and therefore the shop ownership
+and any server-issued custom claim bound to that UID. Email linking only supports reauthentication of the original shop
+identity on a device that still has its shop data; it is not general shop email sign-in or
+a new-device restore. Password reset is available for the linked email.
 
-Phone/PIN-only shops remain bound to their original anonymous Firebase identity; a
-PIN alone does not authorize a new device. Do not clear that identity before linking.
-Email access and cloud operations require connectivity. Credentials from earlier
-accounts are not transferred automatically; enable email access for your shop and import
-any supported legacy backup separately.
+Phone/PIN shops remain bound to their original Firebase identity; a PIN alone does not
+authorize a new device. Do not clear the original browser data or identity while entries
+are pending. Email reauthentication and cloud operations require connectivity. Credentials
+from earlier accounts are not transferred automatically; import any supported legacy
+backup separately.
 
 ### Platform owner access
 
-Admin access is granted to a Firebase **UID**, never to a phone number or a hardcoded
-email. There is no default admin account or password.
+Admin access is based on a server-issued Firebase custom claim. No client email check,
+Firestore admin document or self-service role setting grants access. The configured
+platform identity is held in the `COUNTUP_ADMIN_EMAIL` Firebase Functions secret, not
+in the web client or this repository.
 
-1. Enable **Email/Password** in Firebase Authentication if the admin will sign in
-   from the sign-in page. Create an email/password account in Firebase or use an
-   existing linked account, and copy its UID from **Authentication → Users**.
-2. In the app's configured Firestore database, create `admins/<uid>` for that exact
-   UID. The document's existence is the grant. `firestore.rules` independently
-   checks it for every privileged read and write. Delete the document to revoke it.
-3. On the CountUp sign-in page choose **Admin sign in**, then sign in with that
-   account's email and password. A shop is not required. CountUp checks the registry
-   from the server, and signing out of this standalone console ends the email session.
-4. If the admin grant belongs to an existing anonymous shop identity, do not replace
-   that identity: sign in with its shop PIN on the original device and open
-   **Settings → Platform Admin**. To use the new email entry for that same UID, first
-   sync and link email under **Settings → Account & cloud access**.
+1. Enable **Email/Password** sign-in in Firebase Authentication. An authorized platform
+   account must already exist and have a verified email; this app does not create admin
+   credentials or set a hardcoded password.
+2. Set `COUNTUP_ADMIN_EMAIL` through Firebase Functions secrets to the privately
+   configured owner identity. Do not put the value in source code or Vite environment
+   variables.
+3. Build Functions dependencies with `npm --prefix functions install`, then set the
+   payment secrets `COUNTUP_MTN_PAYMENT_NUMBER` and
+   `COUNTUP_AIRTEL_PAYMENT_NUMBER` using `firebase functions:secrets:set`.
+4. Deploy both the rules and backend: `firebase deploy --only firestore:rules,functions`.
+5. On first authorized sign-in, `verifyPlatformAdmin` checks the verified identity
+   against the secret and provisions a `platformAdmin` custom claim. The client refreshes
+   its token. Every admin callable and Firestore admin read independently checks that
+   claim. Revoke access by removing the claim through Firebase Admin tooling and ending
+   existing sessions; an already issued ID token may remain valid until it expires.
 
-Admin sign-in and administrative changes require a connection. Account switching is
-blocked when it would discard pending entries or an unlinked anonymous shop identity.
-A local UI check does not replace the Firestore rules; deploy the rules before launch.
+Admin operations require connectivity. No production credentials, live accounts, payment
+records or secrets are created by this repository change. Configure Firebase providers,
+secrets, account verification and deployment separately before enabling real payments.
 
 ### Security model (what the rules enforce)
 
@@ -228,14 +237,14 @@ device on the internet, so it is deliberately strict:
 - **One shop sees one shop.** The shop document, `items`, `sales`, `customers`,
   `credit_payments`, `expenses`, `stock_movements`, `stock_conflicts` and
   `sync_operations` are restricted to the owner Firebase UID and platform admins.
-- **A shop cannot pay itself.** A shop may change *only* its PIN after creation. Plan
-  status, plan expiry, the trial dates and the "deactivated" flag can only be written
-  by the platform owner — the browser console can no longer be used to grant free
-  premium or to lift a suspension.
+- **A shop cannot grant itself premium access.** Client writes to shop entitlement fields
+  are denied. Admin SDK callables verify the server-issued platform-admin claim before
+  reviewing payments, extending subscriptions or changing suspension status.
 - **A new shop starts on the trial.** Creating a shop with `planStatus: active` (or with
   the trial end and the plan expiry disagreeing) is refused by the rules.
-- **The admin registry is restricted.** Non-admins can check only their own UID and
-  cannot list or change the registry.
+- **Admin roles are not a Firestore document.** The retired `admins` collection is
+  denied to all clients; privileged shop/payment/audit reads require the server-issued
+  custom claim.
 - **PINs are always four digits**, on create and on change.
 - **The connectivity probe is read-only.** Nothing needs to write `test/connection`.
 
@@ -244,20 +253,21 @@ device on the internet, so it is deliberately strict:
 1. **The PIN is stored as plain text** in `shops/<shopId>.pin` and in the phone's local
    cache. The rules stop other shops from reading it, but anyone with Firebase console
    access (or the phone itself) can see it, and four digits are easy to guess if the
-   database ever leaks. Moving to a salted hash is the next security step; it needs a
-   migration path for shops that already have a plain-text PIN.
-2. **Trial dates are client-supplied on creation.** Rules stop an owner changing plan
-   fields afterward, but do not enforce a server-calculated 30-day trial at creation.
-   Stronger enforcement needs a trusted backend.
+   database ever leaks. Moving to a salted hash needs a migration path for existing shops.
+2. **Offline shop creation has a client timestamp.** Firestore rules cap a new trial at
+   30 days from the server's create request, so a forged long trial is denied. If the
+   shop is created offline and synced later, its originally computed trial may be shorter
+   by the time it reaches Firestore.
 3. **There is no rate limit on PIN attempts.** A 4-digit PIN has 10,000 combinations;
    add a short lockout if these shops ever hold money belonging to someone else.
-4. **A forgotten shop PIN has no direct reset flow.** A previously linked email account
-   can sign in and reset its email password, but the PIN-change screen still requires
-   the old PIN. Do not delete a shop as a recovery shortcut: its data would be lost.
-5. **Admin rights are bound to a Firebase UID.** Anonymous sessions remain on the
-   device after logging out; an email link retains that same UID. Anyone with access to
-   an authenticated admin device/account may reach the admin console. Protect the
-   device and remove `admins/<uid>` when revoking access.
+4. **A forgotten shop PIN has no direct reset flow.** A linked email can reauthenticate
+   the original shop identity on a browser that still has its shop data and reset its
+   email password, but the PIN-change screen still requires the old PIN. Do not delete a
+   shop as a recovery shortcut: its data would be lost.
+5. **Admin rights are bound to a Firebase UID and custom claim.** Protect the
+   authorized account and device. Revocation requires removing the custom claim with
+   Firebase Admin tooling and ending active sessions; an already issued token may
+   remain valid until expiry.
 6. **No Content-Security-Policy is set.** It is worth adding one after testing sign-in
    (Firebase Auth needs `frame-src` for its auth domain); the fonts are loaded from
    Google Fonts, which is the only third-party request the app makes.
@@ -394,7 +404,7 @@ CountUp/
     ├── main.tsx
     ├── index.css           # Tailwind + custom animations
     ├── components/         # Screen + shared UI components (LegalPages included)
-    ├── config/             # Pricing (plans.ts), support contacts & admin (support.ts)
+    ├── config/             # Shared subscription terms and app configuration
     ├── context/            # ShopProvider (state, auth, sync)
     ├── firebase/           # Firebase init + helpers
     ├── i18n/               # EN / BEM / NYA translations
@@ -408,26 +418,28 @@ CountUp/
 
 Things a deploy does **not** do for you:
 
-1. **Publish the Firestore rules.** `firestore.rules` is the only thing enforcing
-   per-shop data isolation — rules must be live before real shops register. See
-   [Deploying the Firestore rules](#deploying-the-firestore-rules) below.
-2. **Enable sign-in providers.** Authentication → Sign-in method → *Anonymous* must
-   be on; enable *Email/Password* as well for optional linked account access.
-3. **Grant yourself admin.** After your first sign-in, copy your UID from
-   Authentication → Users and create the document `admins/<uid>` in Firestore.
-4. **Confirm the contact details** in `src/config/support.ts` (WhatsApp, phone, payment
-   email). These are the channels customers are told to pay through. They are already
-   set to +260 96 283 8581 and ronisherbwalya@gmail.com.
-5. **Plan activation is manual.** Payment happens off-app (WhatsApp / call / email), and
-   the owner activates the shop with the admin console's “+30 / +90 days” action. There
-   is no automated Mobile Money callback in the static build.
+1. **Publish Firestore rules and Functions.** Deploy `firestore.rules` and the callable
+   backend before enabling payment submissions or privileged administration.
+2. **Enable sign-in providers.** Authentication → Sign-in method → *Anonymous* must be
+   on for shops; enable *Email/Password* for the separately verified platform account.
+3. **Provision the platform identity.** Set the private `COUNTUP_ADMIN_EMAIL` Firebase
+   secret, verify the matching Firebase Authentication email, then sign in once to let
+   the server issue the admin custom claim. Never create an `admins/<uid>` document.
+4. **Configure payment secrets.** Set `COUNTUP_MTN_PAYMENT_NUMBER` and
+   `COUNTUP_AIRTEL_PAYMENT_NUMBER` to the approved receiving numbers through Firebase
+   Functions secrets. Do not put them in client or Vite configuration.
+5. **Keep pilot payments manual.** Owners make a Mobile Money transfer and submit its
+   reference; an administrator must verify the operator transaction and approve it.
+   There is no automatic Mobile Money gateway or callback.
 
 ### Known limitations of phone-only access
 
-- A shop that has not linked email remains bound to its original anonymous Firebase
-  session. Another device cannot open it using only the phone and PIN.
-- Clearing browser data can permanently lose that anonymous identity and any unsynced
-  entries. Link email and sync first; the JSON export currently has no in-app restore.
+- A shop is bound to its original Firebase identity. Phone and PIN alone do not open it
+  on another device, and CountUp currently has no general email shop sign-in or
+  new-device restore flow.
+- Clearing browser data can permanently lose the original anonymous identity and any
+  unsynced entries. Email linking only supports reauthentication of the original shop
+  session on a browser that still has the shop data. The JSON export has no in-app restore.
 - Data isolation relies on deployed `firestore.rules`; there is no server between the
   browser and Firestore.
 

@@ -76,12 +76,12 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
   const debtCustomerCount = customers.filter((c) => c.totalOwed > 0).length;
 
   return (
-    <header className="sticky top-0 z-40 bg-gradient-to-r from-emerald-950 via-emerald-900 to-emerald-800 border-b border-emerald-800/80 text-white shadow-sm">
+    <header className="sticky top-0 z-40 border-b border-emerald-900 bg-emerald-950 text-white">
       {/* Main Bar */}
-      <div className="max-w-6xl mx-auto px-3 sm:px-6 py-2.5 flex items-center justify-between gap-2">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2.5 flex items-center justify-between gap-2">
         {/* Left: Brand & Shop Info */}
         <div className="flex items-center space-x-2 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center shrink-0 shadow-xs overflow-hidden backdrop-blur-sm">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/70 bg-white">
             <img src={icon} alt="Countup" className="w-7 h-7 object-contain" />
           </div>
           <div className="min-w-0">
@@ -334,8 +334,8 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
 
       {/* Low Stock / Credit Alert Bar (only when there are alerts) */}
       {(lowStockCount > 0 || debtCustomerCount > 0) && (
-        <div className="px-4 sm:px-6 py-1.5 bg-amber-50 border-b border-amber-200">
-          <div className="max-w-6xl mx-auto flex items-center space-x-3 text-xs">
+        <div className="px-3 sm:px-6 py-2 bg-amber-50 border-b border-amber-200">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center gap-2 text-xs">
             {lowStockCount > 0 && (
               <span className="flex items-center space-x-1 text-amber-800 bg-amber-100 px-2 py-0.5 rounded">
                 <AlertTriangle className="w-3 h-3" />

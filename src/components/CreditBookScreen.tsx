@@ -225,13 +225,20 @@ export const CreditBookScreen: React.FC = () => {
 
   return (
     <div className="w-full space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 shadow-xs">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-700">
+          Customer ledger
+        </p>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">Credit book</h1>
+        <p className="mt-1 text-sm text-slate-500">Track balances, credit sales and repayments.</p>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-y border-slate-200 py-3">
         <div>
-          <p className="text-xs font-bold text-amber-900">{t.totalCreditOwed}</p>
-          <p className="mt-1 text-2xl font-black tabular-nums tracking-tight text-amber-950">
+          <p className="text-sm font-medium text-slate-600">{t.totalCreditOwed}</p>
+          <p className="mt-1 text-xl font-semibold tabular-nums tracking-tight text-amber-900">
             {formatKwacha(totalMoneyOwed)}
           </p>
-          <p className="mt-1 text-xs text-amber-800">
+          <p className="mt-1 text-sm text-slate-500">
             {owingCustomerCount} {owingCustomerCount === 1 ? 'customer owes' : 'customers owe'} you
             · {customers.filter((customer) => customer.totalOwed === 0).length} cleared
           </p>
@@ -241,7 +248,7 @@ export const CreditBookScreen: React.FC = () => {
             setCustomerError('');
             setIsAddCustomerOpen(true);
           }}
-          className="flex min-h-[44px] items-center gap-1.5 rounded-xl bg-emerald-800 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-900"
+          className="flex min-h-[44px] items-center gap-1.5 rounded-md bg-emerald-800 px-4 text-sm font-semibold text-white transition-colors hover:bg-emerald-900"
         >
           <UserPlus className="h-4 w-4" />
           <span>{t.newCustomer.replace(/^\+\s*/, '')}</span>

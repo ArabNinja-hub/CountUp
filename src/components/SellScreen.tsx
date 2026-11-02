@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShop } from '../context/ShopContext';
-import { SUPPORT_CONTACT } from '../config/support';
 import {
   Search,
   Plus,
@@ -21,8 +20,13 @@ import {
 import { Item, PaymentType, Customer } from '../types';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
-import { formatKwacha, formatKwachaCompact, sanitizePhoneInput } from '../utils/format';
-import { addKwacha, localDateKey, multiplyKwacha } from '../utils/money';
+import {
+  formatKwacha,
+  formatKwachaCompact,
+  sanitizeMoneyInput,
+  sanitizePhoneInput,
+} from '../utils/format';
+import { addKwacha, localDateKey, multiplyKwacha, parseKwachaToNgwee } from '../utils/money';
 import { summarizeLedger } from '../utils/ledger';
 
 interface CartItem {
@@ -52,6 +56,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [mobileCheckoutOpen, setMobileCheckoutOpen] = useState(false);
   const [paymentType, setPaymentType] = useState<PaymentType>('cash');
+  const [cashTendered, setCashTendered] = useState('');
   const [momoOperator, setMomoOperator] = useState<'airtel' | 'mtn' | 'zamtel'>('airtel');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [isAddingNewCustomer, setIsAddingNewCustomer] = useState(false);
@@ -71,6 +76,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   // Success modal
   const [lastCompletedSale, setLastCompletedSale] = useState<{
     total: number;
+    changeGiven?: number;
     receiptNumber?: string;
     paymentType: PaymentType;
     momoOperator?: 'airtel' | 'mtn' | 'zamtel';
@@ -200,6 +206,22 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     return cart.reduce((sum, ci) => sum + ci.quantity, 0);
   }, [cart]);
 
+  const cashTenderInfo = useMemo(() => {
+    if (!cashTendered.trim()) return { amount: totalAmount, change: 0, error: '' };
+    try {
+      const amount = parseKwachaToNgwee(cashTendered) / 100;
+      if (amount < totalAmount)
+        return { amount, change: 0, error: 'Cash received must cover the sale total.' };
+      return { amount, change: addKwacha(amount, -totalAmount), error: '' };
+    } catch {
+      return {
+        amount: null,
+        change: 0,
+        error: 'Enter a valid cash amount with up to two decimal places.',
+      };
+    }
+  }, [cashTendered, totalAmount]);
+
   // Handle Save Sale
   const handleSaveSale = async () => {
     if (cart.length === 0 || savingRef.current) return;
@@ -210,6 +232,11 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
     }
 
     setCreditError('');
+
+    if (paymentType === 'cash' && cashTenderInfo.error) {
+      notify('Sale not saved', { kind: 'error', detail: cashTenderInfo.error });
+      return;
+    }
 
     // Credit sales need a named customer, otherwise the debt goes nowhere.
     if (paymentType === 'credit') {
@@ -255,6 +282,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
         profit: estimatedProfit,
         missingCostRevenue,
         paymentType,
+        cashTendered: paymentType === 'cash' ? (cashTenderInfo.amount ?? totalAmount) : undefined,
         momoOperator: paymentType === 'momo' ? momoOperator : undefined,
         customerId: customerObj?.id,
         customerName: customerObj?.name,
@@ -266,6 +294,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       // Show instant receipt confirmation
       setLastCompletedSale({
         total: recorded.totalAmount,
+        changeGiven: recorded.changeGiven,
         receiptNumber: recorded.receiptNumber,
         paymentType,
         momoOperator: paymentType === 'momo' ? momoOperator : undefined,
@@ -292,6 +321,7 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
       setCustomerQuery('');
       setPaymentReference('');
       setSaleNote('');
+      setCashTendered('');
     } catch (err) {
       // e.g. stock ran out between adding to the cart and saving
       notify('Sale not saved', {
@@ -370,13 +400,43 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             <span>{t.onCredit}</span>
           </button>
         </div>
-        <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
-          {paymentType === 'cash' && 'Money received now, in hand.'}
+        <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
+          {paymentType === 'cash' && 'Cash paid now.'}
           {paymentType === 'momo' &&
-            `Money received now via ${momoOperator === 'mtn' ? 'MTN MoMo' : momoOperator === 'zamtel' ? 'Zamtel Kwacha' : 'Airtel Money'}.`}
+            `Payment recorded manually via ${momoOperator === 'mtn' ? 'MTN MoMo' : momoOperator === 'zamtel' ? 'Zamtel Kwacha' : 'Airtel Money'}.`}
           {paymentType === 'credit' &&
-            'Nothing received now — the balance is added to the customer’s credit book.'}
+            'Nothing received now. The full amount is added to the customer’s balance.'}
         </p>
+        {paymentType === 'cash' && (
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <label className="block text-xs font-medium text-slate-700">
+              Cash given (optional)
+              <span className="relative mt-1 block">
+                <span className="absolute left-3 top-3 text-sm text-slate-500">K</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  aria-label="Cash given"
+                  value={cashTendered}
+                  onChange={(event) => setCashTendered(sanitizeMoneyInput(event.target.value))}
+                  placeholder={totalAmount.toFixed(2)}
+                  className="min-h-11 w-full rounded-md border border-slate-300 bg-white py-2 pl-8 pr-3 text-base text-slate-900 focus:border-emerald-700 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+                />
+              </span>
+            </label>
+            <div className="mt-2 flex items-start justify-between gap-3 text-sm">
+              <span className="text-slate-500">Change to return</span>
+              <span
+                aria-live="polite"
+                className={`text-right font-semibold tabular-nums ${cashTenderInfo.error ? 'text-rose-700' : 'text-slate-900'}`}
+              >
+                {cashTenderInfo.error || formatKwacha(cashTenderInfo.change)}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">Leave blank if they pay the exact amount.</p>
+          </div>
+        )}
       </div>
 
       {/* If MoMo is selected: Zambian Operator Selection */}
@@ -616,7 +676,14 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
   );
 
   return (
-    <div className="w-full">
+    <div className="w-full space-y-4">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-700">
+          Point of sale
+        </p>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">Sell</h1>
+        <p className="mt-1 text-sm text-slate-500">Tap an item to add it to this sale.</p>
+      </div>
       {/* Top Warning Banner if the shop is suspended by the platform owner */}
       {isShopDeactivated && (
         <div className="mb-4 p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-rose-950 flex items-start space-x-2.5 shadow-xs">
@@ -624,22 +691,9 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
           <div className="text-xs">
             <p className="font-bold">This shop has been deactivated</p>
             <p className="text-rose-700">
-              New sales are locked. Your records are safe and can still be viewed and exported. To
-              reactivate your shop, contact support on{' '}
-              <a
-                href={`tel:${SUPPORT_CONTACT.phoneDial}`}
-                className="font-bold underline decoration-rose-400 underline-offset-2"
-              >
-                {SUPPORT_CONTACT.phoneDisplay}
-              </a>{' '}
-              or email{' '}
-              <a
-                href={`mailto:${SUPPORT_CONTACT.supportEmail}`}
-                className="font-bold underline decoration-rose-400 underline-offset-2"
-              >
-                {SUPPORT_CONTACT.supportEmail}
-              </a>
-              .
+              New sales are locked. Your records are safe and can still be viewed and exported.
+              Contact the platform administrator through the authorized support channel if you
+              believe this is a mistake.
             </p>
           </div>
         </div>
@@ -1128,13 +1182,19 @@ export const SellScreen: React.FC<SellScreenProps> = ({ onOpenPlan, onGoToStock 
             <p className="text-2xl font-black text-emerald-800 my-1 tabular-nums">
               {formatKwacha(lastCompletedSale.total)}
             </p>
-            <p className="text-xs text-slate-500 mb-4">
+            <p className="text-xs text-slate-500 mb-2">
               {lastCompletedSale.paymentType === 'cash'
-                ? 'Paid in Cash (In Hand)'
+                ? 'Paid in cash'
                 : lastCompletedSale.paymentType === 'momo'
                   ? `Received via Mobile Money (${lastCompletedSale.momoOperator?.toUpperCase()})`
-                  : `Recorded on Credit for ${lastCompletedSale.customerName || 'customer'}`}
+                  : `Recorded on credit for ${lastCompletedSale.customerName || 'customer'}`}
             </p>
+            {lastCompletedSale.paymentType === 'cash' &&
+              (lastCompletedSale.changeGiven ?? 0) > 0 && (
+                <p className="mb-4 text-sm font-semibold text-slate-800">
+                  Change returned: {formatKwacha(lastCompletedSale.changeGiven!)}
+                </p>
+              )}
 
             <button
               onClick={() => setLastCompletedSale(null)}

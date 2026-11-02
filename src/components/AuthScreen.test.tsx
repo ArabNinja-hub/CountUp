@@ -22,9 +22,7 @@ beforeEach(() => {
     registerNewShop,
     loginAsAdmin,
     resetEmailPassword,
-    loginWithEmail: vi.fn(),
     cancelEmailLogin: vi.fn(),
-    selectEmailShop: vi.fn(),
   } as unknown as ReturnType<typeof useShop>);
 });
 afterEach(() => {
@@ -52,7 +50,8 @@ describe('Shop and admin sign in', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
     expect(screen.getByRole('heading', { name: 'Log in to your shop' })).toBeTruthy();
     expect(screen.queryByLabelText('Shop / Kiosk Name')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Email sign in' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Email sign in' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Admin sign in' })).toBeTruthy();
   });
 
   it('does not open the admin console on a rejected account, and opens it after verification', async () => {
@@ -62,7 +61,9 @@ describe('Shop and admin sign in', () => {
     render(<AuthScreen onOpenHelp={vi.fn()} onAdminSignedIn={onSignedIn} />);
     fireEvent.click(screen.getByRole('button', { name: 'Admin sign in' }));
     expect(screen.getByRole('heading', { name: 'Admin sign in' })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'admin@example.com' } });
+    fireEvent.change(screen.getByLabelText('Account email'), {
+      target: { value: 'admin@example.com' },
+    });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Open admin console' }));
     await waitFor(() =>
@@ -81,9 +82,11 @@ describe('Shop and admin sign in', () => {
     );
     render(<AuthScreen onOpenHelp={vi.fn()} onAdminSignedIn={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Admin sign in' }));
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'admin@example.com' } });
+    fireEvent.change(screen.getByLabelText('Account email'), {
+      target: { value: 'admin@example.com' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }));
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/inbox/));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/reset link/));
     expect(resetEmailPassword).toHaveBeenCalledWith('admin@example.com');
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Open admin console' }));

@@ -125,6 +125,51 @@ describe('Sell screen', () => {
     await waitFor(() => expect(screen.getByText('Sale Recorded!')).toBeTruthy());
   });
 
+  it('records cash tendered and returns the calculated change in the receipt', async () => {
+    const recordSale = vi.fn().mockResolvedValue({
+      totalAmount: 2.5,
+      cashTendered: 5,
+      changeGiven: 2.5,
+      receiptNumber: 'cash-receipt',
+    });
+    vi.mocked(useShop).mockReturnValue({
+      ...vi.mocked(useShop)(),
+      recordSale,
+    });
+    render(<SellScreen onOpenPlan={vi.fn()} onGoToStock={vi.fn()} />);
+    fireEvent.click(screen.getByText('Sugar'));
+    fireEvent.click(screen.getByRole('button', { name: 'Review sale' }));
+    const checkout = within(document.getElementById('mobile-checkout')!);
+    fireEvent.change(checkout.getByLabelText('Cash given'), { target: { value: '5' } });
+    expect(checkout.getByText('Change to return').parentElement?.textContent).toContain('K 2.50');
+    fireEvent.click(checkout.getByRole('button', { name: /Save Sale/ }));
+    await waitFor(() => expect(recordSale).toHaveBeenCalledOnce());
+    expect(recordSale).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentType: 'cash',
+        cashTendered: 5,
+        totalAmount: 2.5,
+      })
+    );
+    expect(await screen.findByText('Change returned: K 2.50')).toBeTruthy();
+  });
+
+  it('prevents a cash sale when the tender is less than the amount due', async () => {
+    const recordSale = vi.fn();
+    vi.mocked(useShop).mockReturnValue({
+      ...vi.mocked(useShop)(),
+      recordSale,
+    });
+    render(<SellScreen onOpenPlan={vi.fn()} onGoToStock={vi.fn()} />);
+    fireEvent.click(screen.getByText('Sugar'));
+    fireEvent.click(screen.getByRole('button', { name: 'Review sale' }));
+    const checkout = within(document.getElementById('mobile-checkout')!);
+    fireEvent.change(checkout.getByLabelText('Cash given'), { target: { value: '2' } });
+    expect(checkout.getByText(/Cash received must cover the sale total/)).toBeTruthy();
+    fireEvent.click(checkout.getByRole('button', { name: /Save Sale/ }));
+    expect(recordSale).not.toHaveBeenCalled();
+  });
+
   it('includes repayments in the received-today summary and does not invent profit for unknown costs', () => {
     render(<SellScreen onOpenPlan={vi.fn()} onGoToStock={vi.fn()} />);
     const received = screen.getByText('Received, including repayments').parentElement!;

@@ -7,10 +7,7 @@ import {
   Share2,
   ShoppingBag,
   Trash2,
-  ArrowUpRight,
   Plus,
-  Banknote,
-  Smartphone,
   Activity,
 } from 'lucide-react';
 import { ExpensesModal } from './ExpensesModal';
@@ -31,6 +28,7 @@ export const ReportsScreen: React.FC = () => {
   const {
     sales,
     creditPayments,
+    customers,
     expenses,
     deleteExpense,
     restoreExpense,
@@ -68,8 +66,8 @@ export const ReportsScreen: React.FC = () => {
   // Credit sales are not money received and
   // repayments are not another sale. Older CountUp payments default to cash.
   const ledger = useMemo(
-    () => summarizeLedger(filteredSales, filteredPayments, []),
-    [filteredSales, filteredPayments]
+    () => summarizeLedger(filteredSales, filteredPayments, customers),
+    [filteredSales, filteredPayments, customers]
   );
   const totalSalesAmount = ledger.sales;
   const grossProfit = ledger.profit;
@@ -383,6 +381,13 @@ _Recorded with Countup Zambia_`;
 
   return (
     <div className="w-full space-y-4">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-700">
+          Business overview
+        </p>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">Reports</h1>
+        <p className="mt-1 text-sm text-slate-500">Understand sales, money received and costs.</p>
+      </div>
       {/* Top Header: Period selector + Export/Share actions */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
         {/* Time Tabs */}
@@ -449,79 +454,52 @@ _Recorded with Countup Zambia_`;
         </div>
       </div>
 
-      {/* Primary 4-card Metric Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
-        {/* Total Sales */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">{t.totalSales}</span>
-            <TrendingUp className="w-4 h-4 text-emerald-700" />
-          </div>
-          <p className="break-words text-xl sm:text-2xl font-black text-slate-900 tracking-tight mt-1 tabular-nums">
+      {/* Period totals: grouped as one ledger summary, not a set of unrelated tiles. */}
+      <dl className="grid grid-cols-2 divide-x divide-y divide-slate-200 border-y border-slate-200 lg:grid-cols-5 lg:divide-y-0">
+        <div className="py-3 pr-3 sm:py-4 sm:pr-5 lg:pl-0">
+          <dt className="text-sm font-medium text-slate-600">{t.totalSales}</dt>
+          <dd className="mt-1 break-words text-xl font-semibold tabular-nums text-slate-950 sm:text-2xl">
             {formatKwacha(totalSalesAmount)}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">
+            {filteredSales.length} {filteredSales.length === 1 ? 'sale' : 'sales'}
           </p>
-          <span className="text-xs text-slate-500 font-medium">
-            {filteredSales.length} {filteredSales.length === 1 ? 'sale logged' : 'sales logged'}
-          </span>
         </div>
-
-        {/* Net Profit */}
-        <div className="bg-emerald-900 border border-emerald-800 rounded-2xl p-4 shadow-xs text-white">
-          <div className="flex items-center justify-between text-emerald-300">
-            <span className="text-[11px] font-bold uppercase tracking-wider">
-              Estimated net profit
-            </span>
-            <ArrowUpRight className="w-4 h-4 text-emerald-300" />
-          </div>
-          <p className="break-words text-xl sm:text-2xl font-black text-white tracking-tight mt-1 tabular-nums">
+        <div className="py-3 pl-3 sm:py-4 sm:pl-5 lg:border-l-0">
+          <dt className="text-sm font-medium text-slate-600">Estimated net profit</dt>
+          <dd className="mt-1 break-words text-xl font-semibold tabular-nums text-slate-950 sm:text-2xl">
             {filteredSales.length > 0 && ledger.missingCostRevenue === ledger.sales
               ? 'Not available'
               : formatKwacha(netProfit)}
-          </p>
-          <span className="text-xs text-emerald-200 font-medium">
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">
             {ledger.missingCostRevenue > 0
-              ? `${formatKwacha(ledger.missingCostRevenue)} of sales excluded — cost not recorded. `
-              : ''}
-            After {formatKwachaCompact(totalExpensesAmount)} expenses
-          </span>
-        </div>
-
-        {/* Cash in Hand */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Cash received</span>
-            <Banknote className="w-4 h-4 text-emerald-700" />
-          </div>
-          <p className="break-words text-xl sm:text-2xl font-black text-emerald-900 tracking-tight mt-1 tabular-nums">
-            K{' '}
-            {totalCashInHand.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
+              ? `Some costs unknown · after ${formatKwachaCompact(totalExpensesAmount)} expenses`
+              : `After ${formatKwachaCompact(totalExpensesAmount)} expenses`}
           </p>
-          <span className="text-xs text-slate-500 font-medium">Sales and repayments recorded</span>
         </div>
-
-        {/* MoMo in Phone */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-bold uppercase tracking-wider">
-              Mobile Money received
-            </span>
-            <Smartphone className="w-4 h-4 text-sky-600" />
-          </div>
-          <p className="break-words text-xl sm:text-2xl font-black text-sky-900 tracking-tight mt-1 tabular-nums">
-            K{' '}
-            {totalMomoInWallet.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
-          </p>
-          <span className="text-xs text-slate-500 font-medium">
-            Recorded manually; not a wallet balance
-          </span>
+        <div className="py-3 pr-3 sm:py-4 sm:pr-5 lg:border-l lg:pl-5">
+          <dt className="text-sm font-medium text-slate-600">Cash received</dt>
+          <dd className="mt-1 break-words text-xl font-semibold tabular-nums text-slate-950 sm:text-2xl">
+            {formatKwacha(totalCashInHand)}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">Sales and repayments recorded</p>
         </div>
-      </div>
+        <div className="py-3 pl-3 sm:py-4 sm:pl-5 lg:pr-0">
+          <dt className="text-sm font-medium text-slate-600">Mobile Money received</dt>
+          <dd className="mt-1 break-words text-xl font-semibold tabular-nums text-slate-950 sm:text-2xl">
+            {formatKwacha(totalMomoInWallet)}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">Recorded manually; not a wallet balance</p>
+        </div>
+        <div className="py-3 pl-3 sm:py-4 sm:pl-5 lg:border-l lg:pr-0">
+          <dt className="text-sm font-medium text-slate-600">Outstanding credit</dt>
+          <dd className="mt-1 break-words text-xl font-semibold tabular-nums text-amber-900 sm:text-2xl">
+            {formatKwacha(ledger.outstanding)}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">Current customer balances</p>
+        </div>
+      </dl>
 
       <details className="rounded-2xl border border-slate-200 bg-white px-4 shadow-xs">
         <summary className="min-h-[44px] cursor-pointer py-3 text-sm font-bold text-slate-900">
@@ -624,30 +602,61 @@ _Recorded with Countup Zambia_`;
         {dailyRows.length === 0 ? (
           <p className="text-xs text-slate-500 mt-3">No activity yet.</p>
         ) : (
-          <div className="overflow-x-auto mt-3">
-            <table className="w-full min-w-[560px] text-xs text-left">
-              <thead>
-                <tr className="border-b border-slate-200 text-slate-500">
-                  <th className="py-2">Date</th>
-                  <th>Sales</th>
-                  <th>Cash received</th>
-                  <th>MoMo received</th>
-                  <th>Credit given</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dailyRows.map((row) => (
-                  <tr key={row.date} className="border-b border-slate-100">
-                    <td className="py-2 font-semibold">{row.date}</td>
-                    <td>{formatKwacha(row.sales)}</td>
-                    <td>{formatKwacha(row.cashReceived)}</td>
-                    <td>{formatKwacha(row.momoReceived)}</td>
-                    <td>{formatKwacha(row.creditSales)}</td>
+          <>
+            <div className="mt-3 max-h-[60vh] divide-y divide-slate-100 overflow-y-auto sm:hidden">
+              {dailyRows.map((row) => (
+                <div key={row.date} className="py-3">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="text-sm font-semibold text-slate-900">{row.date}</p>
+                    <p className="text-sm font-semibold tabular-nums text-slate-900">
+                      Sales {formatKwacha(row.sales)}
+                    </p>
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    Cash sale {formatKwacha(row.cashSales)} · MoMo sale{' '}
+                    {formatKwacha(row.momoSales)} · Credit {formatKwacha(row.creditSales)}
+                  </p>
+                  <p className="text-xs leading-5 text-slate-600">
+                    Cash repayment {formatKwacha(row.cashRepayments)} · MoMo repayment{' '}
+                    {formatKwacha(row.momoRepayments)}
+                  </p>
+                  <p className="mt-1 text-xs font-semibold text-emerald-900">
+                    Money received {formatKwacha(row.moneyReceived)}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 hidden overflow-x-auto sm:block">
+              <table className="w-full min-w-[860px] text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-500">
+                    <th className="py-2 pr-3">Date</th>
+                    <th className="pr-3">Sales</th>
+                    <th className="pr-3">Cash sales</th>
+                    <th className="pr-3">MoMo sales</th>
+                    <th className="pr-3">Credit sales</th>
+                    <th className="pr-3">Cash repayments</th>
+                    <th className="pr-3">MoMo repayments</th>
+                    <th className="pr-3">Money received</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {dailyRows.map((row) => (
+                    <tr key={row.date} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 font-medium">{row.date}</td>
+                      <td className="pr-3">{formatKwacha(row.sales)}</td>
+                      <td className="pr-3">{formatKwacha(row.cashSales)}</td>
+                      <td className="pr-3">{formatKwacha(row.momoSales)}</td>
+                      <td className="pr-3">{formatKwacha(row.creditSales)}</td>
+                      <td className="pr-3">{formatKwacha(row.cashRepayments)}</td>
+                      <td className="pr-3">{formatKwacha(row.momoRepayments)}</td>
+                      <td className="pr-3 font-semibold">{formatKwacha(row.moneyReceived)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </details>
 
