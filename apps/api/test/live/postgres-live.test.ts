@@ -35,6 +35,7 @@ const EXPECTED_VERSIONS = [
   '0004_payments_audit',
   '0005_sync',
   '0006_ops_migration',
+  '0007_m2_auth',
 ];
 
 const EXPECTED_TABLES = [
@@ -74,6 +75,7 @@ const EXPECTED_TABLES = [
   'backup_runs',
   'restore_drills',
   'export_jobs',
+  'identity_verifications',
 ];
 
 const EXPECTED_ENUMS = [
@@ -95,6 +97,7 @@ const EXPECTED_ENUMS = [
   'idempotency_status',
   'migration_status',
   'cutover_mode',
+  'identity_verification_status',
 ];
 
 let live: LiveDatabase;
@@ -140,7 +143,7 @@ describe('A2 — live PostgreSQL validation', () => {
     expect(db.rows[0]?.current_database).toBe(live.databaseName);
   });
 
-  it('2. the migration runner applies all six migrations to an empty database', async () => {
+  it('2. the migration runner applies all seven migrations to an empty database', async () => {
     expect(
       await count("SELECT count(*)::int AS count FROM pg_tables WHERE schemaname = 'public'")
     ).toBe(0);
@@ -148,7 +151,7 @@ describe('A2 — live PostgreSQL validation', () => {
     expect(applied).toEqual(EXPECTED_VERSIONS);
     expect(
       await count("SELECT count(*)::int AS count FROM pg_tables WHERE schemaname = 'public'")
-    ).toBe(37);
+    ).toBe(38);
   });
 
   it('3. all expected tables, enums, constraints, indexes and triggers exist', async () => {
@@ -168,7 +171,7 @@ describe('A2 — live PostgreSQL validation', () => {
       await count(
         "SELECT count(*)::int AS count FROM pg_constraint WHERE contype = 'f' AND connamespace = 'public'::regnamespace"
       )
-    ).toBe(60);
+    ).toBe(64);
     expect(
       await count(
         "SELECT count(*)::int AS count FROM pg_constraint WHERE contype = 'f' AND connamespace = 'public'::regnamespace AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (shop_id,%'"
@@ -178,15 +181,15 @@ describe('A2 — live PostgreSQL validation', () => {
       await count(
         "SELECT count(*)::int AS count FROM pg_constraint WHERE contype = 'c' AND connamespace = 'public'::regnamespace"
       )
-    ).toBe(51);
+    ).toBe(55);
     expect(
       await count("SELECT count(*)::int AS count FROM pg_indexes WHERE schemaname = 'public'")
-    ).toBe(113);
+    ).toBe(115);
     expect(
       await count(
         "SELECT count(*)::int AS count FROM pg_trigger WHERE tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace) AND NOT tgisinternal"
       )
-    ).toBe(12);
+    ).toBe(13);
     const functions = await executor.query<{ proname: string }>(
       "SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace ORDER BY proname"
     );
@@ -203,7 +206,7 @@ describe('A2 — live PostgreSQL validation', () => {
     const ledger = await executor.query<{ version: string; checksum: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version'
     );
-    expect(ledger.rows).toHaveLength(6);
+    expect(ledger.rows).toHaveLength(7);
     expect(ledger.rows.map((row) => row.version)).toEqual(EXPECTED_VERSIONS);
     for (const migration of migrations) {
       const record = ledger.rows.find((row) => row.version === migration.version);
@@ -241,7 +244,7 @@ describe('A2 — live PostgreSQL validation', () => {
     expect(after.plans).toBe(3);
   });
 
-  it('6. all down migrations execute in reverse order', async () => {
+  it('6. all seven down migrations execute in reverse order', async () => {
     const rolledBack: string[] = [];
     for (let index = 0; index < EXPECTED_VERSIONS.length; index += 1) {
       const version = await migrateDown(executor);
@@ -266,7 +269,7 @@ describe('A2 — live PostgreSQL validation', () => {
     expect(await migrateUp(executor)).toEqual(EXPECTED_VERSIONS);
     expect(
       await count("SELECT count(*)::int AS count FROM pg_tables WHERE schemaname = 'public'")
-    ).toBe(37);
+    ).toBe(38);
     // NOTE: real `pg` returns int8/BIGINT as a STRING (to avoid precision loss),
     // while PGlite returned a JS number. Compare as text so the assertion is
     // driver-agnostic; see the dedicated compatibility test below.

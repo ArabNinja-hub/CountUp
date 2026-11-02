@@ -282,3 +282,42 @@ No other failures. No critical live-PostgreSQL test failed after the rerun.
 **PASS.** All 12 A2 requirements verified against a real PostgreSQL 18.6 server via
 the actual `pg` driver, with reproducible commands and a PowerShell procedure. Phase B
 (M2) was permitted to proceed.
+
+---
+
+## 10. Addendum — re-validation after M2 migration `0007_m2_auth`
+
+Phase A originally ran against the six M1 migrations (sections 1–9 above, commit
+`47325d2`). M2 then added a **seventh** versioned migration (`0007_m2_auth`) with a
+matching down script. To ensure the gate still holds on the final schema, the complete
+live suite and CLI path were **re-run against the same real PostgreSQL 18.6 server**
+after `0007` was added. This is a second real-server run, not a PGlite result.
+
+```
+$ TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55432/postgres' npm run test:db:live
+ ✓ test/live/postgres-live.test.ts (13 tests)
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+```
+
+Updated catalog expectations (measured on the live server after all seven up
+migrations, and asserted by the suite):
+
+| Object | M1 (six migrations) | M1+M2 (seven migrations) |
+| --- | --- | --- |
+| Versions in ledger | 6 | **7** |
+| Public tables | 37 | **38** (`+ identity_verifications`) |
+| Enum types | 18 | **19** (`+ identity_verification_status`) |
+| Foreign keys | 60 | **64** |
+| Composite tenant FKs | 13 | **13** (unchanged) |
+| CHECK constraints | 51 | **55** |
+| Indexes | 113 | **115** |
+| Triggers | 12 | **13** |
+| RLS policies | 0 | **0** |
+| Tables with `shop_id` | 22 | **22** (unchanged) |
+
+All seven down migrations still execute in exact reverse order on the real server,
+leaving only `schema_migrations`, and all seven up migrations re-apply cleanly.
+Cross-shop `23503`, append-only `P0001`, transactional DDL/DML rollback, pool
+acquisition/release/shutdown and the API-on-`pg` checks were all re-executed and
+passed. The int8/BIGINT-as-string finding and all limitations in §8 remain in force.
