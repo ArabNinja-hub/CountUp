@@ -337,3 +337,45 @@ $ TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55432/postgres' npm run tes
 Every authentication test that touches the database ran against a freshly created,
 isolated database on the real PostgreSQL 18.6 server via `pg@8.23.1` — not PGlite.
 See `docs/M2_AUTHENTICATION_IMPLEMENTATION.md` §9.
+
+
+---
+
+## 11. Addendum — re-validation after security-remediation migration `0008`
+
+M2 security remediation (commit `08b44df`) added an **eighth** versioned migration
+`0008_m2_security_remediation` with a matching down script. The complete live suite and
+CLI path were re-run against the **same real PostgreSQL 18.6 server** (`pg@8.23.1`,
+`127.0.0.1:55432`, disposable databases only). This is a third real-server run, not a
+PGlite result.
+
+Measured catalog after all eight up migrations:
+
+| Object | M1 (six) | M1+M2 (seven) | M2+remediation (eight) |
+| --- | --- | --- | --- |
+| Versions in ledger | 6 | 7 | **8** |
+| Public tables | 37 | 38 | **42** (`+ rate_limit_buckets`, `refresh_token_history`, `platform_bootstrap`, `admin_recovery_grants`) |
+| Enum types | 18 | 19 | **19** |
+| Foreign keys | 60 | 64 | **68** |
+| Composite tenant FKs | 13 | 13 | **13** |
+| CHECK constraints | 51 | 55 | **64** |
+| Indexes | 113 | 115 | **124** |
+| Triggers | 12 | 13 | **15** |
+| Functions | 3 | 3 | **4** (`+ assert_verified_identity_marker`) |
+| RLS policies | 0 | 0 | **0** |
+| Tables with `shop_id` | 22 | 22 | **22** |
+
+All eight down migrations execute in exact reverse order on the real server leaving only
+`schema_migrations`, and all eight re-apply cleanly. The int8/BIGINT-as-string finding and
+all limitations in §8 remain in force. The new `test/live/*` files add real-server
+concurrency (C-01), two-instance rate limiting (C-03), transaction rollback with a real
+database trigger (C-10) and the administrator bootstrap/recovery CLI runbook (C-02).
+
+```
+$ TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55432/postgres' npm run test:db:live
+ Test Files  14 passed | 1 skipped (15)
+      Tests  111 passed | 11 skipped (122)
+```
+
+The 11 skipped tests are the process-startup secret tests, which run in the fast PGlite
+job instead. See `docs/M2_SECURITY_REMEDIATION.md` §11 for the full evidence table.

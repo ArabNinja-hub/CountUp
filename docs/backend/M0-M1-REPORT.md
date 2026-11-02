@@ -1,10 +1,12 @@
 # COUNTUP — Phase 2, Milestones M0 + M1 (Backend Foundation & Database)
 
 > **Historical document — preserved as written at the end of M0/M1.** A later M2
-> milestone added the seventh versioned migration `0007_m2_auth`, so the migration
-> counts below describe the M1 state only. See `docs/POSTGRESQL_LIVE_VALIDATION.md`
-> §10 and `docs/M2_AUTHENTICATION_IMPLEMENTATION.md` for the current schema. No text
-> in this report has been rewritten to hide that change.
+> milestone added the seventh versioned migration `0007_m2_auth`, and M2 security
+> remediation added the eighth (`0008_m2_security_remediation`), so the migration counts
+> below describe the M1 state only. See `docs/POSTGRESQL_LIVE_VALIDATION.md` §10–11,
+> `docs/M2_AUTHENTICATION_IMPLEMENTATION.md` §12 and
+> `docs/M2_SECURITY_REMEDIATION.md` for the current schema. No text in this report has
+> been rewritten to hide those changes.
 
 **Date:** 2026-11-02 (Africa/Lusaka)
 **Scope:** M0 (clean backend foundation) + M1 (PostgreSQL schema and DB tests) **only**.

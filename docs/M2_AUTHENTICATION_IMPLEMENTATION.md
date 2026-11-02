@@ -381,11 +381,12 @@ curl -s -i -b "$JAR" -c "$JAR" -X POST "$BASE/auth/logout" \
   -H "Origin: $BASE" -H 'Sec-Fetch-Site: same-origin' -H "x-csrf-token: $CSRF"
 ```
 
-To approve an identity, provision a `platform_admin` out-of-band (trusted DB
-operation), log in as that admin, then call
-`POST /auth/admin/identity-verifications/:userId/verify` with
-`{"decision":"approved","evidence":{"channel":"in_person","id_checked":true}}`.
-There is no signup path that can grant admin.
+To approve an identity, create the administrators with the audited one-time
+`npm run admin:bootstrap` CLI (see `docs/M2_SECURITY_REMEDIATION.md` §12), log in as
+that admin, then call `POST /auth/admin/identity-verifications/:userId/verify` with
+`{"decision":"approved","evidence":{"verification_method":"in_person","id_checked":true}}`.
+There is no signup path that can grant admin, no hardcoded admin credential and no
+undocumented superuser SQL procedure.
 
 ### Automated suites
 
@@ -410,3 +411,30 @@ npm run api:build && npm run build
   Pages build, offline shell, and all 185 existing tests are unchanged and pass.
 - **Production** — nothing deployed, no Render/Cloudflare provisioning, no cutover,
   no dual-write, no merge to `main`, no push to `main`, no secrets committed.
+
+
+---
+
+## 12. Post-remediation addendum (historical document preserved)
+
+Sections 1–11 above describe M2 **as originally implemented** at commit
+`4cb723a9d927a40c83239f5746c15473f626afc2`. An independent adversarial review
+(`docs/M2_SECURITY_REVIEW.md`) reproduced 10 findings and recommended **DO NOT
+APPROVE M3**. Commit `08b44df` remediated C-01…C-07, C-09 and C-10; the full account is
+in `docs/M2_SECURITY_REMEDIATION.md`. The following statements in this document are
+therefore **superseded** (kept here unaltered for decision history):
+
+- §10 item 1 — the in-process rate limiter was replaced by a shared PostgreSQL limiter.
+- §10 item 3 — development fallback secrets were deleted; strong secrets are now
+  required in **every** `NODE_ENV` and startup fails closed.
+- §10 item 6 — `platform_admin` accounts are now created by an audited, one-time,
+  dual-control CLI with a documented break-glass recovery runbook.
+- §8 — `0008_m2_security_remediation` added four security tables, token families,
+  verification consistency constraints and a shared limiter table; the catalog is now
+  42 tables / 68 FKs / 64 CHECKs / 124 indexes / 15 triggers on real PostgreSQL 18.6.
+- §9 — suite sizes grew to 15 files / 139 tests (PGlite) and 15 files / 122 tests
+  (live PostgreSQL, 11 process-startup tests intentionally skipped there).
+
+`evidence` on the admin routes is no longer an unrestricted object: it is a strict
+allowlist (see `apps/api/src/auth/audit-evidence.ts`). The curl example in §11 was updated
+accordingly. M3 remains **NOT APPROVED** until a fresh adversarial re-review.
