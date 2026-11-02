@@ -1,0 +1,60 @@
+name: Backend & Database
+
+# M0/M1 CI foundation. The DB suite runs against a fresh in-memory PGlite database,
+# so no Docker daemon, Testcontainers, PostgreSQL service or secret is required.
+# This workflow never connects to a database and never deploys anything.
+on:
+  push:
+    branches-ignore: [gh-pages]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: backend-db-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-db:
+    name: Backend foundation & database tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck existing frontend
+        run: npm run typecheck
+
+      - name: Typecheck shared package
+        run: npm run typecheck:shared
+
+      - name: Typecheck backend
+        run: npm run typecheck:api
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Database and backend tests (isolated PGlite)
+        run: npm run test:db
+
+      - name: Existing frontend tests
+        run: npm test
+
+      - name: Production frontend build
+        run: npm run build
