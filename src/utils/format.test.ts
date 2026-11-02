@@ -54,7 +54,7 @@ describe('sanitizeIntegerInput', () => {
 
 describe('sanitizePhoneInput', () => {
   it('strips spacing and punctuation from a Zambian number', () => {
-    expect(sanitizePhoneInput('+260 962 838 581')).toBe('260962838581');
+    expect(sanitizePhoneInput('+260 977 123 456')).toBe('260977123456');
     expect(sanitizePhoneInput('0962 838 581')).toBe('0962838581');
   });
 

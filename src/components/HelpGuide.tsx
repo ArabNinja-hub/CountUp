@@ -24,7 +24,7 @@ const topics = [
     title: 'Create or open a shop',
     lines: [
       'Choose New shop. Enter its name, your phone number and a 4-number PIN, then tap Create shop.',
-      'To return, choose Log in and use the phone number and PIN on the original device. If you linked email, you can also choose Email sign in.',
+      'To return, choose Log in and use the phone number and PIN in the original browser. CountUp has no general email shop sign-in or new-device restore.',
     ],
   },
   {

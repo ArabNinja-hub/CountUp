@@ -1,379 +1,457 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, Check, Clock, Copy, CreditCard, Info, Lock, ShieldCheck } from 'lucide-react';
+import { GRACE_PERIOD_DAYS, SUBSCRIPTION_PLANS } from '../config/plans';
 import { useShop } from '../context/ShopContext';
+import { ManualPaymentNetwork, PlanBillingCycle } from '../types';
 import {
-  CreditCard,
-  ShieldCheck,
-  Smartphone,
-  Info,
-  Clock,
-  Lock,
-  ArrowLeft,
-  X,
-  MessageSquare,
-  Phone,
-  Mail,
-} from 'lucide-react';
-import { SUBSCRIPTION_PLANS, GRACE_PERIOD_DAYS } from '../config/plans';
-import { SUPPORT_CONTACT } from '../config/support';
-import { PlanBillingCycle } from '../types';
+  getManualPaymentInstructions,
+  ManualPaymentInstructions,
+} from '../services/subscriptionPayments';
+import { useToast } from './Toast';
 
 interface PlanScreenProps {
   onClose: () => void;
 }
 
-export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
-  const { shop, subscription, t } = useShop();
+const localToday = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
 
+const statusLabel: Record<string, string> = {
+  trial: 'Free trial',
+  pending_payment: 'Pending payment review',
+  active: 'Active',
+  grace: 'Grace period',
+  expired: 'Expired',
+  rejected: 'Payment rejected',
+  suspended: 'Suspended',
+};
+
+export const PlanScreen: React.FC<PlanScreenProps> = ({ onClose }) => {
+  const { shop, subscription, t, submitSubscriptionPayment, subscriptionPayments } = useShop();
+  const { notify } = useToast();
   const [selectedPlanId, setSelectedPlanId] = useState<PlanBillingCycle>('monthly');
-  const [showContactModal, setShowContactModal] = useState(false);
-  const [contactMethod, setContactMethod] = useState<'whatsapp' | 'phone' | 'email'>('whatsapp');
+  const [network, setNetwork] = useState<ManualPaymentNetwork>('mtn');
+  const [transactionReference, setTransactionReference] = useState('');
+  const [payerPhone, setPayerPhone] = useState(shop?.ownerPhone ?? '');
+  const [paymentDate, setPaymentDate] = useState(localToday);
+  const [instructions, setInstructions] = useState<ManualPaymentInstructions | null>(null);
+  const [configError, setConfigError] = useState('');
+  const [isLoadingInstructions, setIsLoadingInstructions] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [copiedNetwork, setCopiedNetwork] = useState<ManualPaymentNetwork | null>(null);
+  const [success, setSuccess] = useState(false);
 
   const selectedPlan = SUBSCRIPTION_PLANS[selectedPlanId];
+  const hasPendingPayment = Boolean(shop?.pendingPaymentId);
+  const ownHistory = subscriptionPayments
+    .filter((payment) => payment.shopId === shop?.id)
+    .slice(0, 5);
+
+  useEffect(() => {
+    let mounted = true;
+    setIsLoadingInstructions(true);
+    if (!shop?.id) {
+      setConfigError('Sign in to your shop to view payment instructions.');
+      setIsLoadingInstructions(false);
+      return () => {
+        mounted = false;
+      };
+    }
+    getManualPaymentInstructions(shop.id)
+      .then((result) => {
+        if (mounted) {
+          setInstructions(result);
+          setConfigError('');
+        }
+      })
+      .catch(() => {
+        if (mounted)
+          setConfigError(
+            'Payment instructions are temporarily unavailable. Please try again later.'
+          );
+      })
+      .finally(() => {
+        if (mounted) setIsLoadingInstructions(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [shop?.id]);
+
+  const copyNumber = async (selectedNetwork: ManualPaymentNetwork) => {
+    const value = selectedNetwork === 'mtn' ? instructions?.mtn : instructions?.airtel;
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedNetwork(selectedNetwork);
+      window.setTimeout(() => setCopiedNetwork(null), 1800);
+      notify('Payment number copied', { kind: 'success' });
+    } catch {
+      notify('Could not copy automatically', {
+        kind: 'error',
+        detail: 'Select and copy the number manually.',
+      });
+    }
+  };
+
+  const submitPayment = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (hasPendingPayment) {
+      notify('A payment is already awaiting review', { kind: 'info' });
+      return;
+    }
+    setIsSubmitting(true);
+    setSuccess(false);
+    try {
+      await submitSubscriptionPayment({
+        planId: selectedPlanId,
+        network,
+        transactionReference,
+        payerPhone,
+        paymentDate,
+      });
+      setSuccess(true);
+      setTransactionReference('');
+      notify('Payment submitted for review', {
+        kind: 'success',
+        detail:
+          'Your subscription stays unchanged until an administrator verifies and approves the payment.',
+      });
+    } catch (error) {
+      notify('Payment submission failed', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const badgeClass =
+    subscription.status === 'active' || subscription.status === 'trial'
+      ? 'bg-emerald-100 text-emerald-900'
+      : subscription.status === 'pending_payment'
+        ? 'bg-amber-100 text-amber-950'
+        : subscription.status === 'grace'
+          ? 'bg-amber-100 text-amber-950'
+          : subscription.status === 'rejected' ||
+              subscription.status === 'expired' ||
+              subscription.status === 'suspended'
+            ? 'bg-rose-100 text-rose-900'
+            : 'bg-slate-100 text-slate-800';
 
   return (
-    <div className="w-full max-w-4xl mx-auto py-4 px-3 sm:px-6 space-y-4">
-      {/* Title & Close Bar */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-200">
-        <div className="flex items-center space-x-2.5">
+    <div className="mx-auto w-full max-w-4xl space-y-4 px-3 py-4 sm:px-6">
+      <header className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
+        <div className="flex items-center gap-2.5">
           <button
+            type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-700 transition-colors"
+            aria-label="Back"
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
-            <h2 className="text-lg font-black text-slate-900 flex items-center space-x-2">
-              <CreditCard className="w-5 h-5 text-emerald-800" />
-              <span>{t.planTitle}</span>
-            </h2>
-            <p className="text-xs text-slate-500">Countup subscription plans for Zambian kiosks</p>
+            <h1 className="flex items-center gap-2 text-lg font-black text-slate-900">
+              <CreditCard className="h-5 w-5 text-emerald-800" />
+              {t.planTitle}
+            </h1>
+            <p className="text-xs text-slate-500">
+              Manual MTN or Airtel Mobile Money · admin-verified
+            </p>
           </div>
         </div>
-
         <button
+          type="button"
           onClick={onClose}
-          className="text-xs text-slate-600 font-bold hover:text-slate-900 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 transition-colors"
+          className="min-h-[40px] rounded-lg bg-slate-100 px-3 text-xs font-bold text-slate-700"
         >
           {t.close}
         </button>
-      </div>
+      </header>
 
-      {/* Current Subscription Status Card */}
-      <div
-        className={`rounded-2xl p-4 sm:p-5 border shadow-xs ${
-          subscription.status === 'expired'
-            ? 'bg-rose-50 border-rose-200 text-rose-950'
-            : subscription.status === 'grace'
-              ? 'bg-amber-50 border-amber-200 text-amber-950'
-              : subscription.isWarningPeriod
-                ? 'bg-amber-50/70 border-amber-200 text-amber-950'
-                : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
-        }`}
+      <section
+        className="rounded-xl border border-slate-200 bg-white p-4"
+        aria-label="Current subscription status"
       >
-        <div className="flex items-start justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <span
-              className={`inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold uppercase tracking-wider ${
-                subscription.status === 'trial'
-                  ? 'bg-emerald-200 text-emerald-900'
-                  : subscription.status === 'active'
-                    ? 'bg-emerald-800 text-white'
-                    : subscription.status === 'grace'
-                      ? 'bg-amber-600 text-white'
-                      : 'bg-rose-700 text-white'
-              }`}
+              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${badgeClass}`}
             >
-              {subscription.status === 'trial'
-                ? t.trialBadge
-                : subscription.status === 'active'
-                  ? 'Active Subscription'
-                  : subscription.status === 'grace'
-                    ? 'Grace Period'
-                    : t.planExpired}
+              {statusLabel[subscription.status] || subscription.status}
             </span>
-
-            <h3 className="font-black text-slate-900 text-lg mt-2 tracking-tight">
-              {subscription.daysRemaining > 0
-                ? `${subscription.daysRemaining} ${t.daysRemaining}`
-                : subscription.status === 'grace'
-                  ? `${subscription.graceDaysRemaining} days remaining in grace period`
-                  : t.planExpired}
-            </h3>
-
-            <p className="text-xs text-slate-600 mt-1 max-w-xl">
+            <h2 className="mt-2 text-base font-bold text-slate-950">
+              {subscription.status === 'pending_payment'
+                ? 'Your submitted payment is awaiting review.'
+                : subscription.status === 'rejected'
+                  ? 'The last payment was not approved. Review its reason below or submit a new payment.'
+                  : subscription.status === 'suspended'
+                    ? 'This subscription is suspended. Contact the platform administrator through the authorized support channel.'
+                    : subscription.status === 'expired'
+                      ? t.planExpiredNotice
+                      : subscription.daysRemaining > 0
+                        ? `${subscription.daysRemaining} ${t.daysRemaining}`
+                        : subscription.status === 'grace'
+                          ? `${subscription.graceDaysRemaining} grace-period days remaining`
+                          : 'Subscription is active'}
+            </h2>
+            <p className="mt-1 text-xs text-slate-600">
               {subscription.status === 'trial'
-                ? 'Every new Zambian kiosk starts with 30 days of full access. After trial, subscribe to continue recording sales.'
+                ? 'Every shop starts with a 30-day free trial. New sales are locked after the trial and grace period end.'
                 : subscription.status === 'grace'
-                  ? `You have a ${GRACE_PERIOD_DAYS}-day grace period to renew before new sales are locked.`
-                  : subscription.status === 'expired'
-                    ? t.planExpiredNotice
-                    : 'Your shop is fully unlocked for sales.'}
+                  ? `There is a ${GRACE_PERIOD_DAYS}-day grace period after expiry. Renew before it ends to keep recording sales.`
+                  : subscription.status === 'pending_payment'
+                    ? 'Submitting a reference does not activate a plan. The administrator must verify the operator transaction and approve it.'
+                    : 'Your existing records remain available for viewing and export.'}
             </p>
           </div>
-
-          <div className="w-10 h-10 rounded-xl bg-white shadow-xs flex items-center justify-center shrink-0">
-            {subscription.status === 'expired' ? (
-              <Lock className="w-5 h-5 text-rose-600" />
-            ) : subscription.status === 'grace' || subscription.isWarningPeriod ? (
-              <Clock className="w-5 h-5 text-amber-600" />
-            ) : (
-              <ShieldCheck className="w-5 h-5 text-emerald-700" />
-            )}
-          </div>
+          {subscription.canRecordSales ? (
+            <ShieldCheck className="h-8 w-8 text-emerald-800" />
+          ) : (
+            <Lock className="h-8 w-8 text-rose-700" />
+          )}
         </div>
-
-        {/* Guarantee: Existing data is always safe */}
-        <div className="mt-3 pt-3 border-t border-slate-200/60 flex items-center space-x-1.5 text-xs text-slate-600">
-          <Info className="w-4 h-4 text-emerald-800 shrink-0" />
+        <div className="mt-3 flex items-start gap-2 border-t border-slate-100 pt-3 text-xs text-slate-600">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-emerald-800" />
           <span>{t.existingDataSafe}</span>
         </div>
-      </div>
+      </section>
 
-      {/* Plan Selection Cards */}
-      <div>
-        <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">
-          {t.selectPlan}
-        </span>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <fieldset className="space-y-2">
+        <legend className="text-xs font-bold uppercase tracking-wide text-slate-600">
+          Choose a plan
+        </legend>
+        <div className="grid gap-2 sm:grid-cols-3">
           {(Object.keys(SUBSCRIPTION_PLANS) as PlanBillingCycle[]).map((key) => {
             const plan = SUBSCRIPTION_PLANS[key];
-            const isSelected = selectedPlanId === key;
+            const selected = selectedPlanId === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => setSelectedPlanId(key)}
+                className={`rounded-xl border p-4 text-left ${selected ? 'border-emerald-800 bg-emerald-50 ring-1 ring-emerald-800' : 'border-slate-200 bg-white hover:border-slate-400'}`}
+              >
+                <span className="flex items-center justify-between gap-2 text-sm font-bold text-slate-900">
+                  {plan.name}
+                  {selected && <Check className="h-4 w-4 text-emerald-800" />}
+                </span>
+                <span className="mt-1 block text-2xl font-black tabular-nums text-emerald-900">
+                  K {plan.priceKwacha.toFixed(2)}
+                </span>
+                <span className="mt-1 block text-xs text-slate-600">
+                  {plan.months} {plan.months === 1 ? 'month' : 'months'} access · paid once
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
 
+      <section
+        className="space-y-3 rounded-xl border border-slate-200 bg-white p-4"
+        aria-labelledby="manual-payment-title"
+      >
+        <div>
+          <h2 id="manual-payment-title" className="font-bold text-slate-950">
+            Pay manually with Mobile Money
+          </h2>
+          <p className="mt-1 text-xs text-slate-600">
+            Pay the exact amount for the selected plan, then submit the operator transaction
+            reference below.
+          </p>
+        </div>
+        {configError && (
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"
+          >
+            {configError}
+          </p>
+        )}
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(['mtn', 'airtel'] as const).map((operator) => {
+            const value = operator === 'mtn' ? instructions?.mtn : instructions?.airtel;
+            const label = operator === 'mtn' ? 'MTN Mobile Money' : 'Airtel Money';
             return (
               <div
-                key={key}
-                onClick={() => setSelectedPlanId(key)}
-                className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between ${
-                  isSelected
-                    ? 'border-emerald-800 bg-emerald-50/60 shadow-xs ring-1 ring-emerald-800'
-                    : 'border-slate-200 bg-white hover:border-slate-300'
-                }`}
+                key={operator}
+                className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 p-3"
               >
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-black text-sm text-slate-900">{plan.name}</span>
-                    {plan.discountBadge && (
-                      <span className="text-[10px] font-bold bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md">
-                        {plan.discountBadge}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 leading-snug">{plan.description}</p>
+                  <p className="text-xs font-bold text-slate-800">{label}</p>
+                  <p className="mt-1 font-mono text-sm text-slate-950">
+                    {isLoadingInstructions ? 'Loading payment number…' : value || 'Not available'}
+                  </p>
                 </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-baseline justify-between">
-                  <span className="text-2xl font-black text-emerald-900 tracking-tight tabular-nums">
-                    K {plan.priceKwacha}
-                  </span>
-                  {plan.months > 1 && (
-                    <span className="text-[11px] text-slate-400 font-medium">
-                      ~K {Math.round(plan.monthlyRateKwacha)}/mo
-                    </span>
+                <button
+                  type="button"
+                  disabled={!value}
+                  onClick={() => void copyNumber(operator)}
+                  aria-label={`Copy ${label} payment number`}
+                  className="flex min-h-[40px] shrink-0 items-center gap-1 rounded-lg border border-slate-300 px-3 text-xs font-bold text-slate-700 disabled:opacity-50"
+                >
+                  {copiedNetwork === operator ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
                   )}
-                </div>
+                  {copiedNetwork === operator ? 'Copied' : 'Copy'}
+                </button>
               </div>
             );
           })}
         </div>
-      </div>
-
-      {/* Contact for Payment - Since we're on static hosting, show contact options */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs">
-        <h4 className="font-bold text-xs text-slate-800 uppercase tracking-wider mb-3 flex items-center space-x-1.5">
-          <Smartphone className="w-4 h-4 text-emerald-800" />
-          <span>Subscribe Now</span>
-        </h4>
-
-        <p className="text-xs text-slate-600 mb-4">
-          To activate your {selectedPlan.name} plan (K {selectedPlan.priceKwacha}), please contact
-          us via one of the methods below. We'll send you a Mobile Money prompt (Airtel/MTN/Zamtel)
-          or provide bank details.
-        </p>
-
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <button
-            onClick={() => {
-              setContactMethod('whatsapp');
-              setShowContactModal(true);
-            }}
-            className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-green-50 border-green-200 text-green-800 hover:bg-green-100"
-          >
-            <MessageSquare className="w-5 h-5 mb-1" />
-            <span className="font-bold">WhatsApp</span>
-            <span className="text-[10px] font-mono">{SUPPORT_CONTACT.phoneDisplay}</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setContactMethod('phone');
-              setShowContactModal(true);
-            }}
-            className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100"
-          >
-            <Phone className="w-5 h-5 mb-1" />
-            <span className="font-bold">Call / SMS</span>
-            <span className="text-[10px] font-mono">{SUPPORT_CONTACT.phoneDisplay}</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setContactMethod('email');
-              setShowContactModal(true);
-            }}
-            className="min-h-[48px] py-3 px-2 rounded-xl text-xs font-bold transition-all border flex flex-col items-center justify-center bg-purple-50 border-purple-200 text-purple-800 hover:bg-purple-100"
-          >
-            <Mail className="w-5 h-5 mb-1" />
-            <span className="font-bold">Email</span>
-            <span className="text-[10px] font-mono">{SUPPORT_CONTACT.paymentsEmail}</span>
-          </button>
-        </div>
-
-        {/* Payment happens out-of-band: no gateway is wired into the static build,
-            so the app must not print USSD codes it cannot verify. */}
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-1.5">
-          <p className="font-bold text-slate-800">How activation works</p>
-          <ol className="list-decimal pl-4 space-y-1 text-[11px] leading-relaxed">
-            <li>Contact us using one of the buttons above.</li>
-            <li>
-              We send you a Mobile Money request, or the payment details for Airtel, MTN or Zamtel.
-            </li>
-            <li>
-              Once the payment shows, we activate your plan — the days remaining at the top of this
-              screen update immediately.
-            </li>
-          </ol>
-          <p className="text-[10px] text-slate-500">
-            Quote this shop ID so we credit the right shop:{' '}
-            <code className="font-mono bg-slate-200 px-1 rounded">
-              {shop?.id || 'your-shop-id'}
-            </code>
+        <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+          <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            <strong>No immediate activation.</strong> Submissions go to private administrator
+            review. Your subscription changes only after the payment is verified against the
+            mobile-money transaction and explicitly approved. This is manual payment handling, not
+            an automatic payment gateway.
           </p>
         </div>
-      </div>
 
-      {/* What's Included */}
-      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-xs text-emerald-900 space-y-2">
-        <div className="flex items-center space-x-1.5 font-bold">
-          <ShieldCheck className="w-4 h-4" />
-          <span>What's included in every plan:</span>
-        </div>
-        <ul className="list-disc pl-4 space-y-1 text-[11px] leading-relaxed">
-          <li>Unlimited sales recording (offline-first)</li>
-          <li>Stock management with profit tracking</li>
-          <li>Credit book (Mangawa/Amakongole) with WhatsApp reminders</li>
-          <li>Expense tracking & profit reports</li>
-          <li>Data export (CSV/JSON) anytime</li>
-          <li>Multi-language: English, Bemba, Nyanja</li>
-          <li>Auto-sync when online, works fully offline</li>
-          <li>No hidden fees, cancel anytime</li>
+        <form onSubmit={(event) => void submitPayment(event)} className="grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-semibold text-slate-700">
+            Network used
+            <select
+              value={network}
+              onChange={(event) => setNetwork(event.target.value as ManualPaymentNetwork)}
+              className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
+            >
+              <option value="mtn">MTN Mobile Money</option>
+              <option value="airtel">Airtel Money</option>
+            </select>
+          </label>
+          <label className="text-xs font-semibold text-slate-700">
+            Amount to pay
+            <input
+              value={`K ${selectedPlan.priceKwacha.toFixed(2)}`}
+              readOnly
+              className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-900"
+            />
+          </label>
+          <label className="text-xs font-semibold text-slate-700">
+            Transaction reference
+            <input
+              value={transactionReference}
+              onChange={(event) => setTransactionReference(event.target.value)}
+              required
+              minLength={5}
+              maxLength={50}
+              autoComplete="off"
+              placeholder="Reference from your operator receipt"
+              className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 text-sm font-mono"
+            />
+          </label>
+          <label className="text-xs font-semibold text-slate-700">
+            Payer phone number
+            <input
+              value={payerPhone}
+              onChange={(event) => setPayerPhone(event.target.value)}
+              required
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="e.g. 0977 123 456"
+              className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 text-sm"
+            />
+          </label>
+          <label className="text-xs font-semibold text-slate-700">
+            Date paid
+            <input
+              type="date"
+              value={paymentDate}
+              onChange={(event) => setPaymentDate(event.target.value)}
+              required
+              max={localToday()}
+              className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 text-sm"
+            />
+          </label>
+          <div className="flex items-end">
+            <button
+              type="submit"
+              disabled={isSubmitting || isLoadingInstructions || !instructions || hasPendingPayment}
+              className="min-h-[44px] w-full rounded-lg bg-emerald-900 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSubmitting
+                ? 'Submitting…'
+                : hasPendingPayment
+                  ? 'Payment awaiting review'
+                  : 'Submit for manual review'}
+            </button>
+          </div>
+        </form>
+        {hasPendingPayment && (
+          <p className="text-xs font-semibold text-amber-900">
+            A payment is already pending for this shop. Wait for review before sending another
+            submission.
+          </p>
+        )}
+        {success && (
+          <p
+            role="status"
+            className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900"
+          >
+            Submission received. No subscription was activated; watch for the administrator’s review
+            decision.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-2" aria-labelledby="payment-history-title">
+        <h2 id="payment-history-title" className="font-bold text-slate-900">
+          Your payment history
+        </h2>
+        {ownHistory.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+            No payment submissions yet.
+          </p>
+        ) : (
+          ownHistory.map((payment) => (
+            <article
+              key={payment.id}
+              className="rounded-lg border border-slate-200 bg-white p-3 text-xs"
+            >
+              <div className="flex flex-wrap justify-between gap-2">
+                <strong className="capitalize text-slate-900">
+                  {payment.status.replace('_', ' ')} · {payment.planId}
+                </strong>
+                <span className="font-bold tabular-nums">
+                  K {(payment.amountNgwee / 100).toFixed(2)}
+                </span>
+              </div>
+              <p className="mt-1 break-all font-mono text-slate-700">
+                Reference: {payment.transactionReference}
+              </p>
+              {payment.rejectionReason && (
+                <p className="mt-1 text-rose-800">Reason: {payment.rejectionReason}</p>
+              )}
+              {payment.subscriptionExpiryAt && (
+                <p className="mt-1 text-emerald-800">
+                  Approved · expires {new Date(payment.subscriptionExpiryAt).toLocaleDateString()}
+                </p>
+              )}
+            </article>
+          ))
+        )}
+      </section>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700">
+        <h2 className="font-bold text-slate-900">Included with every plan</h2>
+        <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+          <li>Sales and stock records</li>
+          <li>Credit book and payment history</li>
+          <li>Expenses and reports</li>
+          <li>Offline-first shop workflow</li>
         </ul>
       </div>
-
-      {/* Contact Modal */}
-      {showContactModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center space-x-2">
-                <div
-                  className={`w-8 h-8 rounded-xl flex items-center justify-center ${
-                    contactMethod === 'whatsapp'
-                      ? 'bg-green-100 text-green-800'
-                      : contactMethod === 'phone'
-                        ? 'bg-blue-100 text-blue-800'
-                        : 'bg-purple-100 text-purple-800'
-                  }`}
-                >
-                  {contactMethod === 'whatsapp' && <MessageSquare className="w-4 h-4" />}
-                  {contactMethod === 'phone' && <Phone className="w-4 h-4" />}
-                  {contactMethod === 'email' && <Mail className="w-4 h-4" />}
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-sm text-slate-900">
-                    {contactMethod === 'whatsapp'
-                      ? 'WhatsApp Us'
-                      : contactMethod === 'phone'
-                        ? 'Call / SMS'
-                        : 'Email Us'}
-                  </h3>
-                  <p className="text-[10px] text-slate-500">
-                    {contactMethod === 'whatsapp' && SUPPORT_CONTACT.phoneDisplay}
-                    {contactMethod === 'phone' && SUPPORT_CONTACT.phoneDisplay}
-                    {contactMethod === 'email' && SUPPORT_CONTACT.paymentsEmail}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowContactModal(false)}
-                className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="mt-3 text-xs text-slate-700 space-y-3">
-              <p className="text-slate-600 leading-relaxed">
-                Ready to subscribe to{' '}
-                <strong className="text-emerald-800">{selectedPlan.name}</strong> (K{' '}
-                {selectedPlan.priceKwacha})? Contact us and we'll send a Mobile Money prompt or
-                provide payment details.
-              </p>
-
-              <div className="bg-slate-50 p-3 rounded-xl space-y-2">
-                <p className="font-bold text-slate-800 text-[11px]">Tell us:</p>
-                <ul className="list-disc pl-4 space-y-1 text-[11px] text-slate-600">
-                  <li>Your shop name</li>
-                  <li>Your phone number (for Mobile Money prompt)</li>
-                  <li>Preferred operator: Airtel / MTN / Zamtel</li>
-                  <li>
-                    Reference: <code className="font-mono bg-white px-1 rounded">{shop?.id}</code>
-                  </li>
-                </ul>
-              </div>
-
-              {contactMethod === 'whatsapp' && (
-                <a
-                  href={`https://wa.me/${SUPPORT_CONTACT.whatsapp}?text=${encodeURIComponent(`Hi Countup, I want to subscribe my shop "${shop?.name}" (${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}. My phone is ${shop?.ownerPhone}. Please send Mobile Money prompt.`)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 rounded-xl text-xs"
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  <span>Open WhatsApp with Pre-filled Message</span>
-                </a>
-              )}
-
-              {contactMethod === 'phone' && (
-                <a
-                  href={`tel:${SUPPORT_CONTACT.phoneDial}`}
-                  className="w-full flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl text-xs"
-                >
-                  <Phone className="w-4 h-4" />
-                  <span>Call Now</span>
-                </a>
-              )}
-
-              {contactMethod === 'email' && (
-                <a
-                  href={`mailto:${SUPPORT_CONTACT.paymentsEmail}?subject=${encodeURIComponent(`Subscription: ${shop?.name} - ${selectedPlan.name}`)}&body=${encodeURIComponent(`Hi Countup Team,\n\nI want to subscribe my shop "${shop?.name}" (ID: ${shop?.id}) to the ${selectedPlan.name} plan for K${selectedPlan.priceKwacha}.\n\nMy phone: ${shop?.ownerPhone}\nPreferred operator: Airtel/MTN/Zamtel\n\nPlease send Mobile Money prompt or provide payment details.\n\nThanks!`)}`}
-                  className="w-full flex items-center justify-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 rounded-xl text-xs"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>Open Email with Pre-filled Details</span>
-                </a>
-              )}
-
-              <button
-                onClick={() => setShowContactModal(false)}
-                className="w-full mt-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

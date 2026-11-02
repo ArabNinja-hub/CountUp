@@ -210,10 +210,7 @@ const MainAppContent: React.FC = () => {
 
   return withHelp(
     <>
-      <div
-        inert={isLoading}
-        className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900 font-sans"
-      >
+      <div inert={isLoading} className="min-h-screen bg-slate-50 text-slate-900 font-sans">
         {/* Desktop sidebar + content shell */}
         <div className="md:flex md:min-h-screen">
           <Sidebar />
@@ -226,7 +223,7 @@ const MainAppContent: React.FC = () => {
             <OfflineNotice />
 
             {/* Active Tab Screen */}
-            <main className="flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-3 sm:py-5 pb-48 md:pb-8">
+            <main className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-48 md:pb-8">
               {activeTab === 'home' && (
                 <HomeScreen
                   onOpenHelp={openHelp}

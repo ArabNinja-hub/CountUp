@@ -8,13 +8,13 @@ Open **Help** on the sign-in page or the **?** button at the top of your shop fo
 2. Tap **Create shop**. A new shop starts with an empty stock book and a 30-day trial.
 3. To return on the same device, choose **Log in** and enter the same phone number and PIN.
 
-Keep your PIN private. A phone-and-PIN-only shop is tied to the original device's Firebase identity; the PIN alone cannot open it on a new device. Before changing devices or clearing browser data, sync your entries and link an email under **Settings → Account & cloud access**. You can then use **Email sign in** on another device.
+Keep your PIN private. A phone-and-PIN shop is tied to the browser's Firebase identity; the PIN alone cannot open it on a new device. CountUp does not offer general email sign-in from the shop login screen. **Settings → Account & cloud access** can link or reconnect the original identity on a device that already has the shop data; it is not a new-device restore. Sync entries and keep this browser's data. The JSON backup can be downloaded, but a CountUp JSON restore is not currently available in the app.
 
 ## 2. Add and update products
 
 1. Open **Stock** and tap **Add New Item** (or **Add product** on Home).
 2. Enter the item name, selling price and current quantity. Enter the buying price if you know it; it is needed for profit calculations.
-3. Tap **Add New Item**. The default low-stock warning is five items. To change it or add a pack size, open **More options** before saving.
+3. Tap **Add New Item**. The optional low-stock warning starts at zero (off). To set a threshold or add a pack size, open **More options** before saving.
 4. In Stock, use **+5** or **+10** to restock, or **Adjust** for another quantity. Use **Edit** to change details and **Archive** to remove a product from the active list. Archived items can be restored from the **Archived** tab.
 
 ## 3. Record a sale
@@ -46,17 +46,17 @@ Sales include credit given. Money received includes cash, Mobile Money and repay
 - CountUp cannot yet record a genuine overpayment or refund. If the full payment was really received, or the sale still needs to be undone and refunded, leave the entry waiting; reconcile outside the app or seek support. Do not reduce a real payment just to clear the queue. **Settings → Data & backups → Sync review history** shows the original entry and confirmed decision for reviewed conflicts.
 - When another device's stock changes conflict with a sale, or an offline physical count was based on an older stock level, Stock shows **Stock recount needed**. A stale count is not applied. Count the goods again, use **Adjust stock → Set to physical count**, then mark the notice recounted.
 - Use only one CountUp tab on a device. Supported browsers make a second tab wait until the first closes; older browsers show a warning instead.
-- Do not clear browser data or switch accounts while entries are waiting to sync. Link email before moving a phone-and-PIN-only shop to a new device. Logging out clears the local shop cache, so phone-and-PIN sign-in needs a connection afterwards.
+- Do not clear browser data or switch accounts while entries are waiting to sync. CountUp does not restore shop records to a new device, even if an email is linked. Keep the original browser data until a supported restore flow is available. Logging out clears the local shop cache, so phone-and-PIN sign-in needs a connection afterwards.
 - If a linked shop loses its cloud session while entries are waiting, reconnect the original email under **Settings → Account & cloud access**. The queue stays on this device; a different account cannot sync it. An unlinked anonymous Firebase identity cannot be recreated to recover an existing shop.
 - **Settings → Data & backups** exports JSON or CSV and can import supported legacy v1 backups. CountUp JSON exports do **not** yet have an in-app restore, and do not contain the pending sync queue. Keep the original device data until everything has synced.
-- Plan activation is handled through the contact options on the Plan screen; recording a Mobile Money sale does not pay for the subscription.
+- Subscription payments are separate from customer Mobile Money sales. Use only the MTN/Airtel account details shown on the Plan screen, pay the displayed plan amount and submit the transaction reference. The reference is reviewed manually; sending it does not activate a plan. Keep the receipt until review is complete.
 
 ## 7. Admin console
 
-The console is for accounts explicitly granted platform-admin access; creating a shop does not make its owner an admin.
+The console requires the private, pre-authorized platform account; creating a shop does not make its owner an administrator.
 
-- On the sign-in page, choose **Admin sign in**, enter the authorized account's email and password, then tap **Open admin console**. An internet connection is required. Choose **Sign out** to leave.
-- If your admin access is tied to a phone-and-PIN shop, log in to that shop on its original device and choose **Settings → Platform Admin**. To use email for that same account, first link it under **Settings → Account & cloud access**.
-- Administrators can search shops, extend plans and suspend or reactivate shops. These actions require a connection and must be accepted by the server.
+- On the sign-in page, choose **Admin sign in**, enter the authorized account email and password, then tap **Open admin console**. The server verifies the identity and grants a custom claim only to the configured verified account. An internet connection is required.
+- Administrators can search shops/accounts, review pending and previous manual-payment submissions, approve or reject with a reason, extend subscriptions, and suspend/reactivate shops. Approvals are audited and update the subscription dates; operators' transactions must be checked independently.
+- Shop owners can view only their own submission history. Payment review, role verification, extension and suspension actions are enforced by Firebase Functions and Firestore rules, not by hidden buttons.
 
-The project owner must provision admin access in Firebase; see **Platform owner access** in the README. There is no default admin password.
+The project owner must configure Firebase Authentication and Functions secrets and deploy the rules and backend; see **Platform owner access** in the README. There is no default admin password, client-side owner address, payment gateway or automatic payment verification.

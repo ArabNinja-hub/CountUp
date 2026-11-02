@@ -17,6 +17,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:rules": "node scripts/test-firestore-rules.mjs",
+    "functions:build": "npm --prefix functions run build",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run lint && npm run test",
     "deploy:rules": "firebase deploy --only firestore:rules",

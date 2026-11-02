@@ -4,20 +4,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ToastProvider } from '../components/Toast';
 import { Shop } from '../types';
+import { customerStatement, summarizeLedger } from '../utils/ledger';
 
 const fake = vi.hoisted(() => {
   const state = {
     auth: {
-      currentUser: { uid: 'owner-1', isAnonymous: true, email: null as string | null } as {
+      currentUser: {
+        uid: 'owner-1',
+        isAnonymous: true,
+        email: null as string | null,
+        getIdToken: async () => '',
+        getIdTokenResult: async () => ({ claims: {} as Record<string, unknown> }),
+      } as {
         uid: string;
         isAnonymous: boolean;
         email: string | null;
+        getIdToken?: (forceRefresh?: boolean) => Promise<string>;
+        getIdTokenResult?: () => Promise<{ claims: Record<string, unknown> }>;
       } | null,
     },
     docs: new Map<string, Record<string, unknown>>(),
     listeners: [] as { path: string; callback: (snapshot: unknown) => void }[],
     authListeners: [] as ((user: unknown) => void)[],
     accounts: new Map<string, { uid: string; password: string }>(),
+    adminUids: new Set<string>(),
+    emit: () => undefined,
     resets: [] as string[],
     failAdminRead: false,
     failWrite: false,
@@ -35,6 +46,54 @@ const fake = vi.hoisted(() => {
   };
   return state;
 });
+vi.mock('../firebase/functions', () => ({ functions: {} }));
+vi.mock('firebase/functions', () => ({
+  httpsCallable:
+    (_functions: unknown, name: string) =>
+    async (input: Record<string, unknown> = {}) => {
+      if (name === 'verifyPlatformAdmin') {
+        if (fake.failAdminRead)
+          throw Object.assign(new Error('Server unavailable'), { code: 'functions/unavailable' });
+        if (!fake.auth.currentUser || !fake.adminUids.has(fake.auth.currentUser.uid))
+          throw Object.assign(
+            new Error('This account is not authorized for platform administration.'),
+            { code: 'functions/permission-denied' }
+          );
+        return { data: { isAdmin: true, claimsUpdated: true } };
+      }
+      if (name === 'extendShopSubscription' || name === 'setShopSuspended') {
+        if (fake.failWrite) throw new Error('Write rejected');
+        const path = `shops/${String(input.shopId)}`;
+        const current = fake.docs.get(path) ?? {};
+        fake.docs.set(
+          path,
+          name === 'extendShopSubscription'
+            ? {
+                ...current,
+                planStatus: 'active',
+                planExpiryDate: new Date(Date.now() + Number(input.days) * 86400000).toISOString(),
+              }
+            : {
+                ...current,
+                isDeactivated: Boolean(input.suspended),
+                planStatus: input.suspended ? 'suspended' : 'active',
+              }
+        );
+        fake.emit();
+        return {
+          data:
+            name === 'extendShopSubscription' ? { extended: true } : { suspended: input.suspended },
+        };
+      }
+      if (name === 'submitManualSubscriptionPayment')
+        return { data: { id: 'payment-test', status: 'pending' } };
+      if (name === 'reviewManualSubscriptionPayment')
+        return { data: { status: input.decision === 'approve' ? 'approved' : 'rejected' } };
+      if (name === 'getManualPaymentInstructions')
+        return { data: { mtn: 'test-mtn', airtel: 'test-airtel', verification: 'manual' } };
+      throw new Error(`Unexpected callable ${name}`);
+    },
+}));
 vi.mock('../firebase/config', () => ({
   auth: fake.auth,
   db: {},
@@ -52,7 +111,13 @@ vi.mock('firebase/auth', () => ({
     fake.anonymousSignIns++;
     if (fake.failAnonymousSignIn) throw new Error('Anonymous sign-in failed');
     if (!fake.auth.currentUser) {
-      fake.auth.currentUser = { uid: 'new-anonymous-owner', isAnonymous: true, email: null };
+      fake.auth.currentUser = {
+        uid: 'new-anonymous-owner',
+        isAnonymous: true,
+        email: null,
+        getIdToken: async () => '',
+        getIdTokenResult: async () => ({ claims: {} }),
+      };
       fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
     }
     return { user: fake.auth.currentUser };
@@ -63,7 +128,13 @@ vi.mock('firebase/auth', () => ({
     credential: { email: string; password: string }
   ) => {
     fake.accounts.set(credential.email, { uid: user.uid, password: credential.password });
-    fake.auth.currentUser = { uid: user.uid, isAnonymous: false, email: credential.email };
+    fake.auth.currentUser = {
+      uid: user.uid,
+      isAnonymous: false,
+      email: credential.email,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({ claims: { platformAdmin: fake.adminUids.has(user.uid) } }),
+    };
     fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
     return { user: fake.auth.currentUser };
   },
@@ -71,7 +142,15 @@ vi.mock('firebase/auth', () => ({
     const account = fake.accounts.get(email);
     if (!account || account.password !== password)
       throw Object.assign(new Error('Invalid credentials'), { code: 'auth/invalid-credential' });
-    fake.auth.currentUser = { uid: account.uid, isAnonymous: false, email };
+    fake.auth.currentUser = {
+      uid: account.uid,
+      isAnonymous: false,
+      email,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({
+        claims: { platformAdmin: fake.adminUids.has(account.uid) },
+      }),
+    };
     fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
     return { user: fake.auth.currentUser };
   },
@@ -101,6 +180,7 @@ vi.mock('firebase/firestore', () => {
     fake.listeners.forEach(({ path: p, callback }) =>
       callback(p.split('/').length % 2 ? collectionSnapshot(p) : snapshot(p))
     );
+  fake.emit = emit;
   const write = (p: string, data: Record<string, unknown>, merge: boolean) =>
     fake.docs.set(p, merge ? { ...fake.docs.get(p), ...data } : { ...data });
   return {
@@ -230,6 +310,7 @@ beforeEach(() => {
   fake.listeners = [];
   fake.authListeners = [];
   fake.accounts.clear();
+  fake.adminUids.clear();
   fake.resets = [];
   fake.failAdminRead = false;
   fake.failWrite = false;
@@ -244,7 +325,13 @@ beforeEach(() => {
   fake.deleteCalls = [];
   fake.failAnonymousSignIn = false;
   fake.anonymousSignIns = 0;
-  fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+  fake.auth.currentUser = {
+    uid: 'owner-1',
+    isAnonymous: true,
+    email: null,
+    getIdToken: async () => '',
+    getIdTokenResult: async () => ({ claims: {} }),
+  };
   online(false);
   localStorage.setItem('countup_active_shop', JSON.stringify(shop));
   fake.docs.set(`shops/${shop.id}`, { ...shop });
@@ -255,6 +342,31 @@ afterEach(() => {
 });
 
 describe('CountUp integrated business and authentication flows (mock Firebase)', () => {
+  it('blocks new sales after the subscription and grace period expire without changing records', async () => {
+    const expiredShop = {
+      ...shop,
+      planStatus: 'active' as const,
+      planExpiryDate: new Date(Date.now() - 4 * 86400000).toISOString(),
+      salesAccessUntilMs: Date.now() - 86400000,
+    };
+    localStorage.setItem('countup_active_shop', JSON.stringify(expiredShop));
+    fake.docs.set(`shops/${shop.id}`, expiredShop);
+    await mount();
+    expect(current.subscription.status).toBe('expired');
+    expect(current.subscription.canRecordSales).toBe(false);
+    await expect(
+      current.recordSale({
+        items: [{ itemId: 'missing', name: 'Item', quantity: 1, buyingPrice: 1, sellingPrice: 2 }],
+        itemsCount: 1,
+        totalAmount: 2,
+        totalCost: 1,
+        profit: 1,
+        paymentType: 'cash',
+      })
+    ).rejects.toThrow(/New sales are locked/);
+    expect(current.pendingSyncCount).toBe(0);
+  });
+
   it('rejects carts that could exceed Firestore transaction limits during conflicts', async () => {
     await mount();
     const lines = Array.from({ length: 161 }, (_, index) => ({
@@ -275,6 +387,97 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       })
     ).rejects.toThrow(/160 products/);
     expect(current.pendingSyncCount).toBe(0);
+  });
+
+  it('reconciles the requested cash, MoMo, credit, repayment and profit example end to end', async () => {
+    await mount();
+    let itemId = '';
+    let customerId = '';
+    await act(async () => {
+      itemId = await current.addItem({
+        name: 'Water bottle',
+        buyingPrice: 6,
+        sellingPrice: 10,
+        quantity: 30,
+        lowStockThreshold: 5,
+      });
+      customerId = (await current.addCustomer('Chisomo')).id;
+    });
+
+    await expect(
+      current.recordSale({
+        items: [{ itemId, name: 'Water bottle', quantity: 31, buyingPrice: 6, sellingPrice: 10 }],
+        itemsCount: 31,
+        totalAmount: 310,
+        totalCost: 186,
+        profit: 124,
+        paymentType: 'cash',
+        cashTendered: 310,
+      })
+    ).rejects.toThrow(/Only 30/);
+    await expect(
+      current.recordSale({
+        items: [{ itemId, name: 'Water bottle', quantity: 1, buyingPrice: 6, sellingPrice: 10 }],
+        itemsCount: 1,
+        totalAmount: 10,
+        totalCost: 6,
+        profit: 4,
+        paymentType: 'cash',
+        cashTendered: 9,
+      })
+    ).rejects.toThrow(/Cash received must cover/);
+    expect(current.pendingSyncCount).toBe(2);
+
+    const sell = async (quantity: number, paymentType: 'cash' | 'momo' | 'credit') => {
+      await act(async () => {
+        await current.recordSale({
+          items: [{ itemId, name: 'Water bottle', quantity, buyingPrice: 6, sellingPrice: 10 }],
+          itemsCount: quantity,
+          totalAmount: quantity * 10,
+          totalCost: quantity * 6,
+          profit: quantity * 4,
+          paymentType,
+          customerId: paymentType === 'credit' ? customerId : undefined,
+          momoOperator: paymentType === 'momo' ? 'mtn' : undefined,
+        });
+      });
+    };
+    await sell(4, 'cash');
+    await sell(3, 'momo');
+    await sell(5, 'credit');
+    await act(async () => {
+      await current.updateItem(itemId, { sellingPrice: 12, buyingPrice: 7 });
+    });
+    expect(current.sales.every((sale) => sale.items[0].sellingPrice === 10)).toBe(true);
+    expect(current.sales.every((sale) => sale.items[0].buyingPrice === 6)).toBe(true);
+    await act(async () => {
+      await current.recordCreditPayment(customerId, 20, 'Part repayment', 'cash');
+    });
+    await expect(current.recordCreditPayment(customerId, 31)).rejects.toThrow(/only owes K 30/);
+
+    const ledger = summarizeLedger(current.sales, current.creditPayments, current.customers);
+    expect(current.items.find((item) => item.id === itemId)?.quantity).toBe(18);
+    expect(ledger).toMatchObject({
+      sales: 120,
+      cashSales: 40,
+      cashRepayments: 20,
+      momoSales: 30,
+      cashReceived: 60,
+      momoReceived: 30,
+      moneyReceived: 90,
+      creditSales: 50,
+      outstanding: 30,
+      profit: 48,
+      missingCostRevenue: 0,
+    });
+    expect(current.sales).toHaveLength(3);
+    expect(current.creditPayments).toHaveLength(1);
+    expect(current.stockMovements.filter((movement) => movement.type === 'sale')).toHaveLength(3);
+    expect(customerStatement(customerId, current.sales, current.creditPayments)).toMatchObject([
+      { type: 'payment', amount: 20, runningBalance: 30 },
+      { type: 'sale', amount: 50, runningBalance: 50 },
+    ]);
+    expect(current.pendingSyncCount).toBe(7);
   });
 
   it('records stock, credit sales, repayments, archives and expenses offline as atomic queued operations', async () => {
@@ -1129,7 +1332,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     }
   });
 
-  it('links the existing owner UID to email, signs in again, rejects wrong credentials and requests recovery', async () => {
+  it('links and reauthenticates the existing shop identity without general email shop sign-in', async () => {
     online(true);
     await mount();
     await act(async () => {
@@ -1141,19 +1344,18 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       email: 'owner@example.com',
     });
     expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
-    await act(async () => {
-      await current.logout();
-    });
-    expect(fake.auth.currentUser).toBeNull();
-    await expect(current.loginWithEmail('owner@example.com', 'wrong')).rejects.toThrow(
+
+    // Simulate an expired Firebase session while the original shop data is still open.
+    fake.auth.currentUser = null;
+    fake.authListeners.forEach((listener) => listener(null));
+    await expect(current.restoreShopAccount('owner@example.com', 'wrong')).rejects.toThrow(
       /Invalid credentials/
     );
-    let shops: Shop[] = [];
     await act(async () => {
-      shops = await current.loginWithEmail('owner@example.com', 'strongpass123');
-      current.selectEmailShop(shops[0]);
+      await current.restoreShopAccount('owner@example.com', 'strongpass123');
     });
     expect(current.shop?.id).toBe(shop.id);
+    expect(fake.auth.currentUser?.uid).toBe(shop.ownerUid);
     await act(async () => {
       await current.resetEmailPassword('owner@example.com');
     });
@@ -1304,6 +1506,28 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(current.pendingSyncCount).toBe(3);
   });
 
+  it('starts a real online shop with empty business records and no fabricated sync work', async () => {
+    localStorage.removeItem('countup_active_shop');
+    fake.docs.clear();
+    fake.auth.currentUser = null;
+    online(true);
+    await mount();
+    await act(async () => {
+      expect(await current.registerNewShop('Owner entered shop', '0977000000', '1234')).toBe(true);
+    });
+
+    expect(current.shop?.name).toBe('Owner entered shop');
+    expect(current.items).toHaveLength(0);
+    expect(current.archivedItems).toHaveLength(0);
+    expect(current.sales).toHaveLength(0);
+    expect(current.customers).toHaveLength(0);
+    expect(current.creditPayments).toHaveLength(0);
+    expect(current.expenses).toHaveLength(0);
+    expect(current.stockMovements).toHaveLength(0);
+    expect(current.pendingSyncCount).toBe(0);
+    expect(fake.docs.get(`shops/${shop.id}`)?.name).toBe('Owner entered shop');
+  });
+
   it('creates a shop offline immediately and binds its temporary owner to the authenticated UID on sync', async () => {
     localStorage.removeItem('countup_active_shop');
     fake.docs.clear();
@@ -1319,7 +1543,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     });
     expect(current.pendingSyncCount).toBe(1);
     online(true);
-    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    fake.auth.currentUser = {
+      uid: 'owner-1',
+      isAnonymous: true,
+      email: null,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({ claims: {} }),
+    };
     await act(async () => {
       await current.syncNow();
     });
@@ -1485,7 +1715,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
     });
     fake.failBatch = true;
-    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    fake.auth.currentUser = {
+      uid: 'owner-1',
+      isAnonymous: true,
+      email: null,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({ claims: {} }),
+    };
     online(true);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await act(async () => {
@@ -1517,7 +1753,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       pin: '9999',
       planStatus: 'active',
     });
-    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    fake.auth.currentUser = {
+      uid: 'owner-1',
+      isAnonymous: true,
+      email: null,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({ claims: {} }),
+    };
     online(true);
     await act(async () => {
       await current.syncNow();
@@ -1563,7 +1805,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await act(async () => {
       expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
     });
-    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    fake.auth.currentUser = {
+      uid: 'owner-1',
+      isAnonymous: true,
+      email: null,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({ claims: {} }),
+    };
     await act(async () => {
       fake.authListeners.forEach((listener) => listener(fake.auth.currentUser));
     });
@@ -1628,7 +1876,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await act(async () => {
       expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
     });
-    fake.auth.currentUser = { uid: 'owner-1', isAnonymous: true, email: null };
+    fake.auth.currentUser = {
+      uid: 'owner-1',
+      isAnonymous: true,
+      email: null,
+      getIdToken: async () => '',
+      getIdTokenResult: async () => ({ claims: {} }),
+    };
     online(true);
     const original = Storage.prototype.setItem;
     const storage = vi
@@ -1797,23 +2051,17 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(current.pendingSyncCount).toBe(0);
   });
 
-  it('signs out an email account when the user cancels multi-shop selection', async () => {
+  it('signs out the standalone admin account if admin sign-in is cancelled', async () => {
     online(true);
+    localStorage.removeItem('countup_active_shop');
+    fake.auth.currentUser = null;
+    fake.accounts.set('admin@example.com', { uid: 'admin-cancel', password: 'strongpass123' });
+    fake.adminUids.add('admin-cancel');
     await mount();
     await act(async () => {
-      await current.linkEmailAccount('owner@example.com', 'strongpass123');
+      await current.loginAsAdmin('admin@example.com', 'strongpass123');
     });
-    await act(async () => {
-      await current.logout();
-    });
-    const otherShop = { ...shop, id: 'shop_0977000002', name: 'Second shop' };
-    fake.docs.set(`shops/${otherShop.id}`, otherShop);
-    let owned: Shop[] = [];
-    await act(async () => {
-      owned = await current.loginWithEmail('owner@example.com', 'strongpass123');
-    });
-    expect(owned).toHaveLength(2);
-    expect(current.shop).toBeNull();
+    expect(fake.auth.currentUser?.uid).toBe('admin-cancel');
     await act(async () => {
       await current.cancelEmailLogin();
     });
@@ -1840,10 +2088,12 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     localStorage.removeItem('countup_active_shop');
     fake.auth.currentUser = null;
     fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
-    fake.docs.set('admins/admin-1', {});
+    fake.adminUids.add('admin-1');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Admin sign in' }));
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'admin@example.com' } });
+    fireEvent.change(screen.getByLabelText('Account email'), {
+      target: { value: 'admin@example.com' },
+    });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'strongpass123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Open admin console' }));
     expect(await screen.findByRole('heading', { name: 'Admin console' })).toBeTruthy();
@@ -1859,7 +2109,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     localStorage.removeItem('countup_active_shop');
     fake.auth.currentUser = null;
     fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
-    fake.docs.set('admins/admin-1', {});
+    fake.adminUids.add('admin-1');
     await mount();
     await act(async () => {
       await current.loginAsAdmin(' admin@example.com ', 'strongpass123');
@@ -1883,12 +2133,11 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await mount();
     await act(async () => {
       await expect(current.loginAsAdmin('user@example.com', 'strongpass123')).rejects.toThrow(
-        /does not have admin access/
+        /not authorized for platform administration/
       );
     });
     expect(fake.auth.currentUser).toBeNull();
     expect(current.isAdmin).toBe(false);
-    fake.docs.set('admins/user-1', {});
     fake.failAdminRead = true;
     await act(async () => {
       await expect(current.loginAsAdmin('user@example.com', 'strongpass123')).rejects.toThrow(
@@ -1905,7 +2154,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await mount();
     online(true);
     await expect(current.loginAsAdmin('admin@example.com', 'password')).rejects.toThrow(
-      /anonymous identity is not lost/
+      /shop identity/
     );
     expect(fake.auth.currentUser?.uid).toBe('owner-1');
     localStorage.removeItem('countup_legacy_uid');
@@ -1922,7 +2171,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await mount();
     online(true);
     await expect(current.loginAsAdmin('admin@example.com', 'password')).rejects.toThrow(
-      /Sync pending entries/
+      /Sync pending shop entries/
     );
     expect(fake.auth.currentUser).toBeNull();
   });
@@ -1932,7 +2181,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     localStorage.removeItem('countup_active_shop');
     fake.auth.currentUser = null;
     fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
-    fake.docs.set('admins/admin-1', {});
+    fake.adminUids.add('admin-1');
     await mount();
     await act(async () => {
       await current.loginAsAdmin('admin@example.com', 'strongpass123');
@@ -1951,7 +2200,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       await current.adminToggleDeactivate(shop.id);
     });
     expect(fake.docs.get(`shops/${shop.id}`)).toMatchObject({
-      planStatus: 'active',
+      planStatus: 'suspended',
       isDeactivated: true,
     });
     online(false);
@@ -1964,7 +2213,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     localStorage.removeItem('countup_active_shop');
     fake.auth.currentUser = null;
     fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
-    fake.docs.set('admins/admin-1', {});
+    fake.adminUids.add('admin-1');
     await mount();
     await act(async () => {
       await current.loginAsAdmin('admin@example.com', 'strongpass123');
@@ -1975,6 +2224,8 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
         uid: 'ordinary-user',
         isAnonymous: false,
         email: 'user@example.com',
+        getIdToken: async () => '',
+        getIdTokenResult: async () => ({ claims: {} }),
       };
       fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
     });

@@ -3,7 +3,7 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useShop } from '../context/ShopContext';
-import { AccountAccess, EmailLoginPanel } from './AccountAccess';
+import { AccountAccess } from './AccountAccess';
 
 vi.mock('../context/ShopContext', () => ({ useShop: vi.fn() }));
 vi.mock('./Toast', () => ({ useToast: () => ({ notify: vi.fn() }) }));
@@ -24,11 +24,7 @@ describe('Unified account access', () => {
     } as unknown as ReturnType<typeof useShop>);
     render(<AccountAccess onClose={vi.fn()} />);
     expect(screen.getByRole('heading', { name: 'Account & cloud access' })).toBeTruthy();
-    expect(
-      screen.getByText(
-        /passwords and recovery keys from earlier accounts are not transferred automatically/i
-      )
-    ).toBeTruthy();
+    expect(screen.getByText(/not a backup or a new-device restore/i)).toBeTruthy();
     expect(screen.queryByText(/ShopBook/i)).toBeNull();
   });
 
@@ -67,22 +63,5 @@ describe('Unified account access', () => {
     render(<AccountAccess onClose={vi.fn()} />);
     expect(screen.getByText(/A different account is active/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Reconnect shop account' })).toBeNull();
-  });
-
-  it('presents email sign-in as access to the same shop', () => {
-    vi.mocked(useShop).mockReturnValue({
-      loginWithEmail: vi.fn(),
-      cancelEmailLogin: vi.fn(),
-      selectEmailShop: vi.fn(),
-      resetEmailPassword: vi.fn(),
-    } as unknown as ReturnType<typeof useShop>);
-    render(<EmailLoginPanel onBack={vi.fn()} />);
-    expect(screen.getByText(/Sign in to a CountUp shop with email access enabled/i)).toBeTruthy();
-    expect(
-      screen.getByText(
-        /passwords and recovery keys from earlier accounts are not transferred automatically/i
-      )
-    ).toBeTruthy();
-    expect(screen.queryByText(/ShopBook/i)).toBeNull();
   });
 });

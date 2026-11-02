@@ -62,7 +62,7 @@ describe('Stock failure handling', () => {
     expect(screen.getByRole('button', { name: 'Remove Tea' })).toBeTruthy();
   });
 
-  it('adds a product with the simple form and a default low-stock alert', async () => {
+  it('adds a product with the simple form and a zero low-stock threshold until the owner sets one', async () => {
     const addItem = vi.fn().mockResolvedValue('item-new');
     vi.mocked(useShop).mockReturnValue({ ...vi.mocked(useShop)(), addItem });
     render(<StockScreen />);
@@ -83,7 +83,7 @@ describe('Stock failure handling', () => {
           sellingPrice: 25,
           buyingPriceKnown: false,
           quantity: 12,
-          lowStockThreshold: 5,
+          lowStockThreshold: 0,
         })
       )
     );

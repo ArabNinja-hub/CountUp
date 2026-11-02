@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { SUPPORT_CONTACT } from '../config/support';
 
 type LegalDocType = 'privacy' | 'terms' | 'security';
 
@@ -62,7 +61,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'Local-First: Shop entries can be saved on this device offline and synced later. Account access, imports and administration require a connection.',
           'Cloud Sync: When online, your records sync to Google Firebase (Google Cloud infrastructure). Firebase is SOC 2 and ISO 27001 certified.',
           'Encryption: Data in transit uses TLS 1.3. Data at rest encrypted by Firebase.',
-          'Authentication: A shop can use a phone number and 4-digit PIN on its original device. Email and password access is optional; administrators can also sign in with an authorized email account. Your shop PIN is stored with the shop record.',
+          'Authentication: shop sign-in uses a phone number and 4-digit PIN on the original device. There is no general email shop sign-in; linking email only supports reauthenticating the original shop identity. Administrators use a separately authorized email account. Your shop PIN is stored with the shop record.',
           "Access Control: Every shop's records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. Authorized platform administrators can access shop records for support, billing, or legal compliance.",
         ],
       },
@@ -80,14 +79,14 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         content: [
           'Active Shops: Data retained while your subscription is active.',
           'Expired/Cancelled: Records are kept read-only after a plan expires so you can renew and keep trading; nothing is auto-deleted. You can delete everything yourself at any time (Settings → Delete Shop & Data).',
-          'Backups: Firebase retains deleted data for up to 30 days in backup systems.',
+          'We do not promise an automatic server backup or recovery of data after deletion. Export records regularly and keep copies securely.',
         ],
       },
       {
         title: 'Third-Party Services',
         content: [
-          'Firebase (Google): Hosting and database. Privacy Policy: policies.google.com/privacy',
-          'Lipila (Mobile Money): Only used when you initiate a subscription payment. We do not store your Mobile Money PIN.',
+          'Firebase (Google): Authentication, database and callable payment/admin functions. Privacy Policy: policies.google.com/privacy',
+          'Mobile Money: Subscription transfers are made manually outside CountUp. The app stores the transaction reference and payer phone for administrator review; it does not collect your Mobile Money PIN.',
           'WhatsApp: Only opens when you tap "Send Reminder" - we do not access your WhatsApp data.',
         ],
       },
@@ -100,8 +99,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Contact',
         content: [
-          `Data Protection Officer: ${SUPPORT_CONTACT.supportEmail}`,
-          `Phone / WhatsApp: ${SUPPORT_CONTACT.phoneDisplay}`,
+          'For help, open the in-app Help guide. No administrator email or payment number is published on this page.',
           'For Zambian regulatory inquiries: We comply with the Data Protection Act No. 3 of 2021.',
         ],
       },
@@ -142,7 +140,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         content: [
           'Free Trial: New shops get a 30-day free trial with full features.',
           'Paid Plans: After trial, choose Monthly (K99), Quarterly (K269), or Biannual (K499). Prices in Zambian Kwacha (ZMW).',
-          'Payments: Processed via Lipila (Airtel Money, MTN MoMo, Zamtel). We never see your Mobile Money PIN.',
+          'Payments: Subscription transfers are made manually through the MTN or Airtel details in the Plan screen. Submitting a reference does not activate a plan; an administrator must verify and approve it. CountUp does not collect Mobile Money PINs or provide automatic payment verification.',
           'Auto-Renewal: Plans do NOT auto-renew. You must manually renew before expiry.',
           'Grace Period: 3 days after expiry to renew without data loss. After grace, sales recording pauses (data remains viewable).',
           'Refunds: No refunds for partial periods. You can export all data anytime.',
@@ -184,9 +182,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
       {
         title: 'Contact',
         content: [
-          `Support: ${SUPPORT_CONTACT.phoneDisplay} (call or WhatsApp)`,
-          `Email: ${SUPPORT_CONTACT.supportEmail} (support, payments and legal)`,
-          'Physical: Countup Zambia, Lusaka, Zambia',
+          'For assistance, use the in-app Help guide. Subscription payments are handled only through the in-app plan screen.',
         ],
       },
     ],
@@ -204,7 +200,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           },
           {
             icon: Shield,
-            text: 'Authentication: phone and PIN access uses an anonymous Firebase session. You may link email and password to that same session to sign in on another device; admin access requires a separate authorization grant.',
+            text: 'Authentication: phone and PIN access uses a Firebase session tied to the original device. Email linking supports reauthentication of that same shop identity, but CountUp does not provide general email shop sign-in or a new-device restore. Admin access requires a separate authorization grant.',
           },
           {
             icon: User,
@@ -254,14 +250,14 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
           'Do not share your PIN. Countup staff will NEVER ask for it.',
           'Enable phone screen lock (fingerprint/face/PIN).',
           'Log out if sharing your phone: Menu → Log Out.',
-          'Pay subscriptions only through the contact channels listed in the Plan screen, and confirm the shop ID before paying.',
+          'Pay subscriptions only using the MTN/Airtel instructions shown in the Plan screen, and keep your transaction receipt and reference.',
           'Export your data monthly as backup: Reports → Export.',
         ],
       },
       {
         title: 'Incident Response',
         content: [
-          `If you suspect unauthorized access: Change PIN immediately, log out all sessions, then contact ${SUPPORT_CONTACT.supportEmail} or call ${SUPPORT_CONTACT.phoneDisplay}.`,
+          'If you suspect unauthorized access: change your shop PIN, secure your device, and use the in-app Help guide for next steps.',
           'We notify affected users within 72 hours of any confirmed data breach per Zambia Data Protection Act.',
           'Access to the platform-owner admin console is limited to the owner account, and Google Cloud keeps API-level audit logs.',
         ],
@@ -271,7 +267,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         content: [
           'Zambia Data Protection Act No. 3 of 2021',
           'Firebase: SOC 2 Type II, ISO 27001, ISO 27017, ISO 27018',
-          'Lipila: Licensed by Bank of Zambia as Payment Service Provider',
+          'Subscription payments are handled manually; no payment service provider integration is connected.',
         ],
       },
     ],

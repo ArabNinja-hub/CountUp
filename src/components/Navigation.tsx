@@ -44,7 +44,7 @@ export const Navigation: React.FC = () => {
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-8px_30px_rgba(16,185,129,0.10)] pb-[env(safe-area-inset-bottom)]">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)]">
       <div className="grid grid-cols-5 h-[68px] max-w-lg mx-auto">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
@@ -63,9 +63,9 @@ export const Navigation: React.FC = () => {
             >
               <div className="relative">
                 <div
-                  className={`w-11 h-8 rounded-xl flex items-center justify-center transition-all ${
+                  className={`flex h-8 w-11 items-center justify-center rounded-md transition-colors ${
                     isActive
-                      ? 'bg-emerald-100 text-emerald-800 shadow-sm ring-1 ring-emerald-200/70'
+                      ? 'bg-emerald-50 text-emerald-900'
                       : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
                   }`}
                 >

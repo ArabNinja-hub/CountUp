@@ -1,8 +1,37 @@
 export type Language = 'en' | 'bem' | 'nya';
 
-export type PlanStatus = 'trial' | 'active' | 'grace' | 'expired';
+export type PlanStatus =
+  'trial' | 'pending_payment' | 'active' | 'grace' | 'expired' | 'rejected' | 'suspended';
 
 export type PlanBillingCycle = 'monthly' | 'quarterly' | 'biannual';
+
+export type ManualPaymentNetwork = 'mtn' | 'airtel';
+export type SubscriptionPaymentStatus = 'pending' | 'approved' | 'rejected';
+
+export interface SubscriptionPayment {
+  id: string;
+  shopId: string;
+  shopNameSnapshot: string;
+  ownerUid: string;
+  provider: 'manual_mobile_money';
+  network: ManualPaymentNetwork;
+  planId: PlanBillingCycle;
+  transactionReference: string;
+  payerPhone: string;
+  paymentDate: string;
+  amountNgwee: number;
+  status: SubscriptionPaymentStatus;
+  rejectionReason?: string;
+  submittedAt?: { toDate?: () => Date } | string;
+  submittedAtMs: number;
+  reviewedAt?: { toDate?: () => Date } | string;
+  reviewedAtMs?: number;
+  reviewedByUid?: string;
+  subscriptionStartAt?: string;
+  subscriptionStartAtMs?: number;
+  subscriptionExpiryAt?: string;
+  subscriptionExpiryAtMs?: number;
+}
 
 export interface Shop {
   id: string;
@@ -14,7 +43,16 @@ export interface Shop {
   planType: PlanBillingCycle | 'trial';
   createdAt: string; // ISO string
   trialEndsAt: string; // ISO string (30 days from creation)
-  planExpiryDate: string; // ISO string
+  planExpiryDate: string; // ISO string for the current paid/trial end
+  /** Millisecond mirrors used by Firestore Rules for server-time entitlement checks. */
+  trialEndsAtMs?: number;
+  planExpiryAtMs?: number;
+  salesAccessUntilMs?: number;
+  pendingPaymentId?: string;
+  subscriptionStartedAt?: string;
+  subscriptionStartedAtMs?: number;
+  subscriptionPaymentId?: string;
+  statusBeforeSuspension?: PlanStatus;
   isDeactivated: boolean;
   currency: 'ZMW';
   // Optional Shop Mobile Money numbers for customer payments
@@ -74,6 +112,10 @@ export interface Sale {
   localDate?: string;
   /** Revenue excluded from profit because the cost at the time of sale was unknown. */
   missingCostRevenue?: number;
+  /** Cash handed over by the customer; sales revenue remains `totalAmount`. */
+  cashTendered?: number;
+  /** Change returned from cashTendered beyond totalAmount. */
+  changeGiven?: number;
   isDemo?: boolean;
   createdAt: string;
   isOfflineSync?: boolean;

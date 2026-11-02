@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
-import { ArrowLeft, KeyRound, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { useShop } from '../context/ShopContext';
-import { Shop } from '../types';
 import { useToast } from './Toast';
-import { BrandMark } from './BrandMark';
 
 function accountError(error: unknown): string {
   const code = (error as { code?: string })?.code;
@@ -27,7 +25,6 @@ function accountError(error: unknown): string {
 export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const {
     user,
-    shop,
     linkEmailAccount,
     needsShopAccountRecovery,
     restoreShopAccount,
@@ -57,8 +54,8 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
         notify('Shop account reconnected', { detail: 'Pending entries can now sync.' });
       } else {
         await linkEmailAccount(email, password);
-        notify('Email access enabled', {
-          detail: 'Your existing shop and Firebase ownership were kept.',
+        notify('Account recovery enabled', {
+          detail: 'Your existing shop identity is kept on this device.',
         });
       }
       setPassword('');
@@ -117,7 +114,8 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
           <div className="space-y-3">
             <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 p-3 rounded-xl">
               This shop's original cloud session is missing. Keep this browser's data; unsynced
-              entries remain here. Sign in using the email already linked to this shop.
+              entries remain in this browser. Reconnect the original shop identity using its linked
+              email.
             </p>
             {user ? (
               <p className="text-xs text-slate-700">
@@ -190,15 +188,14 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
           </div>
         ) : (
           <>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Add an email and password to this device's existing Firebase identity. That keeps
-              ownership of <strong>{shop?.name}</strong> and lets you sign in on another device.
-              Your shop PIN is preserved. After logging out, use email and password to sign back in.
+            <p className="text-xs leading-relaxed text-slate-600">
+              Link an email to the original Firebase identity for account recovery on this device.
+              The shop PIN is preserved. CountUp does not offer email shop sign-in or move shop
+              records to another device.
             </p>
-            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 p-3 rounded-xl">
-              Choose an email and password for this shop. Passwords and recovery keys from earlier
-              accounts are not transferred automatically. Email/password sign-in must be enabled by
-              the project administrator.
+            <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Keep this browser's shop data and sync before changing devices or clearing browser
+              storage. Email linking is not a backup or a new-device restore.
             </p>
             <form onSubmit={submit} className="space-y-3">
               <label className="block text-xs font-bold text-slate-700">
@@ -239,7 +236,7 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 disabled={busy || !isOnline || pendingSyncCount > 0}
                 className="w-full min-h-[44px] rounded-xl bg-emerald-800 text-white text-xs font-bold disabled:opacity-50"
               >
-                {busy ? 'Enabling…' : 'Enable email access'}
+                {busy ? 'Enabling…' : 'Enable recovery'}
               </button>
               {(!isOnline || pendingSyncCount > 0) && (
                 <p className="text-xs text-amber-800">Connect and sync pending entries first.</p>
@@ -252,151 +249,6 @@ export const AccountAccess: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             {error}
           </p>
         )}
-      </div>
-    </div>
-  );
-};
-
-export const EmailLoginPanel: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { loginWithEmail, cancelEmailLogin, selectEmailShop, resetEmailPassword } = useShop();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [shops, setShops] = useState<Shop[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-  const login = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const owned = await loginWithEmail(email, password);
-      if (owned.length === 1) selectEmailShop(owned[0]);
-      else setShops(owned);
-    } catch (err) {
-      setError(accountError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const recover = async () => {
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      await resetEmailPassword(email);
-      setMessage('If this email has an account, check your inbox for a reset link.');
-    } catch (err) {
-      setError(accountError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const back = async () => {
-    setBusy(true);
-    setError('');
-    try {
-      await cancelEmailLogin();
-      onBack();
-    } catch (err) {
-      setError(accountError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 p-4 sm:p-6 flex justify-center items-start">
-      <div className="w-full max-w-md space-y-5">
-        <button
-          onClick={() => void back()}
-          disabled={busy}
-          className="min-h-[44px] text-xs font-bold text-emerald-800 flex gap-2 items-center"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          Back to phone &amp; PIN
-        </button>
-        <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-5 sm:p-6 space-y-4">
-          <BrandMark />
-          <div className="text-center">
-            <h1 className="text-xl font-black text-slate-900">Email account</h1>
-            <p className="text-xs text-slate-500 mt-1">
-              Sign in to a CountUp shop with email access enabled.
-            </p>
-          </div>
-          {shops.length ? (
-            <div className="space-y-2">
-              <p className="text-xs font-bold text-slate-700">Choose your shop</p>
-              {shops.map((shop) => (
-                <button
-                  key={shop.id}
-                  onClick={() => selectEmailShop(shop)}
-                  className="w-full min-h-[48px] rounded-xl border border-slate-200 text-left px-3 text-sm font-bold text-slate-800"
-                >
-                  {shop.name}{' '}
-                  <span className="block text-xs font-normal text-slate-500">
-                    {shop.ownerPhone}
-                  </span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <form onSubmit={login} className="space-y-3">
-              <label className="block text-xs font-bold text-slate-700">
-                Email
-                <input
-                  type="email"
-                  autoComplete="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-slate-300 p-3 text-sm"
-                />
-              </label>
-              <label className="block text-xs font-bold text-slate-700">
-                Password
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-slate-300 p-3 text-sm"
-                />
-              </label>
-              <button
-                disabled={busy}
-                className="w-full min-h-[48px] rounded-xl bg-emerald-800 text-white text-sm font-bold disabled:opacity-50"
-              >
-                {busy ? 'Connecting…' : 'Sign in'}
-              </button>
-              <button
-                type="button"
-                onClick={() => void recover()}
-                disabled={busy}
-                className="w-full min-h-[44px] flex justify-center items-center gap-2 text-xs font-bold text-emerald-800"
-              >
-                <KeyRound className="w-4 h-4" />
-                Forgot password?
-              </button>
-            </form>
-          )}
-          {error && (
-            <p role="alert" className="text-xs text-rose-800 bg-rose-50 rounded-xl p-3">
-              {error}
-            </p>
-          )}
-          {message && (
-            <p role="status" className="text-xs text-emerald-800 bg-emerald-50 rounded-xl p-3">
-              {message}
-            </p>
-          )}
-          <p className="text-[11px] text-slate-500">
-            Use the email and password enabled for this shop. Passwords and recovery keys from
-            earlier accounts are not transferred automatically.
-          </p>
-        </div>
       </div>
     </div>
   );
