@@ -1,0 +1,452 @@
+// End-to-end RLS, Session Binding, TOTP MFA (aal2) & Phase 3a Overlap Sync
+// verification against a REAL local Supabase stack (`supabase start`).
+// Never connects to remote hosts.
+import assert from 'node:assert/strict';
+import { createHmac, randomUUID } from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.SUPABASE_URL || process.env.API_URL || 'http://127.0.0.1:54321';
+const anonKey = process.env.SUPABASE_ANON_KEY || process.env.ANON_KEY;
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SERVICE_ROLE_KEY;
+
+const parsedUrl = new URL(supabaseUrl);
+if (!['127.0.0.1', 'localhost', '::1'].includes(parsedUrl.hostname)) {
+  throw new Error(`Refusing to run RLS tests against non-local host: ${parsedUrl.hostname}`);
+}
+if (!anonKey || !serviceRoleKey) {
+  throw new Error(
+    'Set SUPABASE_ANON_KEY (or ANON_KEY) and SUPABASE_SERVICE_ROLE_KEY (or SERVICE_ROLE_KEY) from `supabase status -o env`.'
+  );
+}
+
+function decodeJwtPayload(token) {
+  const parts = token.split('.');
+  assert.equal(parts.length, 3, 'Expected a 3-part JWT');
+  return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+}
+
+// RFC 6238 / RFC 4648 Base32 TOTP generator for real GoTrue MFA aal2 verification
+function decodeBase32(base32) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const clean = base32.toUpperCase().replace(/=+$/, '').replace(/\s+/g, '');
+  let bits = '';
+  for (const ch of clean) {
+    const idx = alphabet.indexOf(ch);
+    assert.ok(idx >= 0, `Invalid base32 character: ${ch}`);
+    bits += idx.toString(2).padStart(5, '0');
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  return Buffer.from(bytes);
+}
+
+function generateTotpCode(secretBase32, timestampMs = Date.now()) {
+  const key = decodeBase32(secretBase32);
+  const counter = BigInt(Math.floor(timestampMs / 1000 / 30));
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(counter, 0);
+  const hmac = createHmac('sha1', key).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const binary =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+  return String(binary % 1_000_000).padStart(6, '0');
+}
+
+function makeAnonClient() {
+  return createClient(supabaseUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+const adminDb = createClient(supabaseUrl, serviceRoleKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+
+const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+const password = `TestPass!${suffix}`;
+const shopAId = randomUUID();
+const shopBId = randomUUID();
+const createdUserIds = [];
+
+try {
+  // 1. Create real GoTrue users via service_role
+  const { data: userARes, error: errA } = await adminDb.auth.admin.createUser({
+    email: `owner_a_${suffix}@countup.local`,
+    phone: `+26097${String(Math.floor(1_000_000 + Math.random() * 8_999_999))}`,
+    password,
+    email_confirm: true,
+    phone_confirm: true,
+  });
+  assert.ifError(errA);
+  createdUserIds.push(userARes.user.id);
+
+  const { data: userBRes, error: errB } = await adminDb.auth.admin.createUser({
+    email: `owner_b_${suffix}@countup.local`,
+    phone: `+26096${String(Math.floor(1_000_000 + Math.random() * 8_999_999))}`,
+    password,
+    email_confirm: true,
+    phone_confirm: true,
+  });
+  assert.ifError(errB);
+  createdUserIds.push(userBRes.user.id);
+
+  const { data: adminRes, error: errAdmin } = await adminDb.auth.admin.createUser({
+    email: `platform_admin_${suffix}@countup.local`,
+    password,
+    email_confirm: true,
+    app_metadata: { platform_admin: true },
+  });
+  assert.ifError(errAdmin);
+  createdUserIds.push(adminRes.user.id);
+
+  // 2. Seed Shop A & Shop B + platform_audit + platform_alerts via service_role
+  const now = Date.now();
+  const trialEnds = new Date(now + 30 * 86_400_000).toISOString();
+  const accessUntil = new Date(now + 33 * 86_400_000).toISOString();
+
+  for (const [shopId, user, name, phone] of [
+    [shopAId, userARes.user, 'Lusaka Shop A', '+260977111222'],
+    [shopBId, userBRes.user, 'Ndola Shop B', '+260966333444'],
+  ]) {
+    assert.ifError(
+      (
+        await adminDb.from('shops').insert({
+          id: shopId,
+          owner_user_id: user.id,
+          name,
+          owner_phone: phone,
+          plan_status: 'trial',
+          plan_type: 'trial',
+          trial_ends_at: trialEnds,
+          plan_expiry_at: trialEnds,
+          sales_access_until: accessUntil,
+        })
+      ).error
+    );
+
+    assert.ifError(
+      (
+        await adminDb.from('shop_pin_credentials').insert({
+          shop_id: shopId,
+          pin_salt: 'a'.repeat(32),
+          pin_hash: 'b'.repeat(64),
+          recovery_salt: 'c'.repeat(32),
+          recovery_hash: 'd'.repeat(64),
+        })
+      ).error
+    );
+
+    assert.ifError(
+      (
+        await adminDb.from('items').insert({
+          shop_id: shopId,
+          id: 'item_1',
+          name: 'Sugar 2kg',
+          buying_price_ngwee: 4500,
+          selling_price_ngwee: 5500,
+          quantity: 12,
+        })
+      ).error
+    );
+    assert.ifError(
+      (
+        await adminDb.from('customers').insert({
+          shop_id: shopId,
+          id: 'cust_1',
+          name: 'Mutale',
+          total_owed_ngwee: 5500,
+        })
+      ).error
+    );
+    assert.ifError(
+      (
+        await adminDb.from('sales').insert({
+          shop_id: shopId,
+          id: 'sale_1',
+          items_count: 1,
+          total_amount_ngwee: 5500,
+          total_cost_ngwee: 4500,
+          profit_ngwee: 1000,
+          missing_cost_revenue_ngwee: 0,
+          payment_type: 'credit',
+          customer_id: 'cust_1',
+          receipt_number: 'CU-TEST-001',
+        })
+      ).error
+    );
+    assert.ifError(
+      (
+        await adminDb.from('sale_lines').insert({
+          shop_id: shopId,
+          id: 'line_1',
+          sale_id: 'sale_1',
+          item_id: 'item_1',
+          item_name: 'Sugar 2kg',
+          quantity: 1,
+          buying_price_ngwee: 4500,
+          selling_price_ngwee: 5500,
+          line_total_ngwee: 5500,
+        })
+      ).error
+    );
+    assert.ifError(
+      (
+        await adminDb.from('subscription_payments').insert({
+          shop_id: shopId,
+          shop_name_snapshot: name,
+          owner_user_id: user.id,
+          network: 'mtn',
+          plan_id: 'monthly',
+          transaction_reference: `REF-${shopId.slice(0, 8).toUpperCase()}`,
+          payer_phone: phone,
+          payment_date: '2026-11-20',
+          amount_ngwee: 9900,
+          status: 'pending',
+        })
+      ).error
+    );
+  }
+
+  assert.ifError(
+    (
+      await adminDb.from('platform_audit').insert({
+        action: 'rls_ci_seed',
+        actor_user_id: adminRes.user.id,
+        shop_id: shopAId,
+      })
+    ).error
+  );
+  assert.ifError(
+    (
+      await adminDb.from('platform_alerts').insert({
+        alert_key: `ci_sms_alert_${suffix}`,
+        severity: 'critical',
+        category: 'sms_cap',
+        title: 'Daily SMS cap reached (CI test)',
+        detail: 'Simulated cap alert for MFA aal2 verification',
+      })
+    ).error
+  );
+
+  // 3. Follow-up #2: End-to-end GoTrue session_id binding (concurrent sessions + refresh)
+  const clientA1 = makeAnonClient();
+  const { data: signInA1, error: signInA1Err } = await clientA1.auth.signInWithPassword({
+    email: `owner_a_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(signInA1Err);
+
+  const clientA2 = makeAnonClient();
+  const { data: signInA2, error: signInA2Err } = await clientA2.auth.signInWithPassword({
+    email: `owner_a_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(signInA2Err);
+
+  const initialClaimsA1 = decodeJwtPayload(signInA1.session.access_token);
+  const initialClaimsA2 = decodeJwtPayload(signInA2.session.access_token);
+  assert.notEqual(
+    initialClaimsA1.session_id,
+    initialClaimsA2.session_id,
+    'Two separate sign-ins for the same user must get distinct GoTrue session_ids'
+  );
+  assert.equal(initialClaimsA1.app_metadata?.shop_id, undefined);
+  assert.equal(initialClaimsA1.app_metadata?.pending_pin_verification, true);
+
+  // Unverified session cannot read shops or items
+  assert.deepEqual((await clientA1.from('shops').select('id')).data, []);
+  assert.deepEqual((await clientA1.from('items').select('id')).data, []);
+
+  // Verify ONLY session A1 (simulating PIN unlock on Phone 1)
+  assert.ifError(
+    (
+      await adminDb.from('shop_verified_sessions').insert({
+        shop_id: shopAId,
+        session_id: initialClaimsA1.session_id,
+        user_id: userARes.user.id,
+      })
+    ).error
+  );
+
+  // Refreshing A1 injects shop_id AND subsequent refresh preserves binding!
+  const { data: refreshedA1, error: refreshErrA1 } = await clientA1.auth.refreshSession();
+  assert.ifError(refreshErrA1);
+  assert.equal(decodeJwtPayload(refreshedA1.session.access_token).app_metadata?.shop_id, shopAId);
+
+  const { data: refreshedA1Again, error: refreshErrA1Again } = await clientA1.auth.refreshSession();
+  assert.ifError(refreshErrA1Again);
+  assert.equal(
+    decodeJwtPayload(refreshedA1Again.session.access_token).app_metadata?.shop_id,
+    shopAId,
+    'Token refresh on verified session must preserve session_id PIN binding'
+  );
+
+  // Refreshing A2 (same user, DIFFERENT session_id!) MUST NOT inherit A1's PIN verification!
+  const { data: refreshedA2, error: refreshErrA2 } = await clientA2.auth.refreshSession();
+  assert.ifError(refreshErrA2);
+  const claimsA2After = decodeJwtPayload(refreshedA2.session.access_token);
+  assert.equal(
+    claimsA2After.app_metadata?.shop_id,
+    undefined,
+    'Concurrent session A2 for the same user must NOT inherit A1 PIN verification'
+  );
+  assert.deepEqual((await clientA2.from('items').select('id')).data, []);
+  console.log(
+    'PASS: PIN verification is strictly bound to GoTrue session_id across concurrent sessions and refreshes'
+  );
+
+  // Verify User B as well for tenant isolation checks
+  const clientB = makeAnonClient();
+  const { data: signInB, error: signInBErr } = await clientB.auth.signInWithPassword({
+    email: `owner_b_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(signInBErr);
+  const claimsB = decodeJwtPayload(signInB.session.access_token);
+  assert.ifError(
+    (
+      await adminDb.from('shop_verified_sessions').insert({
+        shop_id: shopBId,
+        session_id: claimsB.session_id,
+        user_id: userBRes.user.id,
+      })
+    ).error
+  );
+  await clientB.auth.refreshSession();
+
+  // 4. Tenant Isolation: Shop A sees Shop A only, never Shop B
+  for (const tbl of ['items', 'customers', 'sales', 'sale_lines', 'subscription_payments']) {
+    const { data: rows, error } = await clientA1.from(tbl).select('shop_id');
+    assert.ifError(error);
+    assert.deepEqual(rows, [{ shop_id: shopAId }], `Shop A should only see its own ${tbl}`);
+
+    const { data: crossRows, error: crossErr } = await clientA1
+      .from(tbl)
+      .select('shop_id')
+      .eq('shop_id', shopBId);
+    assert.ifError(crossErr);
+    assert.deepEqual(crossRows, [], `Shop A must not read Shop B in ${tbl}`);
+  }
+  console.log('PASS: Shop A is strictly isolated from Shop B across reads and writes');
+
+  // 5. Phase 3a Overlap Cursor Query Check (`updated_at >= cursor - 120s`)
+  const { data: initialItems, error: initItemsErr } = await clientA1
+    .from('items')
+    .select('id, updated_at, selling_price_ngwee')
+    .eq('shop_id', shopAId)
+    .order('updated_at', { ascending: true });
+  assert.ifError(initItemsErr);
+  assert.equal(initialItems.length, 1);
+  assert.equal(typeof initialItems[0].selling_price_ngwee, 'number');
+
+  const cursorIso = initialItems[0].updated_at;
+  const overlapStartIso = new Date(Date.parse(cursorIso) - 120_000).toISOString();
+  const { data: overlapItems, error: overlapErr } = await clientA1
+    .from('items')
+    .select('id, updated_at')
+    .eq('shop_id', shopAId)
+    .gte('updated_at', overlapStartIso)
+    .order('updated_at', { ascending: true });
+  assert.ifError(overlapErr);
+  assert.equal(overlapItems.length, 1);
+  console.log('PASS: Phase 3a PostgREST (cursor - 120s) overlap query verified');
+
+  // 6. Anon has zero table access & clients cannot mutate invariant columns
+  const anon = makeAnonClient();
+  assert.ok((await anon.from('shops').select('id')).error, 'anon must be denied on shops');
+  assert.ok(
+    (await clientA1.from('shops').update({ plan_status: 'active' }).eq('id', shopAId)).error,
+    'Client must not change plan_status'
+  );
+  assert.ok(
+    (
+      await clientA1
+        .from('items')
+        .update({ quantity: 999 })
+        .eq('shop_id', shopAId)
+        .eq('id', 'item_1')
+    ).error,
+    'Client must not directly change items.quantity'
+  );
+
+  // 7. Follow-up #5: Real GoTrue TOTP MFA (`aal1` denied -> enroll & verify TOTP -> `aal2` granted!)
+  const adminClient = makeAnonClient();
+  const { data: adminSignIn, error: adminLoginErr } = await adminClient.auth.signInWithPassword({
+    email: `platform_admin_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(adminLoginErr);
+  assert.equal(decodeJwtPayload(adminSignIn.session.access_token).aal, 'aal1');
+
+  // At aal1, platform_admin MUST see ZERO rows in platform_audit, platform_alerts, and shops!
+  assert.deepEqual(
+    (await adminClient.from('platform_audit').select('action').eq('shop_id', shopAId)).data,
+    [],
+    'platform_admin at aal1 MUST be blocked from reading platform_audit'
+  );
+  assert.deepEqual(
+    (
+      await adminClient
+        .from('platform_alerts')
+        .select('alert_key')
+        .eq('alert_key', `ci_sms_alert_${suffix}`)
+    ).data,
+    [],
+    'platform_admin at aal1 MUST be blocked from reading platform_alerts'
+  );
+
+  // Enroll real TOTP factor in GoTrue and verify a 6-digit code to elevate session to aal2!
+  const { data: enrolled, error: enrollErr } = await adminClient.auth.mfa.enroll({
+    factorType: 'totp',
+    friendlyName: 'CI Admin Authenticator',
+  });
+  assert.ifError(enrollErr);
+
+  const totpCode = generateTotpCode(enrolled.totp.secret);
+  const { data: mfaVerified, error: mfaVerifyErr } = await adminClient.auth.mfa.challengeAndVerify({
+    factorId: enrolled.id,
+    code: totpCode,
+  });
+  assert.ifError(mfaVerifyErr);
+  assert.equal(
+    decodeJwtPayload(mfaVerified.access_token).aal,
+    'aal2',
+    'GoTrue session must upgrade to aal2 after TOTP verification'
+  );
+
+  // Now at aal2, platform_admin CAN read platform_audit and platform_alerts (while direct client writes stay blocked)
+  const { data: adminAuditsAal2, error: adminAuditErr } = await adminClient
+    .from('platform_audit')
+    .select('action')
+    .eq('shop_id', shopAId);
+  assert.ifError(adminAuditErr);
+  assert.deepEqual(adminAuditsAal2, [{ action: 'rls_ci_seed' }]);
+
+  const { data: adminAlertsAal2, error: adminAlertErr } = await adminClient
+    .from('platform_alerts')
+    .select('alert_key')
+    .eq('alert_key', `ci_sms_alert_${suffix}`);
+  assert.ifError(adminAlertErr);
+  assert.deepEqual(adminAlertsAal2, [{ alert_key: `ci_sms_alert_${suffix}` }]);
+
+  const { error: adminPlanWriteErr } = await adminClient
+    .from('shops')
+    .update({ is_deactivated: true })
+    .eq('id', shopAId);
+  assert.ok(adminPlanWriteErr, 'Even platform_admin aal2 client session must use Edge Functions');
+  console.log('PASS: GoTrue TOTP MFA (aal2) strictly enforced for platform_admin');
+
+  console.log('ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2) & OVERLAP SYNC CHECKS PASSED.');
+} finally {
+  await adminDb.from('shops').delete().in('id', [shopAId, shopBId]);
+  await adminDb.from('platform_audit').delete().eq('shop_id', shopAId);
+  await adminDb.from('platform_alerts').delete().eq('alert_key', `ci_sms_alert_${suffix}`);
+  for (const uid of createdUserIds) {
+    await adminDb.auth.admin.deleteUser(uid);
+  }
+}

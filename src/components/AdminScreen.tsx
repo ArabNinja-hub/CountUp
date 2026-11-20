@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Ban,
   CalendarPlus,
   CheckCircle,
   Clock3,
   CreditCard,
+  KeyRound,
   Search,
   ShieldCheck,
 } from 'lucide-react';
@@ -32,6 +34,9 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     shop,
     adminExtendShop,
     adminToggleDeactivate,
+    adminResetPinLockout,
+    adminInitiatePinReset,
+    platformAlerts,
     subscriptionPayments,
     reviewSubscriptionPayment,
   } = useShop();
@@ -44,6 +49,11 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
   const [paymentSearch, setPaymentSearch] = useState('');
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [resettingLockoutShopId, setResettingLockoutShopId] = useState<string | null>(null);
+  const [securityActionMode, setSecurityActionMode] = useState<'lockout' | 'pin_reset_72h'>(
+    'lockout'
+  );
+  const [identityCheckNote, setIdentityCheckNote] = useState('');
   const [isUpdating, setIsUpdating] = useState<string | null>(null);
 
   const shopList = useMemo(() => {
@@ -203,6 +213,57 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     }
   };
 
+  const handleResetPinLockout = async (target: Shop) => {
+    const cleanNote = identityCheckNote.trim();
+    if (cleanNote.length < 10) {
+      notify('Enter an identity check note of at least 10 characters', { kind: 'error' });
+      return;
+    }
+    setIsUpdating(target.id);
+    try {
+      await adminResetPinLockout(target.id, cleanNote);
+      setResettingLockoutShopId(null);
+      setIdentityCheckNote('');
+      notify(`PIN lockout reset for ${target.name}`, {
+        kind: 'success',
+        detail:
+          'Recorded in platform audit. The shop’s existing device will see a security alert on next sync.',
+      });
+    } catch (error) {
+      notify('Could not reset PIN lockout', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsUpdating(null);
+    }
+  };
+
+  const handleInitiatePinReset72h = async (target: Shop) => {
+    const cleanNote = identityCheckNote.trim();
+    if (cleanNote.length < 10) {
+      notify('Enter an identity check note of at least 10 characters', { kind: 'error' });
+      return;
+    }
+    setIsUpdating(target.id);
+    try {
+      const { availableAt } = await adminInitiatePinReset(target.id, cleanNote);
+      setResettingLockoutShopId(null);
+      setIdentityCheckNote('');
+      notify(`72-hour PIN reset initiated for ${target.name}`, {
+        kind: 'success',
+        detail: `Warning SMS sent to ${target.ownerPhone} and device notice posted. Owner can set a new PIN after ${new Date(availableAt).toLocaleString()}.`,
+      });
+    } catch (error) {
+      notify('Could not initiate 72-hour PIN reset', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsUpdating(null);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-5 px-3 py-4 sm:px-6">
       <header className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
@@ -211,7 +272,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
             <ShieldCheck className="h-5 w-5 text-emerald-800" /> Admin console
           </h1>
           <p className="mt-1 text-xs text-slate-600">
-            Private platform administration · server-verified access
+            Private platform administration · server-verified MFA (aal2) access
           </p>
         </div>
         <button
@@ -221,6 +282,34 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
           {exitLabel}
         </button>
       </header>
+
+      {platformAlerts.length > 0 && (
+        <section aria-label="System security and SMS alerts" className="space-y-2">
+          {platformAlerts.map((alert) => (
+            <div
+              key={alert.id}
+              role="alert"
+              className={`rounded-xl border p-3.5 text-xs ${
+                alert.severity === 'critical'
+                  ? 'border-rose-300 bg-rose-50 text-rose-950'
+                  : 'border-amber-300 bg-amber-50 text-amber-950'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  className={`mt-0.5 h-4 w-4 shrink-0 ${
+                    alert.severity === 'critical' ? 'text-rose-700' : 'text-amber-700'
+                  }`}
+                />
+                <div className="space-y-0.5">
+                  <p className="font-extrabold">{alert.title}</p>
+                  <p>{alert.detail}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section
         aria-label="Platform statistics"
@@ -466,7 +555,45 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
                         {info.canRecordSales ? 'allowed' : 'locked'}
                       </p>
                     </div>
-                    <div className="flex shrink-0 gap-2">
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={isUpdating === entry.id}
+                        onClick={() => {
+                          if (
+                            resettingLockoutShopId === entry.id &&
+                            securityActionMode === 'lockout'
+                          ) {
+                            setResettingLockoutShopId(null);
+                          } else {
+                            setResettingLockoutShopId(entry.id);
+                            setSecurityActionMode('lockout');
+                          }
+                          setIdentityCheckNote('');
+                        }}
+                        className="flex min-h-[40px] items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-bold text-amber-950 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        <KeyRound className="h-4 w-4" /> Reset PIN lockout
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isUpdating === entry.id}
+                        onClick={() => {
+                          if (
+                            resettingLockoutShopId === entry.id &&
+                            securityActionMode === 'pin_reset_72h'
+                          ) {
+                            setResettingLockoutShopId(null);
+                          } else {
+                            setResettingLockoutShopId(entry.id);
+                            setSecurityActionMode('pin_reset_72h');
+                          }
+                          setIdentityCheckNote('');
+                        }}
+                        className="flex min-h-[40px] items-center gap-1 rounded-lg border border-rose-300 bg-rose-50 px-3 text-xs font-bold text-rose-950 hover:bg-rose-100 disabled:opacity-50"
+                      >
+                        <Clock3 className="h-4 w-4" /> Approve 72h PIN reset
+                      </button>
                       <button
                         type="button"
                         disabled={isUpdating === entry.id}
@@ -490,6 +617,52 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
                       </button>
                     </div>
                   </div>
+                  {resettingLockoutShopId === entry.id && (
+                    <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Identity check note (required, 10–500 characters)
+                        <input
+                          value={identityCheckNote}
+                          onChange={(event) => setIdentityCheckNote(event.target.value)}
+                          maxLength={500}
+                          className="mt-1 min-h-[42px] w-full rounded-lg border border-slate-300 px-3 text-sm font-normal"
+                          placeholder="e.g., Called owner on verified phone and confirmed shop name & recent stock items"
+                        />
+                      </label>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[11px] text-slate-500">
+                          {securityActionMode === 'pin_reset_72h'
+                            ? 'Starts a 72-hour waiting period, sends an SMS warning to the owner, and posts an urgent alert on the existing shop phone.'
+                            : 'Saved to platform audit and notifies the shop’s existing device on next sync.'}
+                        </p>
+                        {securityActionMode === 'pin_reset_72h' ? (
+                          <button
+                            type="button"
+                            disabled={
+                              isUpdating === entry.id || identityCheckNote.trim().length < 10
+                            }
+                            onClick={() => void handleInitiatePinReset72h(entry)}
+                            className="min-h-[40px] rounded-lg bg-rose-900 px-4 text-xs font-bold text-white hover:bg-rose-950 disabled:opacity-50"
+                          >
+                            {isUpdating === entry.id
+                              ? 'Initiating 72h reset…'
+                              : 'Confirm 72-hour PIN reset'}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={
+                              isUpdating === entry.id || identityCheckNote.trim().length < 10
+                            }
+                            onClick={() => void handleResetPinLockout(entry)}
+                            className="min-h-[40px] rounded-lg bg-amber-900 px-4 text-xs font-bold text-white hover:bg-amber-950 disabled:opacity-50"
+                          >
+                            {isUpdating === entry.id ? 'Resetting…' : 'Confirm lockout reset'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </article>
               );
             })}
