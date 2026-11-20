@@ -645,9 +645,10 @@ try {
   // 9. Phase 3c: import_shop_backup (dry-run, decimal edge cases, empty-shop restore,
   //    duplicate idempotency, non-empty shop guard, platform_audit, reconciliation),
   //    receive-time 72h offline window, and discard-poison audit!
+  const phoneC = `+26095${String(Math.floor(1_000_000 + Math.random() * 8_999_999))}`;
   const { data: userCRes, error: errC } = await adminDb.auth.admin.createUser({
     email: `owner_c_${suffix}@countup.local`,
-    phone: `+26095${String(Math.floor(1_000_000 + Math.random() * 8_999_999))}`,
+    phone: phoneC,
     password,
     email_confirm: true,
     phone_confirm: true,
@@ -656,18 +657,30 @@ try {
   createdUserIds.push(userCRes.user.id);
 
   const nowPlus30d = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  const nowPlus33d = new Date(Date.now() + 33 * 86_400_000).toISOString();
   assert.ifError(
     (
       await adminDb.from('shops').insert({
         id: shopCId,
         owner_user_id: userCRes.user.id,
         name: 'Phase 3c Restore Shop',
-        owner_phone: userCRes.user.phone,
+        owner_phone: phoneC,
         plan_status: 'active',
         plan_type: 'monthly',
         trial_ends_at: nowPlus30d,
         plan_expiry_at: nowPlus30d,
-        sales_access_until: nowPlus30d,
+        sales_access_until: nowPlus33d,
+      })
+    ).error
+  );
+  assert.ifError(
+    (
+      await adminDb.from('shop_pin_credentials').insert({
+        shop_id: shopCId,
+        pin_salt: 'a'.repeat(32),
+        pin_hash: 'b'.repeat(64),
+        recovery_salt: 'c'.repeat(32),
+        recovery_hash: 'd'.repeat(64),
       })
     ).error
   );
