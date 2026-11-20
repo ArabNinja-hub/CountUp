@@ -1542,6 +1542,7 @@ RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
+SET statement_timeout = '60s'
 AS $$
 DECLARE
   v_shop public.shops;
@@ -2559,6 +2560,7 @@ RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
+SET statement_timeout = '60s'
 AS $$
 DECLARE
   v_shop public.shops;

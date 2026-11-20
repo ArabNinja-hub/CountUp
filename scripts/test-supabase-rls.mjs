@@ -1303,6 +1303,13 @@ try {
   console.log(
     'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC, PHASE 3B, PHASE 3C, PRE-4 & PHASE 4 CHECKS PASSED.'
   );
+} catch (err) {
+  const details =
+    err instanceof Error ? `${err.name}: ${err.message}\n${err.stack || ''}` : JSON.stringify(err);
+  console.error(
+    `::error title=Supabase E2E Failure::${details.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`
+  );
+  throw err;
 } finally {
   await adminDb.from('shops').delete().in('id', [shopAId, shopBId, shopCId, shopDId]);
   await adminDb.from('platform_audit').delete().in('shop_id', [shopAId, shopCId, shopDId]);
