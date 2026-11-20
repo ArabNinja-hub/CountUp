@@ -1431,20 +1431,29 @@ BEGIN
   END;
 
   -- Set-based customer credit balance computation (credit sales - repayments)
+  WITH credit_totals AS (
+    SELECT s.customer_id, SUM(s.total_amount_ngwee) AS credit_ngwee
+      FROM pg_temp.tmp_backup_sales s
+     WHERE s.payment_type = 'credit'
+       AND NOT s.is_deleted
+       AND s.customer_id IS NOT NULL
+     GROUP BY s.customer_id
+  ),
+  repayment_totals AS (
+    SELECT cp.customer_id, SUM(cp.amount_ngwee) AS repaid_ngwee
+      FROM pg_temp.tmp_backup_payments cp
+     GROUP BY cp.customer_id
+  )
   UPDATE pg_temp.tmp_backup_customers c
      SET computed_owed_ngwee =
-       COALESCE((
-         SELECT SUM(s.total_amount_ngwee)
-           FROM pg_temp.tmp_backup_sales s
-          WHERE s.customer_id = c.id
-            AND s.payment_type = 'credit'
-            AND NOT s.is_deleted
-       ), 0)
-       - COALESCE((
-         SELECT SUM(cp.amount_ngwee)
-           FROM pg_temp.tmp_backup_payments cp
-          WHERE cp.customer_id = c.id
-       ), 0);
+       COALESCE(agg.credit_ngwee, 0) - COALESCE(agg.repaid_ngwee, 0)
+    FROM (
+      SELECT c2.id, ct.credit_ngwee, rt.repaid_ngwee
+        FROM pg_temp.tmp_backup_customers c2
+        LEFT JOIN credit_totals ct ON ct.customer_id = c2.id
+        LEFT JOIN repayment_totals rt ON rt.customer_id = c2.id
+    ) agg
+   WHERE c.id = agg.id;
 
   -- 5. Expenses
   IF EXISTS (
