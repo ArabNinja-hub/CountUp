@@ -1194,4 +1194,185 @@ describe('Phase 1 — Postgres Schema, Constraints, Triggers & Row Level Securit
     expect(aal2Results.audits).toBeGreaterThanOrEqual(1);
     expect(aal2Results.alerts).toBe(1);
   });
+
+  it('audits EVERY public function across Phases 1–3c: no EXECUTE for anon/PUBLIC, empty search_path on SECURITY DEFINER, and strict p_shop_id session binding', async () => {
+    const audit = await ctx.db.query<{
+      proname: string;
+      prosecdef: boolean;
+      proconfig: string[] | null;
+      args: string;
+      anon_exec: boolean;
+      public_exec: boolean;
+      auth_exec: boolean;
+      service_exec: boolean;
+    }>(
+      `SELECT
+         p.proname,
+         p.prosecdef,
+         p.proconfig,
+         pg_get_function_identity_arguments(p.oid) AS args,
+         has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_exec,
+         EXISTS (
+           SELECT 1
+             FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+            WHERE acl.grantee = 0
+              AND acl.privilege_type = 'EXECUTE'
+         ) AS public_exec,
+         has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth_exec,
+         has_function_privilege('service_role', p.oid, 'EXECUTE') AS service_exec
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public'
+       ORDER BY p.proname`
+    );
+
+    const expectedPhase3Functions = [
+      'lock_authorized_shop_for_write',
+      'record_sale',
+      'undo_sale',
+      'record_repayment',
+      'apply_stock_count',
+      'resolve_stock_conflict',
+      'upsert_shop_item',
+      'upsert_shop_customer',
+      'upsert_shop_expense',
+      'resolve_sync_conflict',
+      'apply_sync_batch',
+      'reconcile_shop_ledger',
+      'parse_strict_kwacha_to_ngwee',
+      'parse_strict_integer_ngwee',
+      'parse_strict_bounded_int',
+      'import_shop_backup',
+    ];
+
+    const foundNames = new Set(audit.rows.map((r) => r.proname));
+    expect(
+      audit.rows.length,
+      'no ambiguous duplicate function overloads should exist in public'
+    ).toBe(foundNames.size);
+    for (const expectedName of expectedPhase3Functions) {
+      expect(foundNames.has(expectedName), `expected public.${expectedName} to exist`).toBe(true);
+    }
+
+    for (const fn of audit.rows) {
+      expect(fn.anon_exec, `anon must NOT have EXECUTE on public.${fn.proname}`).toBe(false);
+      expect(fn.public_exec, `PUBLIC must NOT have EXECUTE on public.${fn.proname}`).toBe(false);
+      if (fn.prosecdef) {
+        expect(
+          fn.proconfig?.some((c) => c === 'search_path=""' || c === "search_path=''"),
+          `SECURITY DEFINER public.${fn.proname} must set search_path = ''`
+        ).toBe(true);
+      }
+    }
+
+    // Internal helper functions must NOT be callable directly by authenticated clients
+    for (const internalHelper of [
+      'lock_authorized_shop_for_write',
+      'parse_strict_kwacha_to_ngwee',
+      'parse_strict_integer_ngwee',
+      'parse_strict_bounded_int',
+    ]) {
+      const row = audit.rows.find((r) => r.proname === internalHelper);
+      expect(
+        row?.auth_exec,
+        `authenticated must NOT EXECUTE internal helper ${internalHelper}`
+      ).toBe(false);
+    }
+
+    // Cross-shop p_shop_id check: verifiedOwnerA (verified for shopAId) MUST be denied on every
+    // p_shop_id RPC when passing shopBId, and an OTP-only session (no verified shop_id)
+    // MUST be denied even when passing shopAId.
+    const verifiedOwnerA: TestIdentity = {
+      ...ownerA,
+    };
+    const otpOnlyOwnerA: TestIdentity = {
+      ...ownerA,
+      appMetadata: { pending_pin_verification: true },
+    };
+
+    console.info(
+      '[PRIVILEGE AUDIT]\n' +
+        audit.rows
+          .map(
+            (r) =>
+              `${r.proname}(${r.args}) | secdef=${r.prosecdef} | search_path=${JSON.stringify(r.proconfig ?? [])} | anon=${r.anon_exec} | public=${r.public_exec} | auth=${r.auth_exec} | service=${r.service_exec}`
+          )
+          .join('\n')
+    );
+
+    const crossShopCalls: Array<{ label: string; sql: string; params: unknown[] }> = [
+      {
+        label: 'record_sale',
+        sql: `SELECT public.record_sale($1::uuid, 'op_priv_1', 'sale_priv_1', '[]'::jsonb, 'cash', 'RCP-PRIV-1')`,
+        params: [shopBId],
+      },
+      {
+        label: 'undo_sale',
+        sql: `SELECT public.undo_sale($1::uuid, 'op_priv_2', 'sale_b_1')`,
+        params: [shopBId],
+      },
+      {
+        label: 'record_repayment',
+        sql: `SELECT public.record_repayment($1::uuid, 'op_priv_3', 'pay_priv_1', 'cust_b_1', 100)`,
+        params: [shopBId],
+      },
+      {
+        label: 'apply_stock_count',
+        sql: `SELECT public.apply_stock_count($1::uuid, 'op_priv_4', 'item_1', 'delta', 1)`,
+        params: [shopBId],
+      },
+      {
+        label: 'resolve_stock_conflict',
+        sql: `SELECT public.resolve_stock_conflict($1::uuid, 'op_priv_5', 'conf_1')`,
+        params: [shopBId],
+      },
+      {
+        label: 'upsert_shop_item',
+        sql: `SELECT public.upsert_shop_item($1::uuid, 'op_priv_6', 'item_priv', '{"name":"X","selling_price_ngwee":100}'::jsonb)`,
+        params: [shopBId],
+      },
+      {
+        label: 'upsert_shop_customer',
+        sql: `SELECT public.upsert_shop_customer($1::uuid, 'op_priv_7', 'cust_priv', '{"name":"Y"}'::jsonb)`,
+        params: [shopBId],
+      },
+      {
+        label: 'upsert_shop_expense',
+        sql: `SELECT public.upsert_shop_expense($1::uuid, 'op_priv_8', 'exp_priv', '{"category":"other","amount_ngwee":100}'::jsonb)`,
+        params: [shopBId],
+      },
+      {
+        label: 'resolve_sync_conflict',
+        sql: `SELECT public.resolve_sync_conflict($1::uuid, 'op_priv_9', 'discard-poison', '{}'::jsonb, NULL)`,
+        params: [shopBId],
+      },
+      {
+        label: 'apply_sync_batch',
+        sql: `SELECT public.apply_sync_batch($1::uuid, '[]'::jsonb)`,
+        params: [shopBId],
+      },
+      {
+        label: 'reconcile_shop_ledger',
+        sql: `SELECT public.reconcile_shop_ledger($1::uuid)`,
+        params: [shopBId],
+      },
+      {
+        label: 'import_shop_backup',
+        sql: `SELECT public.import_shop_backup($1::uuid, 'op_priv_12', repeat('a', 64), '{"format":"shopbook-backup-v1"}'::jsonb, true, false)`,
+        params: [shopBId],
+      },
+    ];
+
+    for (const check of crossShopCalls) {
+      await expect(
+        ctx.asUser(verifiedOwnerA, (tx) => tx.query(check.sql, check.params)),
+        `verifiedOwnerA must be denied cross-shop access on ${check.label}`
+      ).rejects.toThrow(/Verified shop session|Not authorized|permission denied|MFA/i);
+
+      await expect(
+        ctx.asUser(otpOnlyOwnerA, (tx) => tx.query(check.sql, [shopAId])),
+        `unverified OTP-only session must be denied on ${check.label}`
+      ).rejects.toThrow(/Verified shop session|Not authorized|permission denied|MFA/i);
+    }
+  });
 });

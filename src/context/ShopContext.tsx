@@ -16,7 +16,6 @@ import {
 } from '../types';
 import { translations, Translations } from '../i18n/translations';
 import { getSubscriptionInfo } from '../config/plans';
-import { db, testConnection } from '../firebase/config';
 import {
   extendShopSubscription,
   reviewManualSubscriptionPayment,
@@ -36,13 +35,21 @@ import {
 } from '../utils/sync';
 import {
   CreditBalanceConflict,
+  describeQueuedActionSummary,
   reviewableAction,
   SyncConflictReview,
   SyncReviewDecision,
   SyncResolutionAudit,
 } from '../services/syncReview';
 import { addKwacha, localDateKey, multiplyKwacha, toNgwee } from '../utils/money';
-import { prepareLegacyBackupImport, LegacyBackupImport } from '../services/backupImport';
+import {
+  computeBackupSha256Hex,
+  LegacyBackupImport,
+  PreparedShopBackup,
+  prepareLegacyBackupImport,
+  prepareShopBackupImport,
+  ShopBackupPreview,
+} from '../services/backupImport';
 import {
   acknowledgeShopSecurityNoticeOnServer,
   adminInitiateShopPinReset,
@@ -73,12 +80,18 @@ import {
 import {
   clearVersionedShopCache,
   createShopReadSyncCoordinator,
+  discardPoisonSyncActionOnServer,
   executeSyncBatchChunk,
+  fetchSubscriptionPaymentsFromServer,
+  getShopReadSyncOverrideForTests,
+  importShopBackupOnServer,
+  isPermanentPoisonSyncError,
   isTransientSupabaseSyncError,
   LedgerReconciliationReport,
   loadShopSyncResolutionHistoryFromServer,
   loadShopSyncReviewFromServer,
   PlatformAlertRow,
+  previewShopBackupOnServer,
   pullShopCursorSync,
   purgeLegacyKwachaCacheKeys,
   readAuthoritativeResolutionBase,
@@ -86,6 +99,7 @@ import {
   readVersionedActiveShop,
   reconcileShopLedger,
   resolveShopSyncReviewOnServer,
+  ShopDomainCacheSnapshot,
   SYNC_BATCH_CHUNK_SIZE,
   writeVersionedActiveShop,
   writeVersionedDomainCollection,
@@ -99,15 +113,33 @@ import {
   saveLocalPinRecord,
   verifyLocalPin,
 } from '../utils/pinLock';
-import {
-  doc,
-  collection,
-  onSnapshot,
-  query,
-  where,
-  runTransaction,
-  DocumentData,
-} from 'firebase/firestore';
+
+export type BlockedSyncState =
+  | { actionId: string; kind: 'payment' | 'void' }
+  | {
+      actionId: string;
+      kind: 'poison';
+      actionType: string;
+      summary: string;
+      reason: string;
+      queuedAt: string;
+    };
+
+export interface BackupPreviewOutcome {
+  prepared: PreparedShopBackup;
+  preview: ShopBackupPreview;
+  fileSha256: string;
+  shopHasExistingData: boolean;
+  alreadyImported: boolean;
+}
+
+export interface BackupRestoreOutcome {
+  status: 'imported' | 'duplicate';
+  idempotent: boolean;
+  alreadyImported: boolean;
+  preview: ShopBackupPreview;
+  imported: PreparedShopBackup;
+}
 
 export interface AppUser {
   uid: string;
@@ -193,6 +225,11 @@ interface ShopContextType {
   customers: Customer[];
   creditPayments: CreditPayment[];
   expenses: Expense[];
+  previewShopBackup: (raw: string) => Promise<BackupPreviewOutcome>;
+  restoreShopBackup: (
+    raw: string,
+    options?: { allowNonEmptyShop?: boolean; operationId?: string }
+  ) => Promise<BackupRestoreOutcome>;
   importLegacyBackup: (raw: string) => Promise<LegacyBackupImport>;
 
   // Actions
@@ -235,12 +272,13 @@ interface ShopContextType {
   pendingSyncCount: number;
   isSyncing: boolean;
   syncNow: () => Promise<void>;
-  blockedSync: { actionId: string; kind: 'payment' | 'void' } | null;
+  blockedSync: BlockedSyncState | null;
   loadSyncReview: (actionId: string) => Promise<SyncConflictReview>;
   resolveSyncReview: (
     review: SyncConflictReview,
     decision: SyncReviewDecision
   ) => Promise<'resolved' | 'already-processed'>;
+  discardBlockedSyncAction: (actionId: string) => Promise<void>;
   loadSyncResolutionHistory: () => Promise<SyncResolutionAudit[]>;
   lastOfflineNotice: string | null;
   clearOfflineNotice: () => void;
@@ -356,10 +394,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
   const needsShopAccountRecovery = Boolean(shop && !hasShopSession);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [blockedSync, setBlockedSync] = useState<{
-    actionId: string;
-    kind: 'payment' | 'void';
-  } | null>(null);
+  const [blockedSync, setBlockedSync] = useState<BlockedSyncState | null>(null);
   const [lastOfflineNotice, setLastOfflineNotice] = useState<string | null>(null);
 
   // Server-submitted subscription payments, scoped to the signed-in owner or platform administrator.
@@ -427,9 +462,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-
-    // Initial connection test
-    void testConnection();
 
     return () => {
       window.removeEventListener('online', handleOnline);
@@ -559,100 +591,120 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const shopId = shop.id;
     remoteRef.current = { shopId };
+    const root = `shops/${shopId}`;
 
-    // Phase 3a Supabase read path: initial load + `(cursor - 120s)` overlap-window
+    const applyShopSnapshot = (incoming: Shop | null) => {
+      if (!incoming || shopRef.current?.id !== shopId) return;
+      const data = sanitizeCachedShop(incoming);
+      if (data) {
+        setShop((prev) => ({
+          ...data,
+          securityNotice: data.securityNotice ?? prev?.securityNotice ?? null,
+          securityNoticeAt: data.securityNoticeAt ?? prev?.securityNoticeAt ?? null,
+        }));
+      }
+    };
+
+    const applyDomainSnapshot = (domain: ShopDomainCacheSnapshot) => {
+      if (shopRef.current?.id !== shopId) return;
+      const remoteItems = [...domain.items, ...domain.archivedItems];
+      const remoteSales = domain.sales.filter((s) => !s.isDeleted);
+      const remoteExpenses = domain.expenses.filter((e) => !e.isDeleted);
+
+      remoteRef.current.items = remoteItems;
+      remoteRef.current.sales = remoteSales;
+      remoteRef.current.customers = domain.customers;
+      remoteRef.current.payments = domain.creditPayments;
+      remoteRef.current.expenses = remoteExpenses;
+      remoteRef.current.movements = domain.stockMovements;
+      remoteRef.current.conflicts = domain.stockConflicts;
+
+      const mergedItems = reconcile(
+        remoteItems,
+        [...itemsRef.current, ...archivedItemsRef.current],
+        queueRef.current,
+        `${root}/items`
+      );
+      setItems(mergedItems.filter((item) => !item.isDeleted));
+      setArchivedItems(mergedItems.filter((item) => Boolean(item.isDeleted)));
+
+      const mergedMovements = reconcile(
+        domain.stockMovements,
+        movementsRef.current,
+        queueRef.current,
+        `${root}/stock_movements`
+      );
+      mergedMovements.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setStockMovements(mergedMovements);
+
+      setStockConflicts(
+        reconcile(
+          domain.stockConflicts,
+          conflictsRef.current,
+          queueRef.current,
+          `${root}/stock_conflicts`
+        )
+      );
+
+      const mergedSales = reconcile(
+        remoteSales,
+        salesRef.current,
+        queueRef.current,
+        `${root}/sales`
+      );
+      mergedSales.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setSales(mergedSales);
+
+      setCustomers(
+        reconcile(domain.customers, customersRef.current, queueRef.current, `${root}/customers`)
+      );
+
+      setCreditPayments(
+        reconcile(
+          domain.creditPayments,
+          paymentsRef.current,
+          queueRef.current,
+          `${root}/credit_payments`
+        )
+      );
+
+      setExpenses(
+        reconcile(remoteExpenses, expensesRef.current, queueRef.current, `${root}/expenses`)
+      );
+
+      if (domain.subscriptionPayments.length > 0) {
+        setSubscriptionPayments(domain.subscriptionPayments);
+      }
+    };
+
+    const testOverride = getShopReadSyncOverrideForTests();
+    if (testOverride) {
+      const handle = testOverride.subscribeShop(shopId, {
+        onShopSnapshot: applyShopSnapshot,
+        onDomainSnapshot: applyDomainSnapshot,
+      });
+      readSyncCoordinatorRef.current = {
+        triggerNow: () => handle.triggerNow(),
+        dispose: () => handle.dispose(),
+      };
+      return () => {
+        readSyncCoordinatorRef.current = null;
+        handle.dispose();
+      };
+    }
+
+    // Supabase read path: initial load + `(cursor - 120s)` overlap-window
     // cursor sync deduplicated by `(id, updated_at)`, with Realtime acting strictly
     // as a debounced wake-up trigger (never as the source of truth).
     if (isSupabaseConfigured() && user.verifiedShopId === shopId) {
-      const root = `shops/${shopId}`;
       const coordinator = createShopReadSyncCoordinator({
         shopId,
         runCursorPull: async () => {
           if (shopRef.current?.id !== shopId) return;
           const pulled = await pullShopCursorSync({ shopId });
           if (shopRef.current?.id !== shopId) return;
-
-          if (pulled.shop) {
-            setShop((prev) => ({
-              ...pulled.shop!,
-              securityNotice: pulled.shop!.securityNotice ?? prev?.securityNotice ?? null,
-              securityNoticeAt: pulled.shop!.securityNoticeAt ?? prev?.securityNoticeAt ?? null,
-            }));
-          }
-
-          const remoteItems = [...pulled.domain.items, ...pulled.domain.archivedItems];
-          const remoteSales = pulled.domain.sales.filter((s) => !s.isDeleted);
-          const remoteExpenses = pulled.domain.expenses.filter((e) => !e.isDeleted);
-
-          remoteRef.current.items = remoteItems;
-          remoteRef.current.sales = remoteSales;
-          remoteRef.current.customers = pulled.domain.customers;
-          remoteRef.current.payments = pulled.domain.creditPayments;
-          remoteRef.current.expenses = remoteExpenses;
-          remoteRef.current.movements = pulled.domain.stockMovements;
-          remoteRef.current.conflicts = pulled.domain.stockConflicts;
-
-          const mergedItems = reconcile(
-            remoteItems,
-            [...itemsRef.current, ...archivedItemsRef.current],
-            queueRef.current,
-            `${root}/items`
-          );
-          setItems(mergedItems.filter((item) => !item.isDeleted));
-          setArchivedItems(mergedItems.filter((item) => Boolean(item.isDeleted)));
-
-          const mergedMovements = reconcile(
-            pulled.domain.stockMovements,
-            movementsRef.current,
-            queueRef.current,
-            `${root}/stock_movements`
-          );
-          mergedMovements.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-          setStockMovements(mergedMovements);
-
-          setStockConflicts(
-            reconcile(
-              pulled.domain.stockConflicts,
-              conflictsRef.current,
-              queueRef.current,
-              `${root}/stock_conflicts`
-            )
-          );
-
-          const mergedSales = reconcile(
-            remoteSales,
-            salesRef.current,
-            queueRef.current,
-            `${root}/sales`
-          );
-          mergedSales.sort(
-            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
-          setSales(mergedSales);
-
-          setCustomers(
-            reconcile(
-              pulled.domain.customers,
-              customersRef.current,
-              queueRef.current,
-              `${root}/customers`
-            )
-          );
-
-          setCreditPayments(
-            reconcile(
-              pulled.domain.creditPayments,
-              paymentsRef.current,
-              queueRef.current,
-              `${root}/credit_payments`
-            )
-          );
-
-          setExpenses(
-            reconcile(remoteExpenses, expensesRef.current, queueRef.current, `${root}/expenses`)
-          );
-
-          setSubscriptionPayments(pulled.domain.subscriptionPayments);
+          applyShopSnapshot(pulled.shop);
+          applyDomainSnapshot(pulled.domain);
         },
         onError: (err) => {
           console.warn('Supabase cursor sync:', err);
@@ -668,158 +720,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    const warn = (label: string) => (err: unknown) => {
-      console.warn(`Real-time ${label} listener:`, err);
-    };
-
-    const unsubShop = onSnapshot(
-      doc(db, 'shops', shopId),
-      (docSnap) => {
-        if (!docSnap.exists()) return;
-        const data = sanitizeCachedShop(docSnap.data() as Shop);
-        if (data) {
-          setShop((prev) => ({
-            ...data,
-            securityNotice: data.securityNotice ?? prev?.securityNotice ?? null,
-            securityNoticeAt: data.securityNoticeAt ?? prev?.securityNoticeAt ?? null,
-          }));
-        }
-      },
-      warn('shop')
-    );
-
-    const unsubItems = onSnapshot(
-      collection(db, 'shops', shopId, 'items'),
-      (snap) => {
-        const remote: Item[] = [];
-        snap.forEach((d) => remote.push(d.data() as Item));
-        remoteRef.current.items = remote;
-        const merged = reconcile(
-          remote,
-          [...itemsRef.current, ...archivedItemsRef.current],
-          queueRef.current,
-          `shops/${shopId}/items`
-        );
-        setItems(merged.filter((item) => !item.isDeleted));
-        setArchivedItems(merged.filter((item) => item.isDeleted));
-      },
-      warn('items')
-    );
-
-    const unsubMovements = onSnapshot(
-      collection(db, 'shops', shopId, 'stock_movements'),
-      (snap) => {
-        const remote: StockMovement[] = [];
-        snap.forEach((d) => remote.push(d.data() as StockMovement));
-        remoteRef.current.movements = remote;
-        const merged = reconcile(
-          remote,
-          movementsRef.current,
-          queueRef.current,
-          `shops/${shopId}/stock_movements`
-        );
-        merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        setStockMovements(merged);
-      },
-      warn('stock movements')
-    );
-
-    const unsubConflicts = onSnapshot(
-      collection(db, 'shops', shopId, 'stock_conflicts'),
-      (snap) => {
-        const remote: StockConflict[] = [];
-        snap.forEach((d) => remote.push(d.data() as StockConflict));
-        remoteRef.current.conflicts = remote;
-        setStockConflicts(
-          reconcile(
-            remote,
-            conflictsRef.current,
-            queueRef.current,
-            `shops/${shopId}/stock_conflicts`
-          )
-        );
-      },
-      warn('stock conflicts')
-    );
-
-    const unsubSales = onSnapshot(
-      collection(db, 'shops', shopId, 'sales'),
-      (snap) => {
-        const remote: Sale[] = [];
-        snap.forEach((d) => {
-          const data = d.data() as Sale & { isDeleted?: boolean };
-          if (!data.isDeleted) remote.push(data);
-        });
-        remoteRef.current.sales = remote;
-        const merged = reconcile(
-          remote,
-          salesRef.current,
-          queueRef.current,
-          `shops/${shopId}/sales`
-        );
-        merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        setSales(merged);
-      },
-      warn('sales')
-    );
-
-    const unsubCustomers = onSnapshot(
-      collection(db, 'shops', shopId, 'customers'),
-      (snap) => {
-        const remote: Customer[] = [];
-        snap.forEach((d) => remote.push(d.data() as Customer));
-        remoteRef.current.customers = remote;
-        setCustomers(
-          reconcile(remote, customersRef.current, queueRef.current, `shops/${shopId}/customers`)
-        );
-      },
-      warn('customers')
-    );
-
-    const unsubPayments = onSnapshot(
-      collection(db, 'shops', shopId, 'credit_payments'),
-      (snap) => {
-        const remote: CreditPayment[] = [];
-        snap.forEach((d) => remote.push(d.data() as CreditPayment));
-        remoteRef.current.payments = remote;
-        setCreditPayments(
-          reconcile(
-            remote,
-            paymentsRef.current,
-            queueRef.current,
-            `shops/${shopId}/credit_payments`
-          )
-        );
-      },
-      warn('credit payments')
-    );
-
-    const unsubExpenses = onSnapshot(
-      collection(db, 'shops', shopId, 'expenses'),
-      (snap) => {
-        const remote: Expense[] = [];
-        snap.forEach((d) => {
-          const data = d.data() as Expense & { isDeleted?: boolean };
-          if (!data.isDeleted) remote.push(data);
-        });
-        remoteRef.current.expenses = remote;
-        setExpenses(
-          reconcile(remote, expensesRef.current, queueRef.current, `shops/${shopId}/expenses`)
-        );
-      },
-      warn('expenses')
-    );
-
-    return () => {
-      unsubShop();
-      unsubItems();
-      unsubMovements();
-      unsubConflicts();
-      unsubSales();
-      unsubCustomers();
-      unsubPayments();
-      unsubExpenses();
-    };
+    return undefined;
   }, [shop?.id, user]);
 
   // A snapshot can arrive before its queued operation is acknowledged. Reapply
@@ -872,12 +773,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
     let cancelled = false;
-    let legacyList: Shop[] = [];
+    let overrideList: Shop[] = [];
     let supabaseList: Shop[] = [];
     const publishMerged = () => {
       if (cancelled) return;
       const merged = new Map<string, Shop>();
-      for (const entry of legacyList) {
+      for (const entry of overrideList) {
         const clean = sanitizeCachedShop(entry);
         if (clean) merged.set(clean.id, clean);
       }
@@ -900,19 +801,15 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .catch((err) => console.warn('Supabase platform alerts fetch:', err));
 
-    const unsub = onSnapshot(
-      query(collection(db, 'shops')),
-      (snap) => {
-        const shopsList: Shop[] = [];
-        snap.forEach((d) => shopsList.push(d.data() as Shop));
-        legacyList = shopsList;
-        publishMerged();
-      },
-      (err) => console.warn('Admin shops listener:', err)
-    );
+    const testOverride = getShopReadSyncOverrideForTests();
+    const unsubOverride = testOverride?.subscribeAdminShops?.((shopsList) => {
+      overrideList = shopsList;
+      publishMerged();
+    });
+
     return () => {
       cancelled = true;
-      unsub();
+      unsubOverride?.();
     };
   }, [isAdmin, user]);
 
@@ -921,23 +818,28 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSubscriptionPayments([]);
       return;
     }
-    const paymentCollection = collection(db, 'subscriptionPayments');
-    const paymentsQuery = isAdmin
-      ? query(paymentCollection)
-      : query(paymentCollection, where('ownerUid', '==', user.uid));
-    return onSnapshot(
-      paymentsQuery,
-      (snapshot) => {
-        const records: SubscriptionPayment[] = [];
-        snapshot.forEach((entry) => records.push(entry.data() as SubscriptionPayment));
-        records.sort((a, b) => b.submittedAtMs - a.submittedAtMs);
-        setSubscriptionPayments(records);
-      },
-      (error) => {
-        console.warn('Subscription payment history listener:', error);
-        setSubscriptionPayments([]);
-      }
-    );
+    const testOverride = getShopReadSyncOverrideForTests();
+    if (testOverride?.subscribeSubscriptionPayments) {
+      return testOverride.subscribeSubscriptionPayments(
+        { userId: user.uid, isAdmin },
+        (records) => {
+          setSubscriptionPayments(records);
+        }
+      );
+    }
+
+    let cancelled = false;
+    void fetchSubscriptionPaymentsFromServer({ userId: user.uid, isAdmin })
+      .then((records) => {
+        if (!cancelled) setSubscriptionPayments(records);
+      })
+      .catch((error) => {
+        console.warn('Subscription payment history fetch:', error);
+        if (!cancelled) setSubscriptionPayments([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [isAdmin, user]);
 
   // Resolve an acknowledgement durably. When the head was reviewed, its old
@@ -1064,7 +966,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsSyncing(true);
       let synced = 0;
       let failure: unknown = null;
-      let conflict: { actionId: string; kind: 'payment' | 'void' } | null = null;
+      let conflict: BlockedSyncState | null = null;
       try {
         const activeShop = shopRef.current;
         if (!activeShop)
@@ -1105,16 +1007,43 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const chunk = queueRef.current.slice(0, SYNC_BATCH_CHUNK_SIZE);
           const actionById = new Map(chunk.map((entry) => [entry.id, entry]));
 
+          const classifyBlockedHead = (
+            action: PendingSyncAction,
+            err: unknown
+          ): BlockedSyncState | null => {
+            if (err instanceof CreditBalanceConflict) {
+              const reviewable = reviewableAction(action, activeShop.id);
+              if (reviewable) return { actionId: action.id, kind: reviewable.kind };
+              return {
+                actionId: action.id,
+                kind: 'poison',
+                actionType: action.type,
+                summary: describeQueuedActionSummary(action),
+                reason: err.message,
+                queuedAt: new Date(action.timestamp).toISOString(),
+              };
+            }
+            if (isPermanentPoisonSyncError(err)) {
+              return {
+                actionId: action.id,
+                kind: 'poison',
+                actionType: action.type,
+                summary: describeQueuedActionSummary(action),
+                reason:
+                  err instanceof Error ? err.message : 'This entry was rejected by the server.',
+                queuedAt: new Date(action.timestamp).toISOString(),
+              };
+            }
+            return null;
+          };
+
           let outcomes: Awaited<ReturnType<typeof executeSyncBatchChunk>>;
           try {
             outcomes = await executeSyncBatchChunk(activeShop.id, chunk);
           } catch (batchErr) {
             const head = chunk[0];
             console.warn('Sync batch failed; entries remain queued:', head?.id, batchErr);
-            if (batchErr instanceof CreditBalanceConflict && head) {
-              const reviewable = reviewableAction(head, activeShop.id);
-              if (reviewable) conflict = { actionId: head.id, kind: reviewable.kind };
-            }
+            if (head) conflict = classifyBlockedHead(head, batchErr);
             failure = batchErr;
             break;
           }
@@ -1127,10 +1056,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (!outcome.ok) {
               const err = outcome.error ?? new Error('Sync failed.');
               console.warn('Sync failed; this and later entries remain queued:', action.id, err);
-              if (err instanceof CreditBalanceConflict) {
-                const reviewable = reviewableAction(action, activeShop.id);
-                if (reviewable) conflict = { actionId: action.id, kind: reviewable.kind };
-              }
+              conflict = classifyBlockedHead(action, err);
               failure = err;
               stoppedOnError = true;
               break;
@@ -1310,6 +1236,47 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Entries added while reviewing remain in FIFO order and are never discarded.
     setTimeout(() => void syncNow(), 0);
     return outcome;
+  };
+
+  const discardBlockedSyncAction = async (actionId: string): Promise<void> => {
+    if (syncingRef.current) throw new Error('Sync is already running. Please try again.');
+    const activeShop = shopRef.current;
+    const currentUser = currentUserRef.current;
+    if (!navigator.onLine || !activeShop || !currentUser)
+      throw new Error('Connect and sign in to the original shop account to discard this entry.');
+    if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
+      throw new Error('Only the original shop account can discard this entry.');
+    const action = queueRef.current[0];
+    if (!action || action.id !== actionId)
+      throw new Error('The waiting entry has changed. Close this dialog and check sync again.');
+
+    const reason =
+      blockedSync?.actionId === actionId && blockedSync.kind === 'poison'
+        ? blockedSync.reason
+        : 'Discarded by shop owner after sync failure';
+
+    syncingRef.current = true;
+    setIsSyncing(true);
+    try {
+      await discardPoisonSyncActionOnServer({
+        shopId: activeShop.id,
+        userUid: currentUser.uid,
+        action,
+        reason,
+      });
+      if (currentUserRef.current?.uid !== currentUser.uid)
+        throw new Error('The account changed after the discard audit was saved.');
+      const base = await readAuthoritativeResolutionBase(activeShop.id, action);
+      acknowledgeAction(action, base);
+      setBlockedSync(null);
+      setLastOfflineNotice(null);
+      void readSyncCoordinatorRef.current?.triggerNow();
+    } finally {
+      syncingRef.current = false;
+      setIsSyncing(false);
+    }
+    // Continue draining remaining valid queued entries immediately.
+    setTimeout(() => void syncNow(), 0);
   };
 
   const loadSyncResolutionHistory = async (): Promise<SyncResolutionAudit[]> => {
@@ -2472,69 +2439,117 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setExpenses(expensesRef.current);
   };
 
-  /** Import is an online, all-or-nothing transaction. No existing document is overwritten. */
-  const importLegacyBackup = async (raw: string): Promise<LegacyBackupImport> => {
+  const ensureOwnerCanImportBackup = () => {
     const currentUser = currentUserRef.current;
-    if (!shop || !currentUser || !navigator.onLine)
+    const activeShop = shopRef.current;
+    if (!activeShop || !currentUser || !navigator.onLine)
       throw new Error('Connect to the internet and sign in as the shop owner to import.');
-    if (currentUser.uid !== shop.ownerUid && currentUser.uid !== shop.id)
+    if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
       throw new Error('Only the shop owner can import a backup.');
     if (queueRef.current.length || syncingRef.current)
       throw new Error('Sync all pending CountUp entries before importing a backup.');
-    const prepared = prepareLegacyBackupImport(raw, shop.id);
-    const writes: { path: string; data: object }[] = [
-      ...prepared.items.map((item) => ({ path: `shops/${shop.id}/items/${item.id}`, data: item })),
-      ...prepared.customers.map((customer) => ({
-        path: `shops/${shop.id}/customers/${customer.id}`,
-        data: customer,
-      })),
-      ...prepared.sales.map((sale) => ({ path: `shops/${shop.id}/sales/${sale.id}`, data: sale })),
-      ...prepared.creditPayments.map((payment) => ({
-        path: `shops/${shop.id}/credit_payments/${payment.id}`,
-        data: payment,
-      })),
-      ...prepared.stockMovements.map((movement) => ({
-        path: `shops/${shop.id}/stock_movements/${movement.id}`,
-        data: movement,
-      })),
-    ];
-    if (writes.length > 400)
-      throw new Error(
-        'This backup contains more than 400 records. Import is limited to 400 records so it can be atomic; contact support before importing a larger backup.'
-      );
-    if (!writes.length) return prepared;
-    await runTransaction(db, async (transaction) => {
-      const refs = writes.map((write) => doc(db, write.path));
-      const existing = await Promise.all(refs.map((ref) => transaction.get(ref)));
-      if (existing.some((snapshot) => snapshot.exists()))
-        throw new Error('Some of these records are already in this shop. Nothing was imported.');
-      writes.forEach((write, index) =>
-        transaction.set(refs[index], cleanForFirestore(write.data) as DocumentData)
-      );
+    return { activeShop, currentUser };
+  };
+
+  const previewShopBackup = async (raw: string): Promise<BackupPreviewOutcome> => {
+    const { activeShop } = ensureOwnerCanImportBackup();
+    const prepared = prepareShopBackupImport(raw, activeShop.id);
+    const fileSha256 = await computeBackupSha256Hex(raw);
+    const operationId = `backup_preview_${fileSha256.slice(0, 40)}`;
+    const serverPreview = await previewShopBackupOnServer({
+      shopId: activeShop.id,
+      operationId,
+      fileSha256,
+      backupJson: prepared.parsedJson,
     });
-    const merge = <T extends { id: string }>(old: T[], added: T[]) => [
-      ...added,
-      ...old.filter((entry) => !added.some((next) => next.id === entry.id)),
-    ];
-    itemsRef.current = merge(
-      itemsRef.current,
-      prepared.items.filter((item) => !item.isDeleted)
-    );
-    setItems(itemsRef.current);
-    archivedItemsRef.current = merge(
-      archivedItemsRef.current,
-      prepared.items.filter((item) => item.isDeleted)
-    );
-    setArchivedItems(archivedItemsRef.current);
-    customersRef.current = merge(customersRef.current, prepared.customers);
-    setCustomers(customersRef.current);
-    salesRef.current = merge(salesRef.current, prepared.sales);
-    setSales(salesRef.current);
-    paymentsRef.current = merge(paymentsRef.current, prepared.creditPayments);
-    setCreditPayments(paymentsRef.current);
-    movementsRef.current = merge(movementsRef.current, prepared.stockMovements);
-    setStockMovements(movementsRef.current);
-    return prepared;
+    return {
+      prepared,
+      preview: serverPreview.preview ?? prepared.preview,
+      fileSha256,
+      shopHasExistingData: serverPreview.shopHasExistingData,
+      alreadyImported: serverPreview.alreadyImported,
+    };
+  };
+
+  const restoreShopBackup = async (
+    raw: string,
+    options?: { allowNonEmptyShop?: boolean; operationId?: string }
+  ): Promise<BackupRestoreOutcome> => {
+    const { activeShop } = ensureOwnerCanImportBackup();
+    const prepared = prepareShopBackupImport(raw, activeShop.id);
+    const fileSha256 = await computeBackupSha256Hex(raw);
+    const operationId = options?.operationId ?? `backup_${fileSha256.slice(0, 48)}`;
+    const serverResult = await importShopBackupOnServer({
+      shopId: activeShop.id,
+      operationId,
+      fileSha256,
+      backupJson: prepared.parsedJson,
+      allowNonEmptyShop: Boolean(options?.allowNonEmptyShop),
+    });
+
+    if (serverResult.status === 'imported') {
+      const merge = <T extends { id: string }>(old: T[], added: T[]) => [
+        ...added,
+        ...old.filter((entry) => !added.some((next) => next.id === entry.id)),
+      ];
+      itemsRef.current = merge(
+        itemsRef.current,
+        prepared.items.filter((item) => !item.isDeleted)
+      );
+      setItems(itemsRef.current);
+      archivedItemsRef.current = merge(
+        archivedItemsRef.current,
+        prepared.items.filter((item) => item.isDeleted)
+      );
+      setArchivedItems(archivedItemsRef.current);
+      customersRef.current = merge(customersRef.current, prepared.customers);
+      setCustomers(customersRef.current);
+      salesRef.current = merge(
+        salesRef.current,
+        prepared.sales.filter((sale) => !(sale as Sale & { isDeleted?: boolean }).isDeleted)
+      );
+      setSales(salesRef.current);
+      paymentsRef.current = merge(paymentsRef.current, prepared.creditPayments);
+      setCreditPayments(paymentsRef.current);
+      movementsRef.current = merge(movementsRef.current, prepared.stockMovements);
+      setStockMovements(movementsRef.current);
+      expensesRef.current = merge(
+        expensesRef.current,
+        prepared.expenses.filter(
+          (expense) => !(expense as Expense & { isDeleted?: boolean }).isDeleted
+        )
+      );
+      setExpenses(expensesRef.current);
+      void readSyncCoordinatorRef.current?.triggerNow();
+    }
+
+    return {
+      status: serverResult.status === 'duplicate' ? 'duplicate' : 'imported',
+      idempotent: serverResult.idempotent,
+      alreadyImported: serverResult.alreadyImported,
+      preview: serverResult.preview ?? prepared.preview,
+      imported: prepared,
+    };
+  };
+
+  /** Legacy v1 helper routed through the atomic server `import_shop_backup` RPC. */
+  const importLegacyBackup = async (raw: string): Promise<LegacyBackupImport> => {
+    ensureOwnerCanImportBackup();
+    const legacy = prepareLegacyBackupImport(raw, shopRef.current!.id);
+    const totalWrites =
+      legacy.items.length +
+      legacy.customers.length +
+      legacy.sales.length +
+      legacy.creditPayments.length +
+      legacy.stockMovements.length;
+    if (!totalWrites) return legacy;
+    const outcome = await restoreShopBackup(raw, { allowNonEmptyShop: true });
+    if (outcome.alreadyImported) {
+      throw new Error(
+        'This backup file was already imported into this shop. Nothing was duplicated.'
+      );
+    }
+    return legacy;
   };
 
   // Admin changes are server callable operations. No admin action is trusted
@@ -2639,6 +2654,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         stockMovements,
         stockConflicts,
         resolveStockConflict,
+        previewShopBackup,
+        restoreShopBackup,
         importLegacyBackup,
         sales,
         customers,
@@ -2667,6 +2684,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         blockedSync,
         loadSyncReview,
         resolveSyncReview,
+        discardBlockedSyncAction,
         loadSyncResolutionHistory,
         lastOfflineNotice,
         clearOfflineNotice: () => setLastOfflineNotice(null),

@@ -2,7 +2,7 @@
 // verification against a REAL local Supabase stack (`supabase start`).
 // Never connects to remote hosts.
 import assert from 'node:assert/strict';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.API_URL || 'http://127.0.0.1:54321';
@@ -71,6 +71,7 @@ const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const password = `TestPass!${suffix}`;
 const shopAId = randomUUID();
 const shopBId = randomUUID();
+const shopCId = randomUUID();
 const createdUserIds = [];
 
 try {
@@ -641,13 +642,293 @@ try {
     'PASS: Phase 3b atomic write RPCs, idempotency, conflict flagging & reconciliation verified'
   );
 
+  // 9. Phase 3c: import_shop_backup (dry-run, decimal edge cases, empty-shop restore,
+  //    duplicate idempotency, non-empty shop guard, platform_audit, reconciliation),
+  //    receive-time 72h offline window, and discard-poison audit!
+  const { data: userCRes, error: errC } = await adminDb.auth.admin.createUser({
+    email: `owner_c_${suffix}@countup.local`,
+    phone: `+26095${String(Math.floor(1_000_000 + Math.random() * 8_999_999))}`,
+    password,
+    email_confirm: true,
+    phone_confirm: true,
+  });
+  assert.ifError(errC);
+  createdUserIds.push(userCRes.user.id);
+
+  const nowPlus30d = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  assert.ifError(
+    (
+      await adminDb.from('shops').insert({
+        id: shopCId,
+        owner_user_id: userCRes.user.id,
+        name: 'Phase 3c Restore Shop',
+        owner_phone: userCRes.user.phone,
+        plan_status: 'active',
+        plan_type: 'monthly',
+        trial_ends_at: nowPlus30d,
+        plan_expiry_at: nowPlus30d,
+        sales_access_until: nowPlus30d,
+      })
+    ).error
+  );
+
+  const clientC = makeAnonClient();
+  const { data: signInC, error: signInCErr } = await clientC.auth.signInWithPassword({
+    email: `owner_c_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(signInCErr);
+  const claimsC = decodeJwtPayload(signInC.session.access_token);
+  assert.ifError(
+    (
+      await adminDb.from('shop_verified_sessions').insert({
+        shop_id: shopCId,
+        session_id: claimsC.session_id,
+        user_id: userCRes.user.id,
+      })
+    ).error
+  );
+  await clientC.auth.refreshSession();
+
+  // 9a. Reject > 2 decimal places (`12.505`) inside PostgREST/PostgreSQL `import_shop_backup`
+  const badDecimalBackup = {
+    format: 'countup-backup-v2',
+    exportedAt: '2026-11-20T08:00:00.000Z',
+    items: [
+      {
+        id: 'bad_dec_item',
+        name: 'Bad Price',
+        buyingPrice: 10,
+        buyingPriceKnown: true,
+        sellingPrice: 12.505,
+        quantity: 2,
+        lowStockThreshold: 1,
+        createdAt: '2026-11-20T08:00:00.000Z',
+        updatedAt: '2026-11-20T08:00:00.000Z',
+      },
+    ],
+    sales: [],
+    customers: [],
+    creditPayments: [],
+    expenses: [],
+  };
+  const { error: badDecErr } = await clientC.rpc('import_shop_backup', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_bad_dec',
+    p_file_sha256: createHash('sha256').update(JSON.stringify(badDecimalBackup)).digest('hex'),
+    p_backup: badDecimalBackup,
+    p_dry_run: true,
+    p_allow_non_empty_shop: false,
+  });
+  assert.ok(badDecErr, 'import_shop_backup must reject > 2 decimal places (12.505)');
+
+  // 9b. Dry-run preview then real restore of valid `countup-backup-v2` into empty Shop C
+  const validV2Backup = {
+    format: 'countup-backup-v2',
+    version: '2.0',
+    exportedAt: '2026-11-20T08:30:00.000Z',
+    shop: { id: 'legacy-c', name: 'Chelstone Corner' },
+    items: [
+      {
+        id: 'ci_v2_bread',
+        name: 'Bread Loaf',
+        buyingPrice: 10,
+        buyingPriceKnown: true,
+        sellingPrice: 12.5,
+        quantity: 6,
+        lowStockThreshold: 2,
+        isDeleted: false,
+        createdAt: '2026-11-20T08:00:00.000Z',
+        updatedAt: '2026-11-20T08:00:00.000Z',
+      },
+    ],
+    archivedItems: [],
+    customers: [
+      {
+        id: 'ci_v2_cust',
+        name: 'Mutale',
+        phone: '+260977999888',
+        notes: '',
+        totalOwed: 25,
+        createdAt: '2026-11-20T08:00:00.000Z',
+        updatedAt: '2026-11-20T08:00:00.000Z',
+      },
+    ],
+    sales: [
+      {
+        id: 'ci_v2_sale',
+        items: [
+          {
+            itemId: 'ci_v2_bread',
+            name: 'Bread Loaf',
+            quantity: 2,
+            buyingPrice: 10,
+            buyingPriceKnown: true,
+            sellingPrice: 12.5,
+            total: 25,
+          },
+        ],
+        itemsCount: 2,
+        totalAmount: 25,
+        totalCost: 20,
+        profit: 5,
+        paymentType: 'credit',
+        customerId: 'ci_v2_cust',
+        receiptNumber: 'CI-V2-001',
+        createdAt: '2026-11-20T08:15:00.000Z',
+      },
+    ],
+    creditPayments: [],
+    expenses: [
+      {
+        id: 'ci_v2_exp',
+        category: 'transport',
+        amount: 20,
+        note: 'Delivery',
+        createdAt: '2026-11-20T08:20:00.000Z',
+      },
+    ],
+    stockMovements: [],
+  };
+  const validSha = createHash('sha256').update(JSON.stringify(validV2Backup)).digest('hex');
+
+  const { data: previewData, error: previewErr } = await clientC.rpc('import_shop_backup', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_preview',
+    p_file_sha256: validSha,
+    p_backup: validV2Backup,
+    p_dry_run: true,
+    p_allow_non_empty_shop: false,
+  });
+  assert.ifError(previewErr);
+  assert.equal(previewData.status, 'preview');
+  assert.equal(previewData.shop_has_existing_data, false);
+  assert.equal(previewData.preview.total_stock_value_ngwee, 7500); // 6 * 1250 ngwee
+  assert.equal(previewData.preview.total_owed_ngwee, 2500);
+
+  const { data: restoreData, error: restoreErr } = await clientC.rpc('import_shop_backup', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_commit',
+    p_file_sha256: validSha,
+    p_backup: validV2Backup,
+    p_dry_run: false,
+    p_allow_non_empty_shop: false,
+  });
+  assert.ifError(restoreErr);
+  assert.equal(restoreData.status, 'imported');
+  assert.equal(restoreData.reconciliation.total_differences, 0);
+
+  // Duplicate restore with same SHA-256 & new operation_id is idempotent
+  const { data: dupRestore, error: dupRestoreErr } = await clientC.rpc('import_shop_backup', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_commit_retry',
+    p_file_sha256: validSha,
+    p_backup: validV2Backup,
+    p_dry_run: false,
+    p_allow_non_empty_shop: false,
+  });
+  assert.ifError(dupRestoreErr);
+  assert.equal(dupRestore.status, 'duplicate');
+  assert.equal(dupRestore.already_imported, true);
+
+  // Non-empty shop refuses a distinct backup unless p_allow_non_empty_shop = true
+  const secondBackup = {
+    ...validV2Backup,
+    items: [
+      {
+        ...validV2Backup.items[0],
+        id: 'ci_v2_salt',
+        name: 'Salt',
+      },
+    ],
+    sales: [],
+    customers: [],
+    expenses: [],
+  };
+  const { error: nonEmptyErr } = await clientC.rpc('import_shop_backup', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_nonempty',
+    p_file_sha256: createHash('sha256').update(JSON.stringify(secondBackup)).digest('hex'),
+    p_backup: secondBackup,
+    p_dry_run: false,
+    p_allow_non_empty_shop: false,
+  });
+  assert.ok(nonEmptyErr, 'Non-empty shop must refuse restore when p_allow_non_empty_shop is false');
+
+  // Platform admin (aal2) sees platform_audit entry for shop_backup_imported
+  const { data: backupAuditRows, error: backupAuditErr } = await adminClient
+    .from('platform_audit')
+    .select('action, shop_id')
+    .eq('shop_id', shopCId)
+    .eq('action', 'shop_backup_imported');
+  assert.ifError(backupAuditErr);
+  assert.equal(backupAuditRows.length, 1);
+
+  // 9c. Receive-time 72h offline window check & discard-poison audit
+  const staleClientIso = new Date(Date.now() - 73 * 3_600_000).toISOString();
+  const { data: staleSale, error: staleSaleErr } = await clientC.rpc('record_sale', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_stale_sale',
+    p_sale_id: 'ci_sale_73h',
+    p_lines: [
+      {
+        item_id: 'ci_v2_bread',
+        item_name: 'Bread Loaf',
+        quantity: 1,
+        selling_price_ngwee: 1250,
+        buying_price_ngwee: 1000,
+        buying_price_known: true,
+      },
+    ],
+    p_payment_type: 'cash',
+    p_receipt_number: 'CI-73H',
+    p_client_created_at: staleClientIso,
+    p_is_offline_sync: true,
+    p_offline_window_seconds: 259200,
+  });
+  assert.ifError(staleSaleErr);
+  assert.equal(staleSale.offline_window_flagged, true);
+  assert.equal(staleSale.outcome, 'flagged');
+
+  const { data: poisonRes, error: poisonErr } = await clientC.rpc('resolve_sync_conflict', {
+    p_shop_id: shopCId,
+    p_operation_id: 'ci_3c_poison_op',
+    p_decision: 'discard-poison',
+    p_resolution: {
+      kind: 'discard-poison',
+      actionId: 'ci_3c_poison_op',
+      poisonActionType: 'stock_update',
+      poisonSummary: 'Stock update for deleted item',
+      poisonReason: 'Item not found',
+      queuedAt: '2026-11-20T08:00:00.000Z',
+      resolvedAt: '2026-11-20T09:00:00.000Z',
+    },
+    p_context: null,
+  });
+  assert.ifError(poisonErr);
+  assert.equal(poisonRes.status, 'resolved');
+
+  // Final reconciliation across all shops (including restored Shop C) === 0 differences!
+  const { data: finalGlobalRecon, error: finalGlobalReconErr } = await adminClient.rpc(
+    'reconcile_shop_ledger',
+    { p_shop_id: null }
+  );
+  assert.ifError(finalGlobalReconErr);
+  assert.equal(finalGlobalRecon.total_differences, 0);
   console.log(
-    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC & PHASE 3B RPC CHECKS PASSED.'
+    'PASS: Phase 3c import_shop_backup, 72h receive-time window, poison-op audit & reconciliation verified'
+  );
+
+  console.log(
+    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC, PHASE 3B & PHASE 3C CHECKS PASSED.'
   );
 } finally {
-  await adminDb.from('shops').delete().in('id', [shopAId, shopBId]);
-  await adminDb.from('platform_audit').delete().eq('shop_id', shopAId);
-  await adminDb.from('platform_alerts').delete().eq('alert_key', `ci_sms_alert_${suffix}`);
+  await adminDb.from('shops').delete().in('id', [shopAId, shopBId, shopCId]);
+  await adminDb.from('platform_audit').delete().in('shop_id', [shopAId, shopCId]);
+  await adminDb
+    .from('platform_alerts')
+    .delete()
+    .in('alert_key', [`ci_sms_alert_${suffix}`, `offline_window:${shopCId}:ci_sale_73h`]);
   for (const uid of createdUserIds) {
     await adminDb.auth.admin.deleteUser(uid);
   }

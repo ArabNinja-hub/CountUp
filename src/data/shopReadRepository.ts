@@ -26,9 +26,9 @@ import {
   writeShopNgweeRowCache,
   writeVersionedActiveShop,
 } from './offlineCache';
-import { shopRowToDomain } from './mappers';
-import { supabase } from '../supabase/client';
-import type { Shop } from '../types';
+import { shopRowToDomain, subscriptionPaymentRowToDomain } from './mappers';
+import { isSupabaseConfigured, supabase } from '../supabase/client';
+import type { Shop, SubscriptionPayment } from '../types';
 
 export type CursorSyncTableName =
   | 'items'
@@ -313,4 +313,51 @@ export async function pullShopCursorSync(params: {
       skippedStaleCount: allMerges.reduce((sum, m) => sum + m.skippedStaleCount, 0),
     },
   };
+}
+
+export interface ShopLiveReadCallbacks {
+  onShopSnapshot: (shop: Shop | null) => void;
+  onDomainSnapshot: (domain: ShopDomainCacheSnapshot) => void;
+}
+
+export interface ShopReadSyncTestOverride {
+  subscribeShop: (
+    shopId: string,
+    callbacks: ShopLiveReadCallbacks
+  ) => { triggerNow: () => Promise<void>; dispose: () => void };
+  subscribeAdminShops?: (onShops: (shops: Shop[]) => void) => () => void;
+  subscribeSubscriptionPayments?: (
+    params: { userId: string; isAdmin: boolean },
+    onPayments: (payments: SubscriptionPayment[]) => void
+  ) => () => void;
+}
+
+let testReadSyncOverride: ShopReadSyncTestOverride | null = null;
+
+export function setShopReadSyncOverrideForTests(override: ShopReadSyncTestOverride | null): void {
+  testReadSyncOverride = override;
+}
+
+export function getShopReadSyncOverrideForTests(): ShopReadSyncTestOverride | null {
+  return testReadSyncOverride;
+}
+
+export async function fetchSubscriptionPaymentsFromServer(params: {
+  userId: string;
+  isAdmin: boolean;
+  client?: SupabaseClient;
+}): Promise<SubscriptionPayment[]> {
+  if (!isSupabaseConfigured()) return [];
+  const client = params.client ?? supabase;
+  let q = client.from('subscription_payments').select('*').order('submitted_at', {
+    ascending: false,
+  });
+  if (!params.isAdmin) {
+    q = q.eq('owner_user_id', params.userId);
+  }
+  const { data, error } = await q;
+  if (error || !data) return [];
+  return (data as SubscriptionPaymentRow[])
+    .map(subscriptionPaymentRowToDomain)
+    .sort((a, b) => b.submittedAtMs - a.submittedAtMs);
 }

@@ -2,8 +2,10 @@ import { supabase } from '../supabase/client';
 import type { CreditPayment, Customer, Expense, Item, Sale, StockMovement } from '../types';
 import { fromNgwee, toNgwee } from '../utils/money';
 import { PendingSyncAction, SyncProjectionDocument } from '../utils/sync';
+import type { ShopBackupPreview } from '../services/backupImport';
 import {
   CreditBalanceConflict,
+  describeQueuedActionSummary,
   ReviewableSyncAction,
   SyncConflictReview,
   SyncResolutionAudit,
@@ -1044,7 +1046,6 @@ export async function resolveShopSyncReviewOnServer(
   const { data, error } = await client.rpc('resolve_sync_conflict', {
     p_shop_id: shopId,
     p_operation_id: review.actionId,
-    p_operation_type: description.kind === 'void' ? 'void_sale' : 'payment',
     p_decision: decision.kind,
     p_resolution: audit,
     p_context: contextPayload,
@@ -1056,6 +1057,190 @@ export async function resolveShopSyncReviewOnServer(
 
   const status = (data as { status?: string } | null)?.status;
   return status === 'already-processed' ? 'already-processed' : 'resolved';
+}
+
+export function isPermanentPoisonSyncError(error: unknown): boolean {
+  if (error instanceof CreditBalanceConflict) return false;
+  if (isTransientSupabaseSyncError(error)) return false;
+
+  if (typeof error === 'object' && error !== null) {
+    const rec = error as { code?: unknown; detail?: unknown; details?: unknown; message?: unknown };
+    const code = String(rec.code ?? '');
+    const detail = String(rec.detail ?? rec.details ?? '');
+    const message = String(rec.message ?? '');
+
+    // Auth / session / subscription blocks are recoverable once unlocked or renewed
+    if (
+      code === '42501' ||
+      [
+        'SHOP_SUSPENDED',
+        'PLAN_EXPIRED',
+        'SHOP_SESSION_NOT_VERIFIED',
+        'SHOP_OWNER_MISMATCH',
+        'PERMISSION_DENIED',
+      ].some((tag) => detail.includes(tag)) ||
+      /suspended|expired|sign in|verified shop session|permission denied/i.test(message)
+    ) {
+      return false;
+    }
+
+    if (
+      ['P0002', '22023', '23514', '23503', '23505'].includes(code) ||
+      [
+        'SALE_NOT_FOUND',
+        'ITEM_NOT_FOUND',
+        'CUSTOMER_NOT_FOUND',
+        'UNDO_SALE_CHANGED',
+        'UNDO_SALE_ITEMS_CHANGED',
+        'INVALID_',
+      ].some((tag) => detail.includes(tag)) ||
+      /no longer exists|needs manual review|invalid/i.test(message)
+    ) {
+      return true;
+    }
+  }
+  if (
+    error instanceof Error &&
+    /waiting entry is incomplete or inconsistent|cannot be synced/i.test(error.message)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export async function discardPoisonSyncActionOnServer(
+  params: {
+    shopId: string;
+    userUid: string;
+    action: PendingSyncAction;
+    reason: string;
+  },
+  client: ShopRpcQueryClient = getActiveShopWriteClient()
+): Promise<'resolved' | 'already-processed'> {
+  const { shopId, userUid, action, reason } = params;
+  const resolvedAt = new Date().toISOString();
+  const summary = describeQueuedActionSummary(action);
+
+  const audit: SyncResolutionAudit = {
+    kind: 'discard-poison',
+    actionId: action.id,
+    resolvedAt,
+    resolvedBy: userUid,
+    customerName: summary,
+    customerId: '',
+    originalAmount: 0,
+    serverBalanceBefore: 0,
+    poisonActionType: action.type,
+    poisonSummary: summary,
+    poisonReason: reason,
+    queuedAt: new Date(action.timestamp).toISOString(),
+  };
+
+  const { data, error } = await client.rpc('resolve_sync_conflict', {
+    p_shop_id: shopId,
+    p_operation_id: action.id,
+    p_decision: 'discard-poison',
+    p_resolution: audit,
+    p_context: null,
+  });
+
+  if (error) {
+    throw normalizeSupabaseError(error);
+  }
+  const status = (data as { status?: string } | null)?.status;
+  return status === 'already-processed' ? 'already-processed' : 'resolved';
+}
+
+export interface ServerBackupRestoreResponse {
+  status: 'preview' | 'imported' | 'duplicate';
+  dryRun: boolean;
+  idempotent: boolean;
+  alreadyImported: boolean;
+  shopHasExistingData: boolean;
+  fileSha256: string;
+  preview: ShopBackupPreview;
+  reconciliation?: LedgerReconciliationReport;
+}
+
+function mapServerBackupPreview(raw: Record<string, unknown>): ShopBackupPreview {
+  return {
+    format: raw.format === 'countup-backup-v2' ? 'countup-backup-v2' : 'shopbook-backup-v1',
+    sourceShopName: String(raw.source_shop_name ?? ''),
+    itemsCount: Number(raw.items_count ?? 0),
+    activeItemsCount: Number(raw.active_items_count ?? 0),
+    archivedItemsCount: Number(raw.archived_items_count ?? 0),
+    salesCount: Number(raw.sales_count ?? 0),
+    customersCount: Number(raw.customers_count ?? 0),
+    expensesCount: Number(raw.expenses_count ?? 0),
+    creditPaymentsCount: Number(raw.credit_payments_count ?? 0),
+    stockMovementsCount: Number(raw.stock_movements_count ?? 0),
+    totalRecordsCount: Number(raw.total_records_count ?? 0),
+    totalStockValueNgwee: Number(raw.total_stock_value_ngwee ?? 0),
+    totalOwedNgwee: Number(raw.total_owed_ngwee ?? 0),
+  };
+}
+
+function mapServerBackupResponse(data: Record<string, unknown>): ServerBackupRestoreResponse {
+  const previewObj = (data.preview as Record<string, unknown> | undefined) ?? {};
+  return {
+    status: (data.status as 'preview' | 'imported' | 'duplicate') ?? 'preview',
+    dryRun: Boolean(data.dry_run),
+    idempotent: Boolean(data.idempotent),
+    alreadyImported: Boolean(data.already_imported),
+    shopHasExistingData: Boolean(data.shop_has_existing_data),
+    fileSha256: String(data.file_sha256 ?? ''),
+    preview: mapServerBackupPreview(previewObj),
+    ...(data.reconciliation
+      ? { reconciliation: data.reconciliation as LedgerReconciliationReport }
+      : {}),
+  };
+}
+
+export async function previewShopBackupOnServer(
+  params: {
+    shopId: string;
+    operationId: string;
+    fileSha256: string;
+    backupJson: Record<string, unknown>;
+  },
+  client: ShopRpcQueryClient = getActiveShopWriteClient()
+): Promise<ServerBackupRestoreResponse> {
+  const { data, error } = await client.rpc('import_shop_backup', {
+    p_shop_id: params.shopId,
+    p_operation_id: params.operationId,
+    p_file_sha256: params.fileSha256,
+    p_backup: params.backupJson,
+    p_dry_run: true,
+    p_allow_non_empty_shop: false,
+  });
+  if (error) {
+    throw normalizeSupabaseError(error);
+  }
+  return mapServerBackupResponse((data ?? {}) as Record<string, unknown>);
+}
+
+export async function importShopBackupOnServer(
+  params: {
+    shopId: string;
+    operationId: string;
+    fileSha256: string;
+    backupJson: Record<string, unknown>;
+    allowNonEmptyShop?: boolean;
+  },
+  client: ShopRpcQueryClient = getActiveShopWriteClient()
+): Promise<ServerBackupRestoreResponse> {
+  const { data, error } = await client.rpc('import_shop_backup', {
+    p_shop_id: params.shopId,
+    p_operation_id: params.operationId,
+    p_file_sha256: params.fileSha256,
+    p_backup: params.backupJson,
+    p_dry_run: false,
+    p_allow_non_empty_shop: Boolean(params.allowNonEmptyShop),
+  });
+  if (error) {
+    throw normalizeSupabaseError(error);
+  }
+  return mapServerBackupResponse((data ?? {}) as Record<string, unknown>);
 }
 
 export async function loadShopSyncResolutionHistoryFromServer(

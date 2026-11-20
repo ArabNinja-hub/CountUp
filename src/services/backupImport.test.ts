@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { prepareLegacyBackupImport } from './backupImport';
+import {
+  assertSafeRawJsonNumbers,
+  parseStrictKwachaDecimalToNgwee,
+  prepareLegacyBackupImport,
+  prepareShopBackupImport,
+} from './backupImport';
 
 const at = '2026-10-23T10:00:00.000Z';
 function backup() {
@@ -211,5 +216,125 @@ describe('Legacy backup conversion', () => {
       previousQuantity: 1,
       newQuantity: 0,
     });
+  });
+
+  it('converts Kwacha decimals via exact string/BigInt math and rejects >2 decimals (even raw 12.500), scientific notation, non-numeric, and negatives', () => {
+    expect(parseStrictKwachaDecimalToNgwee(12.5, 'price')).toBe(1250);
+    expect(parseStrictKwachaDecimalToNgwee('12.50', 'price')).toBe(1250);
+    expect(parseStrictKwachaDecimalToNgwee('0.05', 'price')).toBe(5);
+    expect(parseStrictKwachaDecimalToNgwee(0, 'cost', { allowZero: true })).toBe(0);
+
+    expect(() => parseStrictKwachaDecimalToNgwee(12.505, 'price')).toThrow(
+      /2 decimal places|monetary/i
+    );
+    expect(() => parseStrictKwachaDecimalToNgwee('12.505', 'price')).toThrow(
+      /2 decimal places|monetary/i
+    );
+    expect(() => parseStrictKwachaDecimalToNgwee('12.500', 'price')).toThrow(
+      /2 decimal places|monetary/i
+    );
+    expect(() => parseStrictKwachaDecimalToNgwee('abc', 'price')).toThrow(/monetary/i);
+    expect(() => parseStrictKwachaDecimalToNgwee(-5, 'price')).toThrow(/monetary|negative/i);
+
+    // Raw JSON token check catches trailing-zero 3rd decimal (`12.500`) and scientific notation BEFORE JSON.parse!
+    expect(() => assertSafeRawJsonNumbers('{"sellingPrice": 12.500}')).toThrow(/2 decimal places/i);
+    expect(() => assertSafeRawJsonNumbers('{"sellingPrice": 1e5}')).toThrow(/scientific notation/i);
+  });
+
+  it('prepares countup-backup-v2 with accurate preview totals, synthesized opening stock movements, and strict hostile-input rejection', () => {
+    const v2Raw = JSON.stringify({
+      format: 'countup-backup-v2',
+      version: '2.0',
+      exportedAt: at,
+      shop: { id: 'old_shop', name: 'Matero Mart' },
+      items: [
+        {
+          id: 'item_oil',
+          name: 'Cooking Oil',
+          buyingPrice: 30,
+          buyingPriceKnown: true,
+          sellingPrice: 42.5,
+          unitLabel: 'bottle',
+          quantity: 6,
+          lowStockThreshold: 2,
+          isDeleted: false,
+          createdAt: at,
+          updatedAt: at,
+        },
+      ],
+      archivedItems: [],
+      customers: [
+        {
+          id: 'cust_1',
+          name: 'Chanda',
+          phone: '+260977001122',
+          notes: '',
+          totalOwed: 42.5,
+          createdAt: at,
+          updatedAt: at,
+        },
+      ],
+      sales: [
+        {
+          id: 'sale_1',
+          items: [
+            {
+              itemId: 'item_oil',
+              name: 'Cooking Oil',
+              quantity: 1,
+              buyingPrice: 30,
+              buyingPriceKnown: true,
+              sellingPrice: 42.5,
+              total: 42.5,
+            },
+          ],
+          itemsCount: 1,
+          totalAmount: 42.5,
+          totalCost: 30,
+          profit: 12.5,
+          paymentType: 'credit',
+          customerId: 'cust_1',
+          receiptNumber: 'CU-01',
+          createdAt: at,
+        },
+      ],
+      creditPayments: [],
+      expenses: [
+        {
+          id: 'exp_1',
+          category: 'rent',
+          amount: 150,
+          note: 'Booth fee',
+          createdAt: at,
+        },
+      ],
+      stockMovements: [],
+    });
+
+    const prepared = prepareShopBackupImport(v2Raw, 'shop_dest');
+    expect(prepared.format).toBe('countup-backup-v2');
+    expect(prepared.preview).toMatchObject({
+      format: 'countup-backup-v2',
+      sourceShopName: 'Matero Mart',
+      itemsCount: 1,
+      salesCount: 1,
+      customersCount: 1,
+      expensesCount: 1,
+      totalStockValueNgwee: 25500, // 6 * 4250 ngwee
+      totalOwedNgwee: 4250,
+    });
+    // Opening + sale movements synthesized so stock reconciles to 6
+    expect(prepared.stockMovements.length).toBeGreaterThanOrEqual(1);
+
+    // Reject unknown top-level record types
+    expect(() =>
+      prepareShopBackupImport(
+        JSON.stringify({ format: 'countup-backup-v2', exportedAt: at, items: [], unknownType: [] }),
+        'shop_dest'
+      )
+    ).toThrow(/unknown|unsupported|Invalid backup/i);
+
+    // Reject > 5 MB raw input
+    expect(() => prepareShopBackupImport('x'.repeat(5_000_010), 'shop_dest')).toThrow(/5 MB/i);
   });
 });

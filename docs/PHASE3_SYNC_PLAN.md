@@ -23,11 +23,13 @@ If a device syncs at `10:00:00.250`, it receives Transaction B (`last_cursor = 1
    - Supabase Realtime (`postgres_changes`) triggers immediate UI updates while connected, never advancing `lastCursor` past un-fetched gaps; reconnect and visibility/focus transitions always run the overlap-window cursor pull as the source of truth.
 
 ## 2. Bounded Offline Sale Window (Server-Time Plan Enforcement)
+- Plain-language owner guide: see `docs/OFFLINE_GRACE_WINDOW.md`.
 - Every authenticated RPC updates `shops.last_server_contact_at = clock_timestamp()`.
-- When `record_sale_rpc` runs on the server:
-  - If the shop is `is_deactivated = true` (`suspended`), reject new sales unless the sale's `client_created_at` was recorded inside a valid pre-suspension window, in which case evaluate the bounded offline window rule below.
-  - Accept an offline sale's `client_created_at` as eligible inside `sales_access_until` **only** when `client_created_at` lies within the bounded offline window measured from `shops.last_server_contact_at` (e.g., `<= 72 hours` after last server contact, not in the future beyond 5 minutes clock skew, and `client_created_at < sales_access_until`).
-  - Any queued offline sale outside that bounded window (while the shop is still within grace or recently expired) is **not silently dropped and not silently accepted as normal**: it is saved with `offline_window_flagged = true` and `offline_flag_reason` (or returned as a flagged sync item for owner/support review) so shopkeepers never lose records typed offline.
+- When `public.record_sale` runs on the server (`v_now = clock_timestamp()`):
+  - Suspended shops (`is_deactivated = true` or `plan_status = 'suspended'`) are always rejected (`SHOP_SUSPENDED`).
+  - If `p_is_offline_sync = true`:
+    - If `v_now > sales_access_until` and (`last_server_contact_at > sales_access_until` or `p_client_created_at IS NULL` or `(v_now - p_client_created_at) > interval '72 hours'` or `p_client_created_at > sales_access_until`), the server **rejects** the sale (`PLAN_EXPIRED`).
+    - If `(v_now - p_client_created_at) > interval '72 hours'` (or `(v_now - last_server_contact_at) > interval '72 hours'`) while the shop's plan is active (`v_now <= sales_access_until`), the server saves the sale so data is never lost, sets `offline_window_flagged = true` (`exceeded_bounded_offline_window`), and stamps `created_at = v_now`.
 
 ## 3. Backup Restore (`import_shop_backup` RPC)
 - Decision B confirmed: **no live paying shops in Firebase**, so no Firebase bulk-export script is needed.

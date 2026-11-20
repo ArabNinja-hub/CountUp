@@ -7,8 +7,12 @@ import { Shop } from '../types';
 import { customerStatement, summarizeLedger } from '../utils/ledger';
 import { hasLocalPinRecord, saveLocalPinRecord, verifyLocalPin } from '../utils/pinLock';
 import { activeShopCacheKey, writeVersionedDomainCollection } from '../data/offlineCache';
+import { setShopReadSyncOverrideForTests } from '../data/shopReadRepository';
 import { setShopWriteClientOverrideForTests, SYNC_BATCH_CHUNK_SIZE } from '../data/shopWriteRpc';
-import { createFakeDocsRpcClient } from '../data/__tests__/fakeDocsRpcAdapter';
+import {
+  createFakeDocsReadSyncOverride,
+  createFakeDocsRpcClient,
+} from '../data/__tests__/fakeDocsRpcAdapter';
 import type { AuthUserIdentity } from '../auth/authService';
 
 const fake = vi.hoisted(() => {
@@ -17,7 +21,7 @@ const fake = vi.hoisted(() => {
       currentUser: null as AuthUserIdentity | null,
     },
     docs: new Map<string, Record<string, unknown>>(),
-    listeners: [] as { path: string; callback: (snapshot: unknown) => void }[],
+    changeListeners: [] as (() => void)[],
     authListeners: [] as ((identity: AuthUserIdentity | null) => void)[],
     accounts: new Map<string, { uid: string; password: string }>(),
     phoneUsers: new Map<string, { uid: string; otp: string }>(),
@@ -34,7 +38,9 @@ const fake = vi.hoisted(() => {
     usedPhones: new Map<string, { wasSuspended: boolean }>(),
     auditLogs: [] as { action: string; shopId?: string; reason?: string }[],
     adminUids: new Set<string>(),
-    emit: () => undefined,
+    emit: () => {
+      fake.changeListeners.forEach((fn) => fn());
+    },
     emitAuth: () => {
       state.authListeners.forEach((fn) => fn(state.auth.currentUser));
     },
@@ -420,87 +426,6 @@ vi.mock('firebase/functions', () => ({
       throw new Error(`Unexpected callable ${name}`);
     },
 }));
-vi.mock('../firebase/config', () => ({
-  db: {},
-  testConnection: vi.fn().mockResolvedValue(true),
-}));
-vi.mock('firebase/firestore', () => {
-  const path = (...parts: unknown[]) => parts.slice(1).join('/');
-  const snapshot = (p: string) => ({
-    exists: () => fake.docs.has(p),
-    data: () => fake.docs.get(p),
-  });
-  const collectionSnapshot = (p: string) => {
-    const docs = [...fake.docs.entries()]
-      .filter(
-        ([key]) => key.startsWith(`${p}/`) && key.split('/').length === p.split('/').length + 1
-      )
-      .map(([key, data]) => ({ ref: { path: key }, data: () => data }));
-    return { docs, forEach: (fn: (doc: unknown) => void) => docs.forEach(fn) };
-  };
-  const emit = () =>
-    fake.listeners.forEach(({ path: p, callback }) =>
-      callback(p.split('/').length % 2 ? collectionSnapshot(p) : snapshot(p))
-    );
-  fake.emit = emit;
-  const write = (p: string, data: Record<string, unknown>, merge: boolean) =>
-    fake.docs.set(p, merge ? { ...fake.docs.get(p), ...data } : { ...data });
-  return {
-    doc: (...parts: unknown[]) => ({ path: path(...parts) }),
-    collection: (...parts: unknown[]) => ({ path: path(...parts) }),
-    query: (ref: unknown) => ref,
-    where: () => ({}),
-    getDoc: async (ref: { path: string }) => snapshot(ref.path),
-    getDocFromServer: async (ref: { path: string }) => snapshot(ref.path),
-    getDocs: async (ref: { path: string }) => collectionSnapshot(ref.path),
-    getDocsFromServer: async (ref: { path: string }) => collectionSnapshot(ref.path),
-    setDoc: async (
-      ref: { path: string },
-      data: Record<string, unknown>,
-      options?: { merge: boolean }
-    ) => {
-      if (fake.failWrite) throw new Error('Write rejected');
-      write(ref.path, data, Boolean(options?.merge));
-      emit();
-    },
-    onSnapshot: (ref: { path: string }, callback: (snapshot: unknown) => void) => {
-      const listener = { path: ref.path, callback };
-      fake.listeners.push(listener);
-      queueMicrotask(() =>
-        callback(ref.path.split('/').length % 2 ? collectionSnapshot(ref.path) : snapshot(ref.path))
-      );
-      return () => {
-        fake.listeners = fake.listeners.filter((item) => item !== listener);
-      };
-    },
-    runTransaction: async (_db: unknown, callback: (tx: unknown) => Promise<unknown>) => {
-      fake.transactionAttempts++;
-      if (fake.transactionError) throw fake.transactionError;
-      const writes: { path: string; data: Record<string, unknown>; merge: boolean }[] = [];
-      const tx = {
-        get: async (ref: { path: string }) => {
-          if (fake.failMarker && ref.path.endsWith(`/sync_operations/${fake.failMarker}`))
-            throw Object.assign(new Error('Write permission denied'), {
-              code: 'permission-denied',
-            });
-          return snapshot(ref.path);
-        },
-        set: (ref: { path: string }, data: Record<string, unknown>, opts?: { merge: boolean }) =>
-          writes.push({ path: ref.path, data, merge: Boolean(opts?.merge) }),
-      };
-      const result = await callback(tx);
-      writes.forEach((w) => write(w.path, w.data, w.merge));
-      emit();
-      if (fake.failNextVerification && writes.some((entry) => entry.data.hasResolution === true)) {
-        fake.failNextVerification = false;
-        fake.transactionError = Object.assign(new Error('Network lost after commit'), {
-          code: 'unavailable',
-        });
-      }
-      return result;
-    },
-  };
-});
 import { ShopProvider, useShop } from './ShopContext';
 import App from '../App';
 
@@ -538,7 +463,7 @@ async function mount() {
 beforeEach(async () => {
   localStorage.clear();
   fake.docs.clear();
-  fake.listeners = [];
+  fake.changeListeners = [];
   fake.authListeners = [];
   fake.accounts.clear();
   fake.phoneUsers.clear();
@@ -576,12 +501,21 @@ beforeEach(async () => {
     verifiedShopId: shop.id,
   };
   online(false);
+  setShopReadSyncOverrideForTests(
+    createFakeDocsReadSyncOverride(fake.docs, (fn) => {
+      fake.changeListeners.push(fn);
+      return () => {
+        fake.changeListeners = fake.changeListeners.filter((item) => item !== fn);
+      };
+    })
+  );
   setShopWriteClientOverrideForTests(createFakeDocsRpcClient(fake));
   localStorage.setItem('countup_active_shop', JSON.stringify(shop));
   await saveLocalPinRecord(shop.id, '1234', { iterations: 1_000 });
   fake.docs.set(`shops/${shop.id}`, { ...shop });
 });
 afterEach(() => {
+  setShopReadSyncOverrideForTests(null);
   setShopWriteClientOverrideForTests(null);
   cleanup();
   vi.restoreAllMocks();
@@ -2214,9 +2148,9 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await act(async () => {
       expect(await current.changePin('4321', '9876')).toBe(true);
     });
-    const listener = fake.listeners.find((entry) => entry.path === `shops/${shop.id}`);
     await act(async () => {
-      listener?.callback({ exists: () => true, data: () => shop });
+      fake.docs.set(`shops/${shop.id}`, { ...shop });
+      fake.emit();
     });
     expect((await verifyLocalPin(shop.id, '9876')).unlocked).toBe(true);
     expect((await verifyLocalPin(shop.id, '4321')).unlocked).toBe(false);
@@ -2550,5 +2484,316 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(fake.transactionAttempts).toBeLessThanOrEqual(
       Math.ceil(520 / SYNC_BATCH_CHUNK_SIZE) + 2
     );
+  });
+
+  it('halts on a poison operation without losing later entries, records a discard-poison audit on owner confirmation, and drains the remaining queue', async () => {
+    const validItemPath = `shops/${shop.id}/items/item_valid_tea`;
+    fake.docs.set(validItemPath, {
+      id: 'item_valid_tea',
+      shopId: shop.id,
+      name: 'Valid Tea',
+      buyingPrice: 5,
+      buyingPriceKnown: true,
+      sellingPrice: 10,
+      quantity: 20,
+      lowStockThreshold: 3,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    });
+
+    const poisonAndValidQueue = [
+      {
+        id: 'op_poison_missing_item',
+        type: 'stock_update' as const,
+        timestamp: Date.now() - 5_000,
+        path: `shops/${shop.id}/items/ghost_deleted_item`,
+        data: { quantity: 10, updatedAt: shop.createdAt },
+        writes: [
+          {
+            path: `shops/${shop.id}/items/ghost_deleted_item`,
+            data: { quantity: 10, updatedAt: shop.createdAt },
+          },
+          {
+            path: `shops/${shop.id}/stock_movements/mv_poison_1`,
+            data: {
+              id: 'mv_poison_1',
+              shopId: shop.id,
+              itemId: 'ghost_deleted_item',
+              itemName: 'Deleted Sugar',
+              type: 'restock',
+              delta: 5,
+              previousQuantity: 5,
+              newQuantity: 10,
+              reason: 'Restock',
+              createdAt: shop.createdAt,
+            },
+          },
+        ],
+        adjustments: [
+          {
+            kind: 'stock' as const,
+            path: `shops/${shop.id}/items/ghost_deleted_item`,
+            delta: 5,
+            updatedAt: shop.createdAt,
+            movement: {
+              path: `shops/${shop.id}/stock_movements/mv_poison_1`,
+              data: {
+                id: 'mv_poison_1',
+                shopId: shop.id,
+                itemId: 'ghost_deleted_item',
+                itemName: 'Deleted Sugar',
+                type: 'restock',
+                delta: 5,
+                previousQuantity: 5,
+                newQuantity: 10,
+                reason: 'Restock',
+                createdAt: shop.createdAt,
+              },
+            },
+          },
+        ],
+      },
+      {
+        id: 'op_valid_sale_after_poison',
+        type: 'sale' as const,
+        timestamp: Date.now() - 2_000,
+        path: `shops/${shop.id}/sales/sale_after_poison`,
+        data: {
+          id: 'sale_after_poison',
+          shopId: shop.id,
+          items: [
+            {
+              itemId: 'item_valid_tea',
+              name: 'Valid Tea',
+              quantity: 2,
+              buyingPrice: 5,
+              buyingPriceKnown: true,
+              sellingPrice: 10,
+              total: 20,
+            },
+          ],
+          itemsCount: 2,
+          totalAmount: 20,
+          totalCost: 10,
+          profit: 10,
+          paymentType: 'cash',
+          receiptNumber: 'CU-AFTER-POISON',
+          createdAt: shop.createdAt,
+        },
+        writes: [
+          {
+            path: `shops/${shop.id}/sales/sale_after_poison`,
+            data: {
+              id: 'sale_after_poison',
+              shopId: shop.id,
+              items: [
+                {
+                  itemId: 'item_valid_tea',
+                  name: 'Valid Tea',
+                  quantity: 2,
+                  buyingPrice: 5,
+                  buyingPriceKnown: true,
+                  sellingPrice: 10,
+                  total: 20,
+                },
+              ],
+              itemsCount: 2,
+              totalAmount: 20,
+              totalCost: 10,
+              profit: 10,
+              paymentType: 'cash',
+              receiptNumber: 'CU-AFTER-POISON',
+              createdAt: shop.createdAt,
+            },
+          },
+          {
+            path: validItemPath,
+            data: { quantity: 18, updatedAt: shop.createdAt },
+          },
+          {
+            path: `shops/${shop.id}/stock_movements/mv_valid_after_poison`,
+            data: {
+              id: 'mv_valid_after_poison',
+              shopId: shop.id,
+              itemId: 'item_valid_tea',
+              itemName: 'Valid Tea',
+              type: 'sale',
+              delta: -2,
+              previousQuantity: 20,
+              newQuantity: 18,
+              reason: 'Sale CU-AFTER-POISON',
+              relatedSaleId: 'sale_after_poison',
+              createdAt: shop.createdAt,
+            },
+          },
+        ],
+        adjustments: [
+          {
+            kind: 'stock' as const,
+            path: validItemPath,
+            delta: -2,
+            updatedAt: shop.createdAt,
+            movement: {
+              path: `shops/${shop.id}/stock_movements/mv_valid_after_poison`,
+              data: {
+                id: 'mv_valid_after_poison',
+                shopId: shop.id,
+                itemId: 'item_valid_tea',
+                itemName: 'Valid Tea',
+                type: 'sale',
+                delta: -2,
+                previousQuantity: 20,
+                newQuantity: 18,
+                reason: 'Sale CU-AFTER-POISON',
+                relatedSaleId: 'sale_after_poison',
+                createdAt: shop.createdAt,
+              },
+            },
+          },
+        ],
+      },
+    ];
+
+    localStorage.setItem('countup_pending_queue', JSON.stringify(poisonAndValidQueue));
+    await mount();
+    expect(current.pendingSyncCount).toBe(2);
+
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+
+    // Queue halted on the poison entry; BOTH entries remain safe until owner reviews
+    expect(current.pendingSyncCount).toBe(2);
+    expect(current.blockedSync).toMatchObject({
+      actionId: 'op_poison_missing_item',
+      kind: 'poison',
+      actionType: 'stock_update',
+    });
+
+    // Owner reviews and confirms discarding the poison entry
+    await act(async () => {
+      await current.discardBlockedSyncAction('op_poison_missing_item');
+    });
+
+    // Remaining valid sale automatically drains and commits!
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(current.blockedSync).toBeNull();
+    expect(fake.docs.get(`shops/${shop.id}/sales/sale_after_poison`)).toMatchObject({
+      receiptNumber: 'CU-AFTER-POISON',
+      totalAmount: 20,
+    });
+    expect(fake.docs.get(validItemPath)?.quantity).toBe(18);
+
+    // Discard decision is permanently recorded in sync review history
+    const history = await current.loadSyncResolutionHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      actionId: 'op_poison_missing_item',
+      kind: 'discard-poison',
+      poisonActionType: 'stock_update',
+    });
+  });
+
+  it('previews and restores countup-backup-v2 into an empty shop, blocks duplicate restores, and requires explicit opt-in for non-empty shops', async () => {
+    online(true);
+    await mount();
+
+    const v2Raw = JSON.stringify({
+      format: 'countup-backup-v2',
+      version: '2.0',
+      exportedAt: shop.createdAt,
+      shop: { id: 'old-id', name: 'Kabulonga Kiosk' },
+      items: [
+        {
+          id: 'v2_rice',
+          name: 'Rice 5kg',
+          buyingPrice: 90,
+          buyingPriceKnown: true,
+          sellingPrice: 120.5,
+          quantity: 4,
+          lowStockThreshold: 2,
+          isDeleted: false,
+          createdAt: shop.createdAt,
+          updatedAt: shop.createdAt,
+        },
+      ],
+      archivedItems: [],
+      customers: [],
+      sales: [],
+      creditPayments: [],
+      expenses: [
+        {
+          id: 'v2_exp_1',
+          category: 'council_fee',
+          amount: 50,
+          note: 'Council levy',
+          createdAt: shop.createdAt,
+        },
+      ],
+      stockMovements: [],
+    });
+
+    const preview = await current.previewShopBackup(v2Raw);
+    expect(preview.shopHasExistingData).toBe(false);
+    expect(preview.alreadyImported).toBe(false);
+    expect(preview.preview).toMatchObject({
+      format: 'countup-backup-v2',
+      itemsCount: 1,
+      expensesCount: 1,
+      totalStockValueNgwee: 48200, // 4 * 12050 ngwee
+    });
+
+    let restored!: Awaited<ReturnType<typeof current.restoreShopBackup>>;
+    await act(async () => {
+      restored = await current.restoreShopBackup(v2Raw);
+    });
+    expect(restored.status).toBe('imported');
+    expect(current.items.some((i) => i.id === 'v2_rice' && i.sellingPrice === 120.5)).toBe(true);
+    expect(current.expenses.some((e) => e.id === 'v2_exp_1' && e.amount === 50)).toBe(true);
+
+    // Repeat restore of the exact same file is idempotent and duplicates nothing
+    const dup = await current.restoreShopBackup(v2Raw);
+    expect(dup.status).toBe('duplicate');
+    expect(dup.alreadyImported).toBe(true);
+    expect(current.items.filter((i) => i.id === 'v2_rice')).toHaveLength(1);
+
+    // Restoring a second distinct backup into the now-non-empty shop fails unless allowNonEmptyShop: true
+    const secondV2Raw = JSON.stringify({
+      format: 'countup-backup-v2',
+      version: '2.0',
+      exportedAt: shop.createdAt,
+      shop: { id: 'old-id-2', name: 'Second Backup' },
+      items: [
+        {
+          id: 'v2_flour',
+          name: 'Flour 2kg',
+          buyingPrice: 30,
+          buyingPriceKnown: true,
+          sellingPrice: 45,
+          quantity: 3,
+          lowStockThreshold: 1,
+          isDeleted: false,
+          createdAt: shop.createdAt,
+          updatedAt: shop.createdAt,
+        },
+      ],
+      archivedItems: [],
+      customers: [],
+      sales: [],
+      creditPayments: [],
+      expenses: [],
+      stockMovements: [],
+    });
+
+    await expect(current.restoreShopBackup(secondV2Raw)).rejects.toThrow(
+      /already contains records|non-empty/i
+    );
+
+    await act(async () => {
+      const merged = await current.restoreShopBackup(secondV2Raw, { allowNonEmptyShop: true });
+      expect(merged.status).toBe('imported');
+    });
+    expect(current.items.some((i) => i.id === 'v2_flour')).toBe(true);
   });
 });

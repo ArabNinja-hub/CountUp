@@ -1,4 +1,18 @@
+import { prepareShopBackupImport } from '../../services/backupImport';
+import type {
+  CreditPayment,
+  Customer,
+  Expense,
+  Item,
+  Sale,
+  Shop,
+  StockConflict,
+  StockMovement,
+  SubscriptionPayment,
+} from '../../types';
 import { fromNgwee, toNgwee } from '../../utils/money';
+import type { ShopDomainCacheSnapshot } from '../offlineCache';
+import type { ShopReadSyncTestOverride } from '../shopReadRepository';
 import type { ShopRpcQueryClient } from '../shopWriteRpc';
 
 export interface FakeDocsStateBridge {
@@ -221,7 +235,7 @@ export function createFakeDocsRpcClient(bridge: FakeDocsStateBridge): ShopRpcQue
     }
 
     const existingMarker = bridge.docs.get(markerPath);
-    if (existingMarker && fnName !== 'resolve_sync_conflict') {
+    if (existingMarker && fnName !== 'resolve_sync_conflict' && fnName !== 'import_shop_backup') {
       return {
         ok: true,
         data: {
@@ -900,6 +914,27 @@ export function createFakeDocsRpcClient(bridge: FakeDocsStateBridge): ShopRpcQue
         const decision = String(args.p_decision ?? '');
         const resolution = (args.p_resolution as Record<string, unknown> | undefined) ?? {};
         const ctx = (args.p_context as Record<string, unknown> | undefined) ?? {};
+
+        if (decision === 'discard-poison') {
+          const resolvedAt = String(resolution.resolvedAt ?? nowIso);
+          const finalResolution: Record<string, unknown> = {
+            ...resolution,
+            kind: 'discard-poison',
+            actionId: opId,
+            resolvedAt,
+          };
+          writeDoc(markerPath, {
+            appliedAt: resolvedAt,
+            outcome: 'resolved',
+            hasResolution: true,
+            resolution: finalResolution,
+          });
+          return {
+            ok: true,
+            data: { status: 'resolved', outcome: 'resolved', resolution: finalResolution },
+          };
+        }
+
         const kind = String(ctx.kind ?? (decision === 'keep-sale' ? 'void' : 'payment'));
         const customerId = String(ctx.customer_id ?? resolution.customerId ?? '');
         const expectedBalanceNgwee = Number(ctx.expected_balance_ngwee ?? 0);
@@ -1044,6 +1079,196 @@ export function createFakeDocsRpcClient(bridge: FakeDocsStateBridge): ShopRpcQue
         return {
           ok: true,
           data: { status: 'resolved', outcome: 'resolved', resolution: finalResolution },
+        };
+      }
+
+      case 'import_shop_backup': {
+        const dryRun = Boolean(args.p_dry_run);
+        const allowNonEmptyShop = Boolean(args.p_allow_non_empty_shop);
+        const fileSha256 = String(args.p_file_sha256 ?? '')
+          .trim()
+          .toLowerCase();
+        const backupObj = args.p_backup;
+        if (!backupObj || typeof backupObj !== 'object' || Array.isArray(backupObj)) {
+          return {
+            ok: false,
+            error: makeRpcError('Invalid backup payload.', '22023', 'INVALID_BACKUP'),
+          };
+        }
+
+        const rawJson = JSON.stringify(backupObj);
+        if (new TextEncoder().encode(rawJson).byteLength > 5_000_000) {
+          return {
+            ok: false,
+            error: makeRpcError(
+              'Backup file exceeds the 5 MB limit.',
+              '22023',
+              'BACKUP_FILE_TOO_LARGE'
+            ),
+          };
+        }
+
+        let prepared;
+        try {
+          prepared = prepareShopBackupImport(rawJson, shopId);
+        } catch (err) {
+          return {
+            ok: false,
+            error: makeRpcError(
+              err instanceof Error ? err.message : 'Invalid backup payload.',
+              '22023',
+              'INVALID_BACKUP'
+            ),
+          };
+        }
+
+        let alreadyImported = Boolean(existingMarker);
+        if (!alreadyImported && fileSha256) {
+          for (const [docPath, docVal] of bridge.docs.entries()) {
+            if (docPath.startsWith(`${root}/sync_operations/`)) {
+              const res = docVal.resolution as Record<string, unknown> | undefined;
+              if (res && String(res.fileSha256 ?? '').toLowerCase() === fileSha256) {
+                alreadyImported = true;
+                break;
+              }
+            }
+          }
+        }
+
+        let shopHasExistingData = false;
+        for (const docPath of bridge.docs.keys()) {
+          if (
+            docPath.startsWith(`${root}/items/`) ||
+            docPath.startsWith(`${root}/sales/`) ||
+            docPath.startsWith(`${root}/customers/`) ||
+            docPath.startsWith(`${root}/expenses/`)
+          ) {
+            shopHasExistingData = true;
+            break;
+          }
+        }
+
+        const p = prepared.preview;
+        const preview = {
+          format: p.format,
+          source_shop_name: p.sourceShopName,
+          items_count: p.itemsCount,
+          active_items_count: p.activeItemsCount,
+          archived_items_count: p.archivedItemsCount,
+          sales_count: p.salesCount,
+          customers_count: p.customersCount,
+          expenses_count: p.expensesCount,
+          credit_payments_count: p.creditPaymentsCount,
+          stock_movements_count: p.stockMovementsCount,
+          total_records_count: p.totalRecordsCount,
+          total_stock_value_ngwee: p.totalStockValueNgwee,
+          total_owed_ngwee: p.totalOwedNgwee,
+        };
+
+        if (dryRun) {
+          return {
+            ok: true,
+            data: {
+              status: 'preview',
+              dry_run: true,
+              idempotent: false,
+              already_imported: alreadyImported,
+              shop_has_existing_data: shopHasExistingData,
+              file_sha256: fileSha256,
+              preview,
+            },
+          };
+        }
+
+        if (alreadyImported) {
+          return {
+            ok: true,
+            data: {
+              status: 'duplicate',
+              dry_run: false,
+              idempotent: true,
+              already_imported: true,
+              shop_has_existing_data: shopHasExistingData,
+              file_sha256: fileSha256,
+              preview,
+            },
+          };
+        }
+
+        if (shopHasExistingData && !allowNonEmptyShop) {
+          return {
+            ok: false,
+            error: makeRpcError(
+              'This shop already contains records. Confirm importing into a non-empty shop to continue.',
+              '23514',
+              'SHOP_NOT_EMPTY'
+            ),
+          };
+        }
+
+        const plannedWrites: Array<{ path: string; data: Record<string, unknown> }> = [
+          ...prepared.items.map((item) => ({
+            path: `${root}/items/${item.id}`,
+            data: item as unknown as Record<string, unknown>,
+          })),
+          ...prepared.customers.map((cust) => ({
+            path: `${root}/customers/${cust.id}`,
+            data: cust as unknown as Record<string, unknown>,
+          })),
+          ...prepared.sales.map((sale) => ({
+            path: `${root}/sales/${sale.id}`,
+            data: sale as unknown as Record<string, unknown>,
+          })),
+          ...prepared.creditPayments.map((pmt) => ({
+            path: `${root}/credit_payments/${pmt.id}`,
+            data: pmt as unknown as Record<string, unknown>,
+          })),
+          ...prepared.expenses.map((exp) => ({
+            path: `${root}/expenses/${exp.id}`,
+            data: exp as unknown as Record<string, unknown>,
+          })),
+          ...prepared.stockMovements.map((mv) => ({
+            path: `${root}/stock_movements/${mv.id}`,
+            data: mv as unknown as Record<string, unknown>,
+          })),
+        ];
+
+        if (plannedWrites.some((w) => bridge.docs.has(w.path))) {
+          return {
+            ok: false,
+            error: makeRpcError(
+              'Some of these records are already in this shop. Nothing was imported.',
+              '23505',
+              'BACKUP_ID_CONFLICT'
+            ),
+          };
+        }
+
+        for (const w of plannedWrites) {
+          writeDoc(w.path, w.data);
+        }
+        writeDoc(markerPath, {
+          appliedAt: nowIso,
+          outcome: 'applied',
+          resolution: {
+            kind: 'backup-import',
+            fileSha256,
+            format: p.format,
+            totalRecords: p.totalRecordsCount,
+          },
+        });
+
+        return {
+          ok: true,
+          data: {
+            status: 'imported',
+            dry_run: false,
+            idempotent: false,
+            already_imported: false,
+            shop_has_existing_data: shopHasExistingData,
+            file_sha256: fileSha256,
+            preview,
+          },
         };
       }
 
@@ -1256,6 +1481,124 @@ export function createFakeDocsRpcClient(bridge: FakeDocsStateBridge): ShopRpcQue
       }
       bridge.emit();
       return { data: single.data, error: null };
+    },
+  };
+}
+
+export function createFakeDocsReadSyncOverride(
+  docs: Map<string, Record<string, unknown>>,
+  subscribeChange: (fn: () => void) => () => void
+): ShopReadSyncTestOverride {
+  const buildDomainSnapshot = (shopId: string): ShopDomainCacheSnapshot => {
+    const root = `shops/${shopId}/`;
+    const items: Item[] = [];
+    const archivedItems: Item[] = [];
+    const sales: Sale[] = [];
+    const customers: Customer[] = [];
+    const creditPayments: CreditPayment[] = [];
+    const expenses: Expense[] = [];
+    const stockMovements: StockMovement[] = [];
+    const stockConflicts: StockConflict[] = [];
+
+    for (const [docPath, raw] of docs.entries()) {
+      if (!docPath.startsWith(root)) continue;
+      const rest = docPath.slice(root.length);
+      const slashIdx = rest.indexOf('/');
+      if (slashIdx <= 0) continue;
+      const subcol = rest.slice(0, slashIdx);
+      const clone = structuredClone(raw);
+      switch (subcol) {
+        case 'items': {
+          const item = clone as unknown as Item;
+          if (item.isDeleted) archivedItems.push(item);
+          else items.push(item);
+          break;
+        }
+        case 'sales':
+          sales.push(clone as unknown as Sale);
+          break;
+        case 'customers':
+          customers.push(clone as unknown as Customer);
+          break;
+        case 'credit_payments':
+          creditPayments.push(clone as unknown as CreditPayment);
+          break;
+        case 'expenses':
+          expenses.push(clone as unknown as Expense);
+          break;
+        case 'stock_movements':
+          stockMovements.push(clone as unknown as StockMovement);
+          break;
+        case 'stock_conflicts':
+          stockConflicts.push(clone as unknown as StockConflict);
+          break;
+      }
+    }
+
+    return {
+      items,
+      archivedItems,
+      sales,
+      customers,
+      creditPayments,
+      expenses,
+      stockMovements,
+      stockConflicts,
+      subscriptionPayments: [],
+      cursors: {},
+    };
+  };
+
+  return {
+    subscribeShop(shopId, callbacks) {
+      const push = () => {
+        const rawShop = docs.get(`shops/${shopId}`);
+        if (rawShop) {
+          callbacks.onShopSnapshot(structuredClone(rawShop) as unknown as Shop);
+        }
+        callbacks.onDomainSnapshot(buildDomainSnapshot(shopId));
+      };
+      push();
+      const unsub = subscribeChange(push);
+      return {
+        async triggerNow() {
+          push();
+        },
+        dispose() {
+          unsub();
+        },
+      };
+    },
+
+    subscribeAdminShops(onShops) {
+      const push = () => {
+        const list: Shop[] = [];
+        for (const [docPath, raw] of docs.entries()) {
+          if (docPath.startsWith('shops/') && docPath.split('/').length === 2) {
+            list.push(structuredClone(raw) as unknown as Shop);
+          }
+        }
+        onShops(list);
+      };
+      push();
+      return subscribeChange(push);
+    },
+
+    subscribeSubscriptionPayments(params, onPayments) {
+      const push = () => {
+        const list: SubscriptionPayment[] = [];
+        for (const [docPath, raw] of docs.entries()) {
+          if (!docPath.startsWith('subscriptionPayments/')) continue;
+          const record = structuredClone(raw) as unknown as SubscriptionPayment;
+          if (params.isAdmin || record.ownerUid === params.userId) {
+            list.push(record);
+          }
+        }
+        list.sort((a, b) => b.submittedAtMs - a.submittedAtMs);
+        onPayments(list);
+      };
+      push();
+      return subscribeChange(push);
     },
   };
 }

@@ -50,7 +50,7 @@ export type SyncReviewDecision =
 
 /** Stored in the same atomic transaction as the decision; never a replacement for a receipt. */
 export interface SyncResolutionAudit {
-  kind: 'correct-payment' | 'cancel-payment' | 'keep-sale';
+  kind: 'correct-payment' | 'cancel-payment' | 'keep-sale' | 'discard-poison';
   actionId: string;
   resolvedAt: string;
   resolvedBy: string;
@@ -64,7 +64,67 @@ export interface SyncResolutionAudit {
   receipt?: string;
   /** Preserve the proposed stock changes when a queued undo is cancelled. */
   stockRestorations?: { itemId: string; itemName: string; quantity: number }[];
+  /** Preserved details when an unrecoverable ("poison") entry is discarded after confirmation. */
+  poisonActionType?: string;
+  poisonSummary?: string;
+  poisonReason?: string;
   queuedAt: string;
+}
+
+export function describeQueuedActionSummary(action: PendingSyncAction): string {
+  const payload =
+    typeof action.data === 'object' && action.data !== null
+      ? (action.data as Record<string, unknown>)
+      : {};
+  const firstWrite =
+    action.writes?.[0] &&
+    typeof action.writes[0].data === 'object' &&
+    action.writes[0].data !== null
+      ? (action.writes[0].data as Record<string, unknown>)
+      : payload;
+
+  if (action.type === 'sale') {
+    if (firstWrite.isDeleted === true) {
+      const id = action.path.split('/').at(-1) ?? 'sale';
+      return `Sale undo (${id})`;
+    }
+    const receipt = typeof firstWrite.receiptNumber === 'string' ? firstWrite.receiptNumber : '';
+    const amount =
+      typeof firstWrite.totalAmount === 'number' ? ` · K ${firstWrite.totalAmount.toFixed(2)}` : '';
+    return `Sale${receipt ? ` ${receipt}` : ''}${amount}`;
+  }
+  if (action.type === 'payment') {
+    const cust = typeof firstWrite.customerName === 'string' ? firstWrite.customerName : 'customer';
+    const amount =
+      typeof firstWrite.amount === 'number' ? ` · K ${firstWrite.amount.toFixed(2)}` : '';
+    return `Credit payment (${cust}${amount})`;
+  }
+  if (action.type === 'stock_update') {
+    const name =
+      typeof firstWrite.name === 'string'
+        ? firstWrite.name
+        : (action.path.split('/').at(-1) ?? 'item');
+    return `Stock adjustment (${name})`;
+  }
+  if (action.type === 'item') {
+    const name =
+      typeof firstWrite.name === 'string'
+        ? firstWrite.name
+        : (action.path.split('/').at(-1) ?? 'item');
+    return `Product update (${name})`;
+  }
+  if (action.type === 'customer') {
+    const name =
+      typeof firstWrite.name === 'string'
+        ? firstWrite.name
+        : (action.path.split('/').at(-1) ?? 'customer');
+    return `Customer update (${name})`;
+  }
+  if (action.type === 'expense') {
+    const category = typeof firstWrite.category === 'string' ? firstWrite.category : 'expense';
+    return `Expense (${category})`;
+  }
+  return `Queued ${action.type} (${action.id})`;
 }
 
 const record = (value: unknown): value is Record<string, unknown> =>
