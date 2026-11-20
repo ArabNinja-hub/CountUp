@@ -34,7 +34,7 @@ jobs:
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 3.2.0
 
       - name: Start local Supabase stack (Postgres + GoTrue + PostgREST + Realtime + Migrations)
         run: supabase start -x studio,imgproxy,vector,logflare
@@ -50,4 +50,4 @@ jobs:
 
       - name: Stop local Supabase stack
         if: always()
-        run: supabase stop --no-backup
+        run: command -v supabase >/dev/null 2>&1 && supabase stop --no-backup || true
