@@ -1177,6 +1177,8 @@ try {
   });
   assert.ifError(adminAal1LoginErr);
 
+  const todayUtcDate = new Date().toISOString().slice(0, 10);
+
   // Owner C submits MTN payment -> locked; Owner D duplicate MTN reference blocked; rejected -> unlocked -> resubmitted!
   const sharedRef = `CIMTN${Date.now()}`;
   const { data: payC1, error: payC1Err } = await clientC.rpc('submit_subscription_payment', {
@@ -1185,7 +1187,7 @@ try {
     p_network: 'mtn',
     p_transaction_reference: sharedRef,
     p_payer_phone: '0966123456',
-    p_payment_date: '2026-11-20',
+    p_payment_date: todayUtcDate,
     p_operation_id: 'ci_p4_sub_c1',
     p_expected_amount_ngwee: 9900,
   });
@@ -1200,7 +1202,7 @@ try {
     p_network: 'mtn',
     p_transaction_reference: sharedRef,
     p_payer_phone: '0977123456',
-    p_payment_date: '2026-11-20',
+    p_payment_date: todayUtcDate,
     p_operation_id: 'ci_p4_sub_d_dup',
   });
   assert.ok(dupRefErr, 'Duplicate active MTN reference must be rejected');
@@ -1236,7 +1238,7 @@ try {
     p_network: 'mtn',
     p_transaction_reference: sharedRef,
     p_payer_phone: '0977123456',
-    p_payment_date: '2026-11-20',
+    p_payment_date: todayUtcDate,
     p_operation_id: 'ci_p4_sub_d1',
     p_expected_amount_ngwee: 9900,
   });

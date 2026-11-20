@@ -467,7 +467,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     await expect(
       ctx.asUser(shopUnverified.owner, async (tx) => {
         await tx.query(
-          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'MTN10001', '0966123456', '2026-11-20')`,
+          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'MTN10001', '0966123456', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))`,
           [shopUnverified.shopId]
         );
       })
@@ -477,7 +477,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     await expect(
       ctx.asUser(shopA.owner, async (tx) => {
         await tx.query(
-          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'MTN10002', '0966123456', '2026-11-20')`,
+          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'MTN10002', '0966123456', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))`,
           [shopB.shopId]
         );
       })
@@ -487,7 +487,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     await expect(
       ctx.asUser(shopA.owner, async (tx) => {
         await tx.query(
-          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'MTN10003', '0966123456', '2026-11-20', 'op-bad-amt', 500)`,
+          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'MTN10003', '0966123456', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-bad-amt', 500)`,
           [shopA.shopId]
         );
       })
@@ -499,7 +499,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
         res: { id: string; status: string; amount_ngwee: number; idempotent: boolean };
       }>(
         `SELECT public.submit_subscription_payment(
-           $1::uuid, 'monthly', 'mtn', ' txref 999 ', '0966 123 456', '2026-11-20', 'op-sub-a1', 9900
+           $1::uuid, 'monthly', 'mtn', ' txref 999 ', '0966 123 456', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-sub-a1', 9900
          ) AS res`,
         [shopA.shopId]
       );
@@ -515,7 +515,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     const sub1Replay = await ctx.asUser(shopA.owner, async (tx) => {
       const r = await tx.query<{ res: { id: string; status: string; idempotent: boolean } }>(
         `SELECT public.submit_subscription_payment(
-           $1::uuid, 'monthly', 'mtn', 'txref999', '0966123456', '2026-11-20', 'op-sub-a1', 9900
+           $1::uuid, 'monthly', 'mtn', 'txref999', '0966123456', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-sub-a1', 9900
          ) AS res`,
         [shopA.shopId]
       );
@@ -529,7 +529,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     await expect(
       ctx.asUser(shopB.owner, async (tx) => {
         await tx.query(
-          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'TXREF999', '0977111222', '2026-11-20', 'op-sub-b-dup')`,
+          `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'TXREF999', '0977111222', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-sub-b-dup')`,
           [shopB.shopId]
         );
       })
@@ -538,7 +538,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     // 7. Same reference string on a DIFFERENT operator (airtel) is allowed!
     const airtelSameRef = await ctx.asUser(shopB.owner, async (tx) => {
       const r = await tx.query<{ res: { id: string; status: string; amount_ngwee: number } }>(
-        `SELECT public.submit_subscription_payment($1::uuid, 'quarterly', 'airtel', 'TXREF999', '0977111222', '2026-11-20', 'op-sub-b-airtel') AS res`,
+        `SELECT public.submit_subscription_payment($1::uuid, 'quarterly', 'airtel', 'TXREF999', '0977111222', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-sub-b-airtel') AS res`,
         [shopB.shopId]
       );
       return r.rows[0]!.res;
@@ -594,7 +594,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
     // 10. Now that sub1 was rejected, mtn:TXREF999 is unlocked and can be resubmitted cleanly!
     const sub2 = await ctx.asUser(shopA.owner, async (tx) => {
       const r = await tx.query<{ res: { id: string; status: string } }>(
-        `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'TXREF999', '0966123456', '2026-11-20', 'op-sub-a2') AS res`,
+        `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'TXREF999', '0966123456', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-sub-a2') AS res`,
         [shopA.shopId]
       );
       return r.rows[0]!.res;
@@ -628,7 +628,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
 
     const stackPay = await ctx.asUser(futureShop.owner, async (tx) => {
       const r = await tx.query<{ res: { id: string } }>(
-        `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'STACKJAN31', '0966999888', '2026-11-20', 'op-stack-1') AS res`,
+        `SELECT public.submit_subscription_payment($1::uuid, 'monthly', 'mtn', 'STACKJAN31', '0966999888', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-stack-1') AS res`,
         [futureShop.shopId]
       );
       return r.rows[0]!.res;
@@ -692,7 +692,7 @@ describe('Pre-4 Benchmarks & Phase 4 Subscriptions / Manual Mobile-Money Payment
 
     const suspPay = await ctx.asUser(suspShop.owner, async (tx) => {
       const r = await tx.query<{ res: { id: string; plan_status: string } }>(
-        `SELECT public.submit_subscription_payment($1::uuid, 'biannual', 'airtel', 'AIRTEL6M01', '0977222333', '2026-11-20', 'op-susp-pay-1') AS res`,
+        `SELECT public.submit_subscription_payment($1::uuid, 'biannual', 'airtel', 'AIRTEL6M01', '0977222333', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), 'op-susp-pay-1') AS res`,
         [suspShop.shopId]
       );
       return r.rows[0]!.res;
