@@ -7,6 +7,8 @@ import { Shop } from '../types';
 import { customerStatement, summarizeLedger } from '../utils/ledger';
 import { hasLocalPinRecord, saveLocalPinRecord, verifyLocalPin } from '../utils/pinLock';
 import { activeShopCacheKey, writeVersionedDomainCollection } from '../data/offlineCache';
+import { setShopWriteClientOverrideForTests, SYNC_BATCH_CHUNK_SIZE } from '../data/shopWriteRpc';
+import { createFakeDocsRpcClient } from '../data/__tests__/fakeDocsRpcAdapter';
 import type { AuthUserIdentity } from '../auth/authService';
 
 const fake = vi.hoisted(() => {
@@ -574,11 +576,13 @@ beforeEach(async () => {
     verifiedShopId: shop.id,
   };
   online(false);
+  setShopWriteClientOverrideForTests(createFakeDocsRpcClient(fake));
   localStorage.setItem('countup_active_shop', JSON.stringify(shop));
   await saveLocalPinRecord(shop.id, '1234', { iterations: 1_000 });
   fake.docs.set(`shops/${shop.id}`, { ...shop });
 });
 afterEach(() => {
+  setShopWriteClientOverrideForTests(null);
   cleanup();
   vi.restoreAllMocks();
 });
@@ -2417,5 +2421,134 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     const before = [...fake.docs.entries()];
     await expect(current.importLegacyBackup('{}')).rejects.toThrow(/owner/);
     expect([...fake.docs.entries()]).toEqual(before);
+  });
+
+  it('drains 520+ queued offline operations in bounded RPC batches and resumes cleanly on retry without duplicates', async () => {
+    const item = {
+      id: 'item_bulk',
+      shopId: shop.id,
+      name: 'Maize Meal 25kg',
+      buyingPrice: 200,
+      buyingPriceKnown: true,
+      sellingPrice: 250,
+      quantity: 1000,
+      lowStockThreshold: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const itemPath = `shops/${shop.id}/items/${item.id}`;
+    fake.docs.set(itemPath, item);
+
+    // Pre-populate 520 offline operations (sales + expenses) in the durable queue
+    const nowIso = new Date().toISOString();
+    const bulkQueue = Array.from({ length: 520 }, (_, i) => {
+      if (i % 2 === 0) {
+        const saleId = `bulk_sale_${i}`;
+        const mvId = `bulk_mv_${i}`;
+        const sale = {
+          id: saleId,
+          shopId: shop.id,
+          items: [
+            {
+              itemId: item.id,
+              name: item.name,
+              quantity: 1,
+              buyingPrice: 200,
+              buyingPriceKnown: true,
+              sellingPrice: 250,
+              total: 250,
+            },
+          ],
+          itemsCount: 1,
+          totalAmount: 250,
+          totalCost: 200,
+          profit: 50,
+          paymentType: 'cash',
+          receiptNumber: `R-${i}`,
+          createdAt: nowIso,
+        };
+        const mv = {
+          id: mvId,
+          shopId: shop.id,
+          itemId: item.id,
+          itemName: item.name,
+          type: 'sale',
+          delta: -1,
+          previousQuantity: 1000 - i / 2,
+          newQuantity: 1000 - i / 2 - 1,
+          reason: `Sale R-${i}`,
+          relatedSaleId: saleId,
+          createdAt: nowIso,
+        };
+        return {
+          id: `op_bulk_${i}`,
+          type: 'sale',
+          path: `shops/${shop.id}/sales/${saleId}`,
+          data: sale,
+          writes: [
+            { path: `shops/${shop.id}/sales/${saleId}`, data: sale },
+            { path: itemPath, data: { ...item, quantity: mv.newQuantity, updatedAt: nowIso } },
+            { path: `shops/${shop.id}/stock_movements/${mvId}`, data: mv },
+          ],
+          adjustments: [
+            {
+              kind: 'stock',
+              path: itemPath,
+              delta: -1,
+              updatedAt: nowIso,
+              lastSoldAt: nowIso,
+              movement: { path: `shops/${shop.id}/stock_movements/${mvId}`, data: mv },
+            },
+          ],
+          timestamp: Date.now() - (520 - i) * 100,
+          queuedOffline: true,
+        };
+      }
+      const expId = `bulk_exp_${i}`;
+      const exp = {
+        id: expId,
+        shopId: shop.id,
+        category: 'transport',
+        amount: 15,
+        note: `Trip ${i}`,
+        createdAt: nowIso,
+      };
+      return {
+        id: `op_bulk_${i}`,
+        type: 'expense',
+        path: `shops/${shop.id}/expenses/${expId}`,
+        data: exp,
+        writes: [{ path: `shops/${shop.id}/expenses/${expId}`, data: exp }],
+        timestamp: Date.now() - (520 - i) * 100,
+        queuedOffline: true,
+      };
+    });
+
+    localStorage.setItem('countup_pending_queue', JSON.stringify(bulkQueue));
+    await mount();
+    expect(current.pendingSyncCount).toBe(520);
+
+    // Simulate a transient network failure on op_bulk_225 (inside the 5th 50-op batch)
+    fake.failMarker = 'op_bulk_225';
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    // First 225 operations (batches 1..4 = 200 + 25 in batch 5) succeeded and were acknowledged;
+    // remaining 295 operations stay queued in exact FIFO order!
+    expect(current.pendingSyncCount).toBe(520 - 225);
+
+    // Clear the fault and retry: remaining 295 operations drain cleanly with zero double-deduction!
+    fake.failMarker = null;
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.pendingSyncCount).toBe(0);
+    // 260 sales of 1 unit each deducted exactly 260 from 1000 -> 740 remaining
+    expect(fake.docs.get(itemPath)?.quantity).toBe(740);
+    // Batch chunking kept RPC calls way below 520 (ceil(225/50)=5 + ceil(295/50)=6 = 11 RPC round-trips!)
+    expect(fake.transactionAttempts).toBeLessThanOrEqual(
+      Math.ceil(520 / SYNC_BATCH_CHUNK_SIZE) + 2
+    );
   });
 });

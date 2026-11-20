@@ -92,7 +92,7 @@ export interface SmsRateEventRow {
   id: number;
   phone_hash: string;
   ip_hash: string | null;
-  purpose: 'otp' | 'pin_reset_notice';
+  purpose: 'otp' | 'otp_registration' | 'otp_signin' | 'pin_reset_notice' | 'recovery_code_notice';
   blocked: boolean;
   block_reason: string | null;
   day_utc: string;
@@ -345,4 +345,18 @@ export interface PlatformAuditRow {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+export interface LedgerReconciliationReport {
+  checked_at: string;
+  shops_checked: number;
+  total_differences: number;
+  sale_line_mismatch_count: number;
+  sale_profit_mismatch_count: number;
+  customer_balance_mismatch_count: number;
+  stock_movement_mismatch_count: number;
+  sale_line_mismatches: Array<Record<string, unknown>>;
+  sale_profit_mismatches: Array<Record<string, unknown>>;
+  customer_balance_mismatches: Array<Record<string, unknown>>;
+  stock_movement_mismatches: Array<Record<string, unknown>>;
 }

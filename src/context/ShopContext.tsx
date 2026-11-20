@@ -35,8 +35,8 @@ import {
   isTransientSyncError,
 } from '../utils/sync';
 import {
+  CreditBalanceConflict,
   reviewableAction,
-  voidActionSaleId,
   SyncConflictReview,
   SyncReviewDecision,
   SyncResolutionAudit,
@@ -73,11 +73,20 @@ import {
 import {
   clearVersionedShopCache,
   createShopReadSyncCoordinator,
+  executeSyncBatchChunk,
+  isTransientSupabaseSyncError,
+  LedgerReconciliationReport,
+  loadShopSyncResolutionHistoryFromServer,
+  loadShopSyncReviewFromServer,
   PlatformAlertRow,
   pullShopCursorSync,
   purgeLegacyKwachaCacheKeys,
+  readAuthoritativeResolutionBase,
   readShopDomainCache,
   readVersionedActiveShop,
+  reconcileShopLedger,
+  resolveShopSyncReviewOnServer,
+  SYNC_BATCH_CHUNK_SIZE,
   writeVersionedActiveShop,
   writeVersionedDomainCollection,
 } from '../data';
@@ -92,15 +101,12 @@ import {
 } from '../utils/pinLock';
 import {
   doc,
-  getDocFromServer,
   collection,
   onSnapshot,
   query,
   where,
-  getDocsFromServer,
   runTransaction,
   DocumentData,
-  Transaction,
 } from 'firebase/firestore';
 
 export interface AppUser {
@@ -248,6 +254,7 @@ interface ShopContextType {
     shopId: string,
     identityCheckNote: string
   ) => Promise<{ availableAt: string; expiresAt: string }>;
+  adminReconcileLedgers: (shopId?: string | null) => Promise<LedgerReconciliationReport>;
 }
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
@@ -263,32 +270,6 @@ function sanitizeCachedShop(raw: Shop | null): Shop | null {
   const copy = { ...(raw as Shop & { pin?: unknown }) };
   delete copy.pin;
   return copy;
-}
-
-class CreditBalanceConflict extends Error {
-  constructor() {
-    super(
-      'A repayment or void conflicts with a newer customer balance. Review the entry before retrying.'
-    );
-  }
-}
-
-/** Read the affected records after a reviewed operation, including absent void movements. */
-async function readResolutionBase(
-  transaction: Transaction,
-  action: PendingSyncAction
-): Promise<SyncProjectionDocument[]> {
-  const paths = new Set<string>([action.path]);
-  for (const adjustment of action.adjustments ?? []) {
-    paths.add(adjustment.path);
-    if (adjustment.kind === 'stock') paths.add(adjustment.movement.path);
-  }
-  const list = [...paths];
-  const snapshots = await Promise.all(list.map((path) => transaction.get(doc(db, path))));
-  return snapshots.map((snapshot, index) => ({
-    path: list[index],
-    data: snapshot.exists() ? snapshot.data() : null,
-  }));
 }
 
 function readInitialCache() {
@@ -420,6 +401,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     movements?: StockMovement[];
     conflicts?: StockConflict[];
   }>({ shopId: '' });
+  const readSyncCoordinatorRef = React.useRef<ReturnType<
+    typeof createShopReadSyncCoordinator
+  > | null>(null);
 
   // Cache helper
   const setLanguage = (lang: Language) => {
@@ -674,8 +658,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.warn('Supabase cursor sync:', err);
         },
       });
+      readSyncCoordinatorRef.current = coordinator;
 
       return () => {
+        if (readSyncCoordinatorRef.current === coordinator) {
+          readSyncCoordinatorRef.current = null;
+        }
         coordinator.dispose();
       };
     }
@@ -1005,19 +993,19 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'stock_movements',
         projected.documents
       );
-      // Write caches before acknowledging the head. A crash before the queue
-      // write leaves its marker in place, so the rebase can safely be repeated.
+      // Write versioned ngwee caches before acknowledging the head. A crash before
+      // the queue write leaves its server marker in place, so the rebase can safely
+      // be repeated on next Sync Now.
       if (changed('items')) {
-        localStorage.setItem('countup_items', JSON.stringify(nextItems));
-        localStorage.setItem('countup_archived_items', JSON.stringify(nextArchived));
+        writeVersionedDomainCollection(activeShop.id, 'items', [...nextItems, ...nextArchived]);
       }
-      if (changed('sales')) localStorage.setItem('countup_sales', JSON.stringify(nextSales));
+      if (changed('sales')) writeVersionedDomainCollection(activeShop.id, 'sales', nextSales);
       if (changed('customers'))
-        localStorage.setItem('countup_customers', JSON.stringify(nextCustomers));
+        writeVersionedDomainCollection(activeShop.id, 'customers', nextCustomers);
       if (changed('credit_payments'))
-        localStorage.setItem('countup_payments', JSON.stringify(nextPayments));
+        writeVersionedDomainCollection(activeShop.id, 'credit_payments', nextPayments);
       if (changed('stock_movements'))
-        localStorage.setItem('countup_stock_movements', JSON.stringify(nextMovements));
+        writeVersionedDomainCollection(activeShop.id, 'stock_movements', nextMovements);
       localStorage.setItem('countup_pending_queue', JSON.stringify(projected.queue));
 
       // Make the last server snapshot agree with this transaction. Otherwise a
@@ -1109,234 +1097,73 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
         while (queueRef.current.length > 0) {
-          const action = queueRef.current[0];
+          if (currentUserRef.current?.uid !== currentUser.uid) {
+            throw new Error(
+              'The account changed during sync. Sign in to the original shop account.'
+            );
+          }
+          const chunk = queueRef.current.slice(0, SYNC_BATCH_CHUNK_SIZE);
+          const actionById = new Map(chunk.map((entry) => [entry.id, entry]));
+
+          let outcomes: Awaited<ReturnType<typeof executeSyncBatchChunk>>;
           try {
-            if (currentUserRef.current?.uid !== currentUser.uid)
-              throw new Error(
-                'The account changed during sync. Sign in to the original shop account.'
-              );
-            if (!action.id || action.id.includes('/'))
-              throw new Error('A waiting entry has an invalid ID. Keep this browser’s data.');
-            const writes = action.writes ?? [{ path: action.path, data: action.data }];
-            const writePaths = writes.map((write) => write.path);
-            const adjustmentPaths = (action.adjustments ?? []).map((entry) => entry.path);
-            if (
-              !writes.length ||
-              writes[0].path !== action.path ||
-              new Set(writePaths).size !== writes.length ||
-              new Set(adjustmentPaths).size !== adjustmentPaths.length ||
-              (action.adjustments ?? []).some(
-                (entry) =>
-                  !writePaths.includes(entry.path) ||
-                  (entry.kind === 'stock' && !writePaths.includes(entry.movement.path))
-              )
-            )
-              throw new Error(
-                'A waiting entry is incomplete or inconsistent. Keep this browser’s data.'
-              );
-            {
-              const possibleVoid = writes.some(
-                (write) =>
-                  write.path.startsWith(`${root}/sales/`) &&
-                  (write.data as { isDeleted?: boolean }).isDeleted === true
-              );
-              const voidId = voidActionSaleId(action, activeShop.id);
-              if (possibleVoid && !voidId)
-                throw new Error(
-                  'This queued sale undo cannot be verified. Keep this browser’s data.'
-                );
-              const result = await runTransaction(db, async (transaction) => {
-                const marker = doc(db, `${root}/sync_operations/${action.id}`);
-                const markerSnapshot = await transaction.get(marker);
-                if (markerSnapshot.exists()) {
-                  const markerData = markerSnapshot.data();
-                  return markerData.resolution || markerData.outcome === 'already-voided'
-                    ? await readResolutionBase(transaction, action)
-                    : undefined;
-                }
-                const adjustments = action.adjustments ?? [];
-                const [saleSnapshot, snapshots] = await Promise.all([
-                  voidId
-                    ? transaction.get(doc(db, `${root}/sales/${voidId}`))
-                    : Promise.resolve(null),
-                  Promise.all(adjustments.map((entry) => transaction.get(doc(db, entry.path)))),
-                ]);
-                if (voidId) {
-                  if (!saleSnapshot?.exists())
-                    throw new Error('The sale needed by this undo no longer exists.');
-                  const sale = saleSnapshot.data() as Sale & { isDeleted?: boolean };
-                  if (sale.isDeleted) {
-                    // Another device already undid this exact sale: its stock and
-                    // credit have already been restored, regardless of queue ID.
-                    // Read before writing so later queued previews can be rebased.
-                    const base = await readResolutionBase(transaction, action);
-                    transaction.set(marker, {
-                      appliedAt: new Date().toISOString(),
-                      outcome: 'already-voided',
-                      saleId: voidId,
-                    });
-                    return base;
-                  }
-                  const credit = adjustments.find((entry) => entry.kind === 'credit');
-                  if (
-                    (sale.paymentType === 'credit' &&
-                      (!credit ||
-                        credit.kind !== 'credit' ||
-                        credit.path !== `${root}/customers/${sale.customerId}` ||
-                        credit.deltaNgwee !== -toNgwee(sale.totalAmount))) ||
-                    (sale.paymentType !== 'credit' && credit)
-                  )
-                    throw new Error(
-                      'The sale or its customer changed; this undo needs manual review.'
-                    );
-                  for (const entry of adjustments) {
-                    if (entry.kind !== 'stock') continue;
-                    const line = sale.items?.find(
-                      (item) => item.itemId === entry.movement.data.itemId
-                    );
-                    if (!line || line.quantity !== entry.delta)
-                      throw new Error('The sale items changed; this undo needs manual review.');
-                  }
-                }
-                if (snapshots.some((snapshot) => !snapshot.exists()))
-                  throw new Error(
-                    'A stock item or customer needed by this entry no longer exists.'
-                  );
-                const calculated = adjustments.map((adjustment, index) => {
-                  const current = snapshots[index].data();
-                  if (adjustment.kind === 'credit') {
-                    const previous = toNgwee(Number(current.totalOwed));
-                    if (previous < 0 || !Number.isSafeInteger(adjustment.deltaNgwee))
-                      throw new Error('Invalid customer balance or queued credit adjustment.');
-                    const next = previous + adjustment.deltaNgwee;
-                    if (!Number.isSafeInteger(next))
-                      throw new Error('The customer balance is too large.');
-                    if (next < 0) throw new CreditBalanceConflict();
-                    return {
-                      adjustment,
-                      next: next / 100,
-                      previous: 0,
-                      shortfall: 0,
-                      staleCount: false,
-                    };
-                  }
-                  const previous = Number(current.quantity);
-                  if (
-                    !Number.isSafeInteger(previous) ||
-                    previous < 0 ||
-                    !Number.isSafeInteger(adjustment.delta) ||
-                    (adjustment.setTo !== undefined &&
-                      (!Number.isSafeInteger(adjustment.setTo) || adjustment.setTo < 0))
-                  )
-                    throw new Error('Invalid stock quantity or queued stock adjustment.');
-                  // A physical count based on stale stock cannot safely replace a
-                  // newer value. Keep the request and ask for a fresh recount.
-                  const staleCount =
-                    adjustment.setTo !== undefined &&
-                    adjustment.movement.data.previousQuantity !== previous;
-                  const requested = staleCount
-                    ? previous
-                    : (adjustment.setTo ?? previous + adjustment.delta);
-                  if (!Number.isSafeInteger(requested))
-                    throw new Error('The stock quantity is too large.');
-                  return {
-                    adjustment,
-                    previous,
-                    next: Math.max(0, requested),
-                    shortfall: Math.max(0, -requested),
-                    staleCount,
-                  };
-                });
-                const dynamicPaths = new Set(
-                  adjustments.flatMap((adjustment) =>
-                    adjustment.kind === 'stock'
-                      ? [adjustment.path, adjustment.movement.path]
-                      : [adjustment.path]
-                  )
-                );
-                for (const write of writes) {
-                  if (!dynamicPaths.has(write.path))
-                    transaction.set(
-                      doc(db, write.path),
-                      cleanForFirestore(write.data) as DocumentData,
-                      {
-                        merge: true,
-                      }
-                    );
-                }
-                for (const [index, entry] of calculated.entries()) {
-                  const adjustment = entry.adjustment;
-                  if (adjustment.kind === 'credit') {
-                    transaction.set(
-                      doc(db, adjustment.path),
-                      { totalOwed: entry.next, updatedAt: adjustment.updatedAt },
-                      { merge: true }
-                    );
-                  } else {
-                    transaction.set(
-                      doc(db, adjustment.path),
-                      cleanForFirestore({
-                        ...adjustment.metadata,
-                        quantity: entry.next,
-                        updatedAt: adjustment.updatedAt,
-                        ...(adjustment.lastSoldAt ? { lastSoldAt: adjustment.lastSoldAt } : {}),
-                      }),
-                      { merge: true }
-                    );
-                    transaction.set(
-                      doc(db, adjustment.movement.path),
-                      cleanForFirestore({
-                        ...adjustment.movement.data,
-                        ...(entry.staleCount
-                          ? {
-                              delta: 0,
-                              requestedQuantity: adjustment.setTo,
-                              recountNeeded: true,
-                              reason: `${adjustment.movement.data.reason} (not applied; recount needed)`,
-                            }
-                          : {}),
-                        previousQuantity: entry.previous,
-                        newQuantity: entry.next,
-                      })
-                    );
-                    if (entry.shortfall > 0 || entry.staleCount) {
-                      const conflictId = `${action.id}_${index}`;
-                      transaction.set(doc(db, `${root}/stock_conflicts/${conflictId}`), {
-                        id: conflictId,
-                        itemId: adjustment.movement.data.itemId,
-                        itemName: adjustment.movement.data.itemName,
-                        ...(entry.staleCount
-                          ? {
-                              kind: 'recount',
-                              observed: adjustment.movement.data.previousQuantity,
-                            }
-                          : { kind: 'shortfall' }),
-                        requested: entry.staleCount ? adjustment.setTo : Math.abs(adjustment.delta),
-                        available: entry.previous,
-                        shortfall: entry.shortfall,
-                        relatedSaleId: adjustment.movement.data.relatedSaleId || '',
-                        createdAt: adjustment.updatedAt,
-                        resolved: false,
-                      });
-                    }
-                  }
-                }
-                transaction.set(marker, { appliedAt: new Date().toISOString() });
-                return undefined;
-              });
-              acknowledgeAction(action, result);
+            outcomes = await executeSyncBatchChunk(activeShop.id, chunk);
+          } catch (batchErr) {
+            const head = chunk[0];
+            console.warn('Sync batch failed; entries remain queued:', head?.id, batchErr);
+            if (batchErr instanceof CreditBalanceConflict && head) {
+              const reviewable = reviewableAction(head, activeShop.id);
+              if (reviewable) conflict = { actionId: head.id, kind: reviewable.kind };
             }
-            setBlockedSync(null);
-            synced++;
-          } catch (error) {
-            console.warn('Sync failed; this and later entries remain queued:', action.id, error);
-            if (error instanceof CreditBalanceConflict) {
-              const reviewable = reviewableAction(action, activeShop.id);
-              if (reviewable) conflict = { actionId: action.id, kind: reviewable.kind };
-            }
-            failure = error;
+            failure = batchErr;
             break;
           }
+
+          let stoppedOnError = false;
+          for (const outcome of outcomes) {
+            const action = actionById.get(outcome.operation_id) ?? queueRef.current[0];
+            if (!action) break;
+
+            if (!outcome.ok) {
+              const err = outcome.error ?? new Error('Sync failed.');
+              console.warn('Sync failed; this and later entries remain queued:', action.id, err);
+              if (err instanceof CreditBalanceConflict) {
+                const reviewable = reviewableAction(action, activeShop.id);
+                if (reviewable) conflict = { actionId: action.id, kind: reviewable.kind };
+              }
+              failure = err;
+              stoppedOnError = true;
+              break;
+            }
+
+            try {
+              if (currentUserRef.current?.uid !== currentUser.uid) {
+                throw new Error(
+                  'The account changed during sync. Sign in to the original shop account.'
+                );
+              }
+              const rpcRes = outcome.result ?? {};
+              const needsRebase =
+                rpcRes.outcome === 'already-voided' || rpcRes.has_resolution === true;
+              const base = needsRebase
+                ? await readAuthoritativeResolutionBase(activeShop.id, action)
+                : undefined;
+              acknowledgeAction(action, base);
+              setBlockedSync(null);
+              synced++;
+            } catch (rebaseErr) {
+              console.warn(
+                'Post-commit rebase failed; marker makes next retry safe:',
+                action.id,
+                rebaseErr
+              );
+              failure = rebaseErr;
+              stoppedOnError = true;
+              break;
+            }
+          }
+
+          if (stoppedOnError) break;
         }
       } catch (error) {
         failure = error;
@@ -1344,10 +1171,13 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         syncingRef.current = false;
         setIsSyncing(false);
       }
+      if (synced > 0) {
+        void readSyncCoordinatorRef.current?.triggerNow();
+      }
       if (failure) {
         setBlockedSync(conflict);
         const count = queueRef.current.length;
-        const transient = isTransientSyncError(failure);
+        const transient = isTransientSyncError(failure) || isTransientSupabaseSyncError(failure);
         const reason = failure instanceof Error ? failure.message : '';
         const detail = transient
           ? 'Connection to the server failed. Entries stay on this device; CountUp will retry automatically.'
@@ -1401,61 +1231,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadSyncReview = async (actionId: string): Promise<SyncConflictReview> => {
     const { activeShop, currentUser, description } = getReviewableHead(actionId);
-    const markerPath = `shops/${activeShop.id}/sync_operations/${actionId}`;
-    const targetPath =
-      description.kind === 'payment' ? description.paymentPath : description.salePath;
-    const [marker, customer, target] = await Promise.all([
-      getDocFromServer(doc(db, markerPath)),
-      getDocFromServer(doc(db, description.customerPath)),
-      getDocFromServer(doc(db, targetPath)),
-    ]);
+    const review = await loadShopSyncReviewFromServer({
+      shopId: activeShop.id,
+      actionId,
+      description,
+    });
     if (currentUserRef.current?.uid !== currentUser.uid || queueRef.current[0]?.id !== actionId)
       throw new Error(
         'The account or waiting entry changed. Close this review and check sync again.'
       );
-    const customerData = customer.exists() ? customer.data() : null;
-    const serverBalance = customerData ? Number(customerData.totalOwed) : 0;
-    if (customerData && toNgwee(serverBalance) < 0)
-      throw new Error('The server has an invalid customer balance. Keep this browser’s data.');
-    const customerName =
-      typeof customerData?.name === 'string'
-        ? customerData.name
-        : description.kind === 'payment'
-          ? description.payment.customerName
-          : 'Customer';
-    const targetData = target.exists() ? target.data() : null;
-    const sale =
-      description.kind === 'void' ? (targetData as (Sale & { isDeleted?: boolean }) | null) : null;
-    const alreadyProcessed = marker.exists() || Boolean(sale?.isDeleted);
-    if (!alreadyProcessed) {
-      if (!customerData)
-        throw new Error('The customer no longer exists on the server. Keep this browser’s data.');
-      if (description.kind === 'payment' && targetData)
-        throw new Error(
-          'A payment with this ID already exists without a sync marker. Keep this browser’s data.'
-        );
-      if (
-        description.kind === 'void' &&
-        (!sale ||
-          sale.paymentType !== 'credit' ||
-          `shops/${activeShop.id}/customers/${sale.customerId}` !== description.customerPath ||
-          toNgwee(sale.totalAmount) !== description.amountNgwee)
-      )
-        throw new Error(
-          'The sale or its customer changed on the server. Keep this browser’s data.'
-        );
-    }
-    return {
-      actionId,
-      kind: description.kind,
-      customerName,
-      originalAmount: description.amountNgwee / 100,
-      serverBalance,
-      queuedAt: new Date(description.action.timestamp).toISOString(),
-      ...(sale ? { receipt: sale.receiptNumber || sale.id } : {}),
-      alreadyProcessed,
-      canRetry: !alreadyProcessed && toNgwee(serverBalance) >= description.amountNgwee,
-    };
+    return review;
   };
 
   const resolveSyncReview = async (
@@ -1484,116 +1269,30 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'Enter the correct payment, greater than zero and no more than the current balance.'
         );
     }
-    const root = `shops/${activeShop.id}`;
-    const markerPath = `${root}/sync_operations/${review.actionId}`;
     let committed = false;
     let outcome: 'resolved' | 'already-processed' = 'resolved';
     syncingRef.current = true;
     setIsSyncing(true);
     try {
-      outcome = await runTransaction(db, async (transaction) => {
-        const markerRef = doc(db, markerPath);
-        const marker = await transaction.get(markerRef);
-        if (marker.exists()) return 'already-processed' as const;
-        const targetPath =
-          description.kind === 'payment' ? description.paymentPath : description.salePath;
-        const [customerSnapshot, targetSnapshot] = await Promise.all([
-          transaction.get(doc(db, description.customerPath)),
-          transaction.get(doc(db, targetPath)),
-        ]);
-        if (!customerSnapshot.exists())
-          throw new Error('The customer no longer exists on the server.');
-        const customer = customerSnapshot.data();
-        const currentBalance = toNgwee(Number(customer.totalOwed));
-        if (currentBalance < 0) throw new Error('The server has an invalid customer balance.');
-        const target = targetSnapshot.exists() ? targetSnapshot.data() : null;
-        if (description.kind === 'void' && target?.isDeleted) {
-          transaction.set(markerRef, {
-            appliedAt: new Date().toISOString(),
-            outcome: 'already-voided',
-            saleId: description.saleId,
-          });
-          return 'already-processed' as const;
-        }
-        if (currentBalance !== expectedBalance || currentBalance >= description.amountNgwee)
-          throw new Error('The server balance changed. Close this review and check it again.');
-        if (description.kind === 'payment' && target)
-          throw new Error('A payment with this ID already exists. Keep this browser’s data.');
-        if (
-          description.kind === 'void' &&
-          (!target ||
-            target.paymentType !== 'credit' ||
-            `${root}/customers/${target.customerId}` !== description.customerPath ||
-            toNgwee(Number(target.totalAmount)) !== description.amountNgwee)
-        )
-          throw new Error(
-            'The sale or its customer changed. Close this review and check it again.'
-          );
-        const resolvedAt = new Date().toISOString();
-        const audit: SyncResolutionAudit = {
-          kind: decision.kind,
-          actionId: review.actionId,
-          resolvedAt,
-          resolvedBy: currentUser.uid,
-          customerName: typeof customer.name === 'string' ? customer.name : review.customerName,
-          customerId: description.customerPath.split('/').at(-1)!,
-          originalAmount: description.amountNgwee / 100,
-          serverBalanceBefore: currentBalance / 100,
-          queuedAt: new Date(description.action.timestamp).toISOString(),
-          ...(description.kind === 'payment'
-            ? { originalPayment: description.payment }
-            : {
-                saleId: description.saleId,
-                receipt:
-                  typeof target?.receiptNumber === 'string'
-                    ? target.receiptNumber
-                    : description.saleId,
-                stockRestorations: description.stockAdjustments.map((entry) => ({
-                  itemId: entry.movement.data.itemId,
-                  itemName: entry.movement.data.itemName,
-                  quantity: entry.delta,
-                })),
-              }),
-          ...(decision.kind === 'correct-payment' ? { correctedAmount: correctedNgwee / 100 } : {}),
-        };
-        if (description.kind === 'payment' && decision.kind === 'correct-payment') {
-          transaction.set(doc(db, description.paymentPath), {
-            ...cleanForFirestore(description.payment),
-            amount: correctedNgwee / 100,
-            syncCorrection: {
-              actionId: review.actionId,
-              originalAmount: description.payment.amount,
-              resolvedAt,
-            },
-          });
-          transaction.set(
-            doc(db, description.customerPath),
-            { totalOwed: (currentBalance - correctedNgwee) / 100, updatedAt: resolvedAt },
-            { merge: true }
-          );
-        }
-        // A cancelled payment or undo changes no financial record. The marker
-        // preserves the original entry and confirmation for the shop owner.
-        transaction.set(markerRef, {
-          appliedAt: resolvedAt,
-          hasResolution: true,
-          resolution: audit,
-        });
-        return 'resolved' as const;
+      outcome = await resolveShopSyncReviewOnServer({
+        shopId: activeShop.id,
+        userUid: currentUser.uid,
+        review,
+        decision,
+        description,
+        expectedBalanceNgwee: expectedBalance,
+        correctedNgwee,
       });
       committed = true;
       if (currentUserRef.current?.uid !== currentUser.uid)
         throw new Error('The account changed after the review was saved.');
       // Fetch fresh authoritative data before rebasing later optimistic entries.
       // If this read or local persistence fails, the marker makes retry safe.
-      const base = await runTransaction(db, async (transaction) => {
-        const marker = await transaction.get(doc(db, markerPath));
-        if (!marker.exists()) throw new Error('The saved review could not be verified.');
-        return readResolutionBase(transaction, description.action);
-      });
+      const base = await readAuthoritativeResolutionBase(activeShop.id, description.action);
       acknowledgeAction(description.action, base);
       setBlockedSync(null);
       setLastOfflineNotice(null);
+      void readSyncCoordinatorRef.current?.triggerNow();
     } catch (error) {
       if (committed) {
         const message =
@@ -1620,19 +1319,10 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Connect and sign in to the original shop account to view sync history.');
     if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
       throw new Error('Only the original shop account can view sync history.');
-    const snapshot = await getDocsFromServer(
-      query(
-        collection(db, 'shops', activeShop.id, 'sync_operations'),
-        where('hasResolution', '==', true)
-      )
-    );
+    const history = await loadShopSyncResolutionHistoryFromServer(activeShop.id);
     if (currentUserRef.current?.uid !== currentUser.uid || shopRef.current?.id !== activeShop.id)
       throw new Error('The account changed while loading sync history.');
-    return snapshot.docs
-      .map((entry) => entry.data())
-      .filter((entry) => entry.hasResolution === true && entry.resolution)
-      .map((entry) => entry.resolution as SyncResolutionAudit)
-      .sort((a, b) => b.resolvedAt.localeCompare(a.resolvedAt));
+    return history;
   };
 
   const queueWrites = useCallback(
@@ -1650,6 +1340,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         writes: writes.map((write) => ({ ...write, data: cleanForFirestore(write.data) })),
         ...(adjustments?.length ? { adjustments: cleanForFirestore(adjustments) } : {}),
         timestamp: Date.now(),
+        queuedOffline: !navigator.onLine,
       };
       const next = [...queueRef.current, action];
       // Persist before reporting success. A full/disabled localStorage must not
@@ -2894,6 +2585,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return res;
   };
 
+  const adminReconcileLedgers = async (
+    shopId: string | null = null
+  ): Promise<LedgerReconciliationReport> => {
+    if (!navigator.onLine) throw new Error('Connect to the internet to reconcile shop ledgers.');
+    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
+      throw new Error('Admin MFA (aal2) access is required. Sign in again.');
+    }
+    return reconcileShopLedger(shopId);
+  };
+
   return (
     <ShopContext.Provider
       value={{
@@ -2974,6 +2675,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         adminToggleDeactivate,
         adminResetPinLockout,
         adminInitiatePinReset,
+        adminReconcileLedgers,
       }}
     >
       {children}

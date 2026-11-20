@@ -138,7 +138,18 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function readOptionalPositiveIntEnv(name: string): number | undefined {
+  const raw = Deno.env.get(name);
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function readSmsRateLimitPolicyFromEnv(): SmsRateLimitPolicy {
+  const warningPercent = readPositiveIntEnv('SMS_BUDGET_WARNING_PERCENT', 80);
+  const clampedWarningRatio = Math.min(0.99, Math.max(0.5, warningPercent / 100));
+  const globalDailyCap = readOptionalPositiveIntEnv('SMS_GLOBAL_DAILY_CAP');
+
   return {
     maxPerPhone15m: readPositiveIntEnv(
       'SMS_MAX_PER_PHONE_15M',
@@ -156,9 +167,15 @@ export function readSmsRateLimitPolicyFromEnv(): SmsRateLimitPolicy {
       'SMS_MAX_PER_IP_24H',
       DEFAULT_SMS_RATE_LIMIT_POLICY.maxPerIp24h
     ),
-    globalDailyCap: readPositiveIntEnv(
-      'SMS_GLOBAL_DAILY_CAP',
-      DEFAULT_SMS_RATE_LIMIT_POLICY.globalDailyCap
+    dailyNewRegistrationCap: readPositiveIntEnv(
+      'SMS_DAILY_NEW_REGISTRATION_CAP',
+      DEFAULT_SMS_RATE_LIMIT_POLICY.dailyNewRegistrationCap
     ),
+    dailyExistingSignInCap: readPositiveIntEnv(
+      'SMS_DAILY_EXISTING_SIGNIN_CAP',
+      DEFAULT_SMS_RATE_LIMIT_POLICY.dailyExistingSignInCap
+    ),
+    budgetWarningRatio: clampedWarningRatio,
+    ...(globalDailyCap !== undefined ? { globalDailyCap } : {}),
   };
 }

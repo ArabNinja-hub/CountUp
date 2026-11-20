@@ -7,6 +7,7 @@ import {
   parseJsonObject,
   requireAuthenticatedCaller,
 } from '../_shared/http.ts';
+import { readSmsRateLimitPolicyFromEnv, resolveSmsProvider } from '../_shared/sms.ts';
 
 Deno.serve(async (req) => {
   const { earlyResponse, headers } = handlePreflightOrRejectOrigin(req);
@@ -19,12 +20,15 @@ Deno.serve(async (req) => {
     const newPin = typeof body.newPin === 'string' ? body.newPin : '';
 
     const repo = createSupabaseEdgeAuthRepository(caller.adminClient);
+    const smsProvider = resolveSmsProvider();
     const result = await handleRecoverShopPin(repo, {
       userId: caller.user.id,
       sessionId: caller.sessionId,
       recoveryCode,
       newPin,
       pepper: Deno.env.get('COUNTUP_PIN_PEPPER') ?? '',
+      smsPolicy: readSmsRateLimitPolicyFromEnv(),
+      sendSms: ({ toE164, message }) => smsProvider.send({ toE164, message }),
     });
 
     return jsonResponse(

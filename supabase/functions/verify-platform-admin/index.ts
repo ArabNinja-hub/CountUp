@@ -21,7 +21,10 @@ Deno.serve(async (req) => {
       emailVerified: Boolean(caller.user.email_confirmed_at),
       aal: caller.aal,
       alreadyAdmin: caller.hasAdminClaim,
-      configuredAdminEmail: Deno.env.get('COUNTUP_PLATFORM_ADMIN_EMAIL') ?? '',
+      configuredAdminEmail:
+        Deno.env.get('COUNTUP_PLATFORM_ADMIN_EMAILS') ??
+        Deno.env.get('COUNTUP_PLATFORM_ADMIN_EMAIL') ??
+        '',
     });
 
     return jsonResponse(200, result, headers);

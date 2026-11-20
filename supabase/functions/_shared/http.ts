@@ -100,16 +100,37 @@ export async function parseJsonObject(req: Request): Promise<Record<string, unkn
   }
 }
 
+function sanitizeExtractedIp(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let candidate = raw.trim();
+  if (!candidate) return null;
+  // Strip bracketed IPv6 with port: [2001:db8::1]:443 -> 2001:db8::1
+  if (candidate.startsWith('[')) {
+    const closeIdx = candidate.indexOf(']');
+    if (closeIdx > 1) {
+      candidate = candidate.slice(1, closeIdx);
+    }
+  } else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(candidate)) {
+    // Strip IPv4 :port suffix
+    candidate = candidate.split(':')[0] ?? candidate;
+  }
+  if (candidate.length > 64) return null;
+  return candidate || null;
+}
+
+/**
+ * Reads the real client IP from Cloudflare's trusted `CF-Connecting-IP` header
+ * when present, falling back to `X-Forwarded-For` / `X-Real-IP` outside Cloudflare.
+ */
 export function extractClientIp(req: Request): string | null {
-  const cfIp = req.headers.get('cf-connecting-ip')?.trim();
+  const cfIp = sanitizeExtractedIp(req.headers.get('cf-connecting-ip'));
   if (cfIp) return cfIp;
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
-    const first = xff.split(',')[0]?.trim();
+    const first = sanitizeExtractedIp(xff.split(',')[0]);
     if (first) return first;
   }
-  const realIp = req.headers.get('x-real-ip')?.trim();
-  return realIp || null;
+  return sanitizeExtractedIp(req.headers.get('x-real-ip'));
 }
 
 export function decodeVerifiedJwtClaims(bearerToken: string): Record<string, unknown> {
@@ -524,56 +545,71 @@ export function createSupabaseEdgeAuthRepository(admin: SupabaseClient): EdgeAut
     },
 
     async getSmsUsageCounts({ phoneHash, ipHash, since15mIso, since24hIso, dayUtc }) {
-      const [dailyRes, phone15mRes, phone24hRes, ip15mRes, ip24hRes] = await Promise.all([
-        admin
-          .from('sms_rate_events')
-          .select('id', { count: 'exact', head: true })
-          .eq('day_utc', dayUtc)
-          .eq('blocked', false),
-        admin
-          .from('sms_rate_events')
-          .select('id', { count: 'exact', head: true })
-          .eq('phone_hash', phoneHash)
-          .eq('purpose', 'otp')
-          .eq('blocked', false)
-          .gte('created_at', since15mIso),
-        admin
-          .from('sms_rate_events')
-          .select('id', { count: 'exact', head: true })
-          .eq('phone_hash', phoneHash)
-          .eq('purpose', 'otp')
-          .eq('blocked', false)
-          .gte('created_at', since24hIso),
-        ipHash
-          ? admin
-              .from('sms_rate_events')
-              .select('id', { count: 'exact', head: true })
-              .eq('ip_hash', ipHash)
-              .eq('purpose', 'otp')
-              .eq('blocked', false)
-              .gte('created_at', since15mIso)
-          : Promise.resolve({ count: 0, error: null }),
-        ipHash
-          ? admin
-              .from('sms_rate_events')
-              .select('id', { count: 'exact', head: true })
-              .eq('ip_hash', ipHash)
-              .eq('purpose', 'otp')
-              .eq('blocked', false)
-              .gte('created_at', since24hIso)
-          : Promise.resolve({ count: 0, error: null }),
-      ]);
+      const otpPurposes = ['otp', 'otp_registration', 'otp_signin'] as const;
+      const [newRegRes, existingSignInRes, phone15mRes, phone24hRes, ip15mRes, ip24hRes] =
+        await Promise.all([
+          admin
+            .from('sms_rate_events')
+            .select('id', { count: 'exact', head: true })
+            .eq('day_utc', dayUtc)
+            .eq('purpose', 'otp_registration')
+            .eq('blocked', false),
+          admin
+            .from('sms_rate_events')
+            .select('id', { count: 'exact', head: true })
+            .eq('day_utc', dayUtc)
+            .in('purpose', ['otp_signin', 'otp'])
+            .eq('blocked', false),
+          admin
+            .from('sms_rate_events')
+            .select('id', { count: 'exact', head: true })
+            .eq('phone_hash', phoneHash)
+            .in('purpose', [...otpPurposes])
+            .eq('blocked', false)
+            .gte('created_at', since15mIso),
+          admin
+            .from('sms_rate_events')
+            .select('id', { count: 'exact', head: true })
+            .eq('phone_hash', phoneHash)
+            .in('purpose', [...otpPurposes])
+            .eq('blocked', false)
+            .gte('created_at', since24hIso),
+          ipHash
+            ? admin
+                .from('sms_rate_events')
+                .select('id', { count: 'exact', head: true })
+                .eq('ip_hash', ipHash)
+                .in('purpose', [...otpPurposes])
+                .eq('blocked', false)
+                .gte('created_at', since15mIso)
+            : Promise.resolve({ count: 0, error: null }),
+          ipHash
+            ? admin
+                .from('sms_rate_events')
+                .select('id', { count: 'exact', head: true })
+                .eq('ip_hash', ipHash)
+                .in('purpose', [...otpPurposes])
+                .eq('blocked', false)
+                .gte('created_at', since24hIso)
+            : Promise.resolve({ count: 0, error: null }),
+        ]);
 
       const firstErr =
-        dailyRes.error ||
+        newRegRes.error ||
+        existingSignInRes.error ||
         phone15mRes.error ||
         phone24hRes.error ||
         ip15mRes.error ||
         ip24hRes.error;
       if (firstErr) throw new Error(firstErr.message);
 
+      const dailyNewRegistrationCount = newRegRes.count ?? 0;
+      const dailyExistingSignInCount = existingSignInRes.count ?? 0;
+
       return {
-        dailySentCount: dailyRes.count ?? 0,
+        dailySentCount: dailyNewRegistrationCount + dailyExistingSignInCount,
+        dailyNewRegistrationCount,
+        dailyExistingSignInCount,
         phone15mCount: phone15mRes.count ?? 0,
         phone24hCount: phone24hRes.count ?? 0,
         ip15mCount: ip15mRes.count ?? 0,
@@ -586,7 +622,7 @@ export function createSupabaseEdgeAuthRepository(admin: SupabaseClient): EdgeAut
         .from('sms_rate_events')
         .select('id')
         .eq('phone_hash', phoneHash)
-        .eq('purpose', 'otp')
+        .in('purpose', ['otp', 'otp_registration', 'otp_signin'])
         .eq('blocked', false)
         .eq('block_reason', 'precheck_pending')
         .gte('created_at', sinceIso)

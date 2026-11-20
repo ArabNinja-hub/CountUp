@@ -22,6 +22,17 @@ export type ReviewableAction =
       stockAdjustments: Extract<SyncAdjustment, { kind: 'stock' }>[];
     };
 
+export type ReviewableSyncAction = ReviewableAction;
+
+export class CreditBalanceConflict extends Error {
+  constructor(
+    message = 'A repayment or void conflicts with a newer customer balance. Review the entry before retrying.'
+  ) {
+    super(message);
+    this.name = 'CreditBalanceConflict';
+  }
+}
+
 export interface SyncConflictReview {
   actionId: string;
   kind: 'payment' | 'void';

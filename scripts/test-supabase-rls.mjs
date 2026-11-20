@@ -196,6 +196,35 @@ try {
     );
     assert.ifError(
       (
+        await adminDb.from('stock_movements').insert([
+          {
+            shop_id: shopId,
+            id: 'mv_init_1',
+            item_id: 'item_1',
+            item_name: 'Sugar 2kg',
+            type: 'initial',
+            delta: 13,
+            previous_quantity: 0,
+            new_quantity: 13,
+            reason: 'Initial stock',
+          },
+          {
+            shop_id: shopId,
+            id: 'mv_sale_1',
+            item_id: 'item_1',
+            item_name: 'Sugar 2kg',
+            type: 'sale',
+            delta: -1,
+            previous_quantity: 13,
+            new_quantity: 12,
+            reason: 'Sale CU-TEST-001',
+            related_sale_id: 'sale_1',
+          },
+        ])
+      ).error
+    );
+    assert.ifError(
+      (
         await adminDb.from('subscription_payments').insert({
           shop_id: shopId,
           shop_name_snapshot: name,
@@ -400,6 +429,12 @@ try {
     'platform_admin at aal1 MUST be blocked from reading platform_alerts'
   );
 
+  // At aal1, platform_admin MUST ALSO be rejected by reconcile_shop_ledger!
+  const { error: reconAal1Err } = await adminClient.rpc('reconcile_shop_ledger', {
+    p_shop_id: null,
+  });
+  assert.ok(reconAal1Err, 'platform_admin at aal1 MUST be blocked from reconcile_shop_ledger');
+
   // Enroll real TOTP factor in GoTrue and verify a 6-digit code to elevate session to aal2!
   const { data: enrolled, error: enrollErr } = await adminClient.auth.mfa.enroll({
     factorType: 'totp',
@@ -441,7 +476,174 @@ try {
   assert.ok(adminPlanWriteErr, 'Even platform_admin aal2 client session must use Edge Functions');
   console.log('PASS: GoTrue TOTP MFA (aal2) strictly enforced for platform_admin');
 
-  console.log('ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2) & OVERLAP SYNC CHECKS PASSED.');
+  // 8. Phase 3b Live PostgREST Write RPCs, Idempotency, Last-Unit Shortfall & Ledger Reconciliation
+  assert.ok(
+    (
+      await clientA2.rpc('record_sale', {
+        p_shop_id: shopAId,
+        p_operation_id: 'ci_unverified_sale',
+        p_sale_id: 'sale_unverified',
+        p_lines: [
+          {
+            item_id: 'item_1',
+            item_name: 'Sugar 2kg',
+            quantity: 1,
+            selling_price_ngwee: 5500,
+            buying_price_ngwee: 4500,
+            buying_price_known: true,
+          },
+        ],
+        p_payment_type: 'cash',
+        p_receipt_number: 'CU-UNV',
+      })
+    ).error,
+    'OTP-only unverified session must be rejected by record_sale RPC'
+  );
+
+  assert.ok(
+    (
+      await clientB.rpc('record_sale', {
+        p_shop_id: shopAId,
+        p_operation_id: 'ci_cross_shop_sale',
+        p_sale_id: 'sale_cross',
+        p_lines: [
+          {
+            item_id: 'item_1',
+            item_name: 'Sugar 2kg',
+            quantity: 1,
+            selling_price_ngwee: 5500,
+            buying_price_ngwee: 4500,
+            buying_price_known: true,
+          },
+        ],
+        p_payment_type: 'cash',
+        p_receipt_number: 'CU-CROSS',
+      })
+    ).error,
+    'Shop B verified session must be rejected by record_sale RPC on Shop A'
+  );
+
+  // Verified Shop A session executes atomic batch: create 1-unit item -> two 1-unit sales (oversell!) -> repayment -> undo twice
+  const { data: batchRes, error: batchErr } = await clientA1.rpc('apply_sync_batch', {
+    p_shop_id: shopAId,
+    p_operations: [
+      {
+        rpc: 'upsert_shop_item',
+        operation_id: 'ci_op_item_2',
+        item_id: 'item_2',
+        patch: {
+          name: 'Bread Loaf',
+          buying_price_ngwee: 1800,
+          buying_price_known: true,
+          selling_price_ngwee: 2500,
+          quantity: 1,
+        },
+        initial_movement: { id: 'mv_ci_init_2', reason: 'Initial stock' },
+      },
+      {
+        rpc: 'record_sale',
+        operation_id: 'ci_op_sale_a',
+        sale_id: 'ci_sale_a',
+        lines: [
+          {
+            item_id: 'item_2',
+            item_name: 'Bread Loaf',
+            quantity: 1,
+            selling_price_ngwee: 2500,
+            buying_price_ngwee: 1800,
+            buying_price_known: true,
+          },
+        ],
+        payment_type: 'cash',
+        receipt_number: 'CU-CI-A',
+        is_offline_sync: true,
+      },
+      {
+        rpc: 'record_sale',
+        operation_id: 'ci_op_sale_b',
+        sale_id: 'ci_sale_b',
+        lines: [
+          {
+            item_id: 'item_2',
+            item_name: 'Bread Loaf',
+            quantity: 1,
+            selling_price_ngwee: 2500,
+            buying_price_ngwee: 1800,
+            buying_price_known: true,
+          },
+        ],
+        payment_type: 'cash',
+        receipt_number: 'CU-CI-B',
+        is_offline_sync: true,
+      },
+      {
+        rpc: 'record_repayment',
+        operation_id: 'ci_op_repay_1',
+        payment_id: 'ci_pay_1',
+        customer_id: 'cust_1',
+        amount_ngwee: 2000,
+        payment_method: 'momo',
+        note: 'Partial repayment',
+      },
+    ],
+  });
+  assert.ifError(batchErr);
+  assert.equal(batchRes.results.length, 4);
+  assert.ok(batchRes.results.every((r) => r.ok === true));
+  assert.equal(batchRes.results[2].result.stock_conflicts_created, 1);
+
+  // Replay ci_op_repay_1 -> idempotent duplicate, customer balance stays 3500 ngwee!
+  const { data: dupRepay, error: dupRepayErr } = await clientA1.rpc('record_repayment', {
+    p_shop_id: shopAId,
+    p_operation_id: 'ci_op_repay_1',
+    p_payment_id: 'ci_pay_1',
+    p_customer_id: 'cust_1',
+    p_amount_ngwee: 2000,
+    p_payment_method: 'momo',
+    p_note: 'Partial repayment',
+  });
+  assert.ifError(dupRepayErr);
+  assert.equal(dupRepay.idempotent, true);
+
+  // Resolve the shortfall conflict via resolve_stock_conflict
+  const { error: resConfErr } = await clientA1.rpc('resolve_stock_conflict', {
+    p_shop_id: shopAId,
+    p_operation_id: 'ci_op_resolve_sc',
+    p_conflict_id: 'ci_op_sale_b_0',
+  });
+  assert.ifError(resConfErr);
+
+  // Verify ledger reconciliation for Shop A (as shop owner) and across ALL shops (as aal2 platform_admin) === 0 differences!
+  const { data: shopARecon, error: shopAReconErr } = await clientA1.rpc('reconcile_shop_ledger', {
+    p_shop_id: shopAId,
+  });
+  assert.ifError(shopAReconErr);
+  assert.equal(
+    shopARecon.total_differences,
+    0,
+    'Shop A ledger reconciliation must have 0 differences'
+  );
+
+  const { data: globalRecon, error: globalReconErr } = await adminClient.rpc(
+    'reconcile_shop_ledger',
+    {
+      p_shop_id: null,
+    }
+  );
+  assert.ifError(globalReconErr);
+  assert.equal(
+    globalRecon.total_differences,
+    0,
+    'Global multi-shop ledger reconciliation under aal2 admin must have 0 differences'
+  );
+  assert.ok(globalRecon.shops_checked >= 2);
+  console.log(
+    'PASS: Phase 3b atomic write RPCs, idempotency, conflict flagging & reconciliation verified'
+  );
+
+  console.log(
+    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC & PHASE 3B RPC CHECKS PASSED.'
+  );
 } finally {
   await adminDb.from('shops').delete().in('id', [shopAId, shopBId]);
   await adminDb.from('platform_audit').delete().eq('shop_id', shopAId);

@@ -31,4 +31,25 @@ If a device syncs at `10:00:00.250`, it receives Transaction B (`last_cursor = 1
 
 ## 3. Backup Restore (`import_shop_backup` RPC)
 - Decision B confirmed: **no live paying shops in Firebase**, so no Firebase bulk-export script is needed.
-- Phase 3 will provide full validated in-app JSON backup restore supporting **both** legacy `shopbook-backup-v1` and CountUp `countup-backup-v2` exports, validating all totals, line math, customer debt balances, stock quantities, and foreign key references server-side inside one atomic transaction.
+- Phase 3c will provide full validated in-app JSON backup restore supporting **both** legacy `shopbook-backup-v1` and CountUp `countup-backup-v2` exports, validating all totals, line math, customer debt balances, stock quantities, and foreign key references server-side inside one atomic transaction.
+
+## 4. Phase 3b Atomic Write RPCs, Queue Batching & Ledger Reconciliation (`20261120000300`)
+- **Write Authorization & Advisory Locking (`public.lock_authorized_shop_for_write`):**
+  - Requires a verified shop session (`public.is_shop_owner(p_shop_id)` — i.e., JWT `shop_id === p_shop_id`, `shops.owner_user_id === auth.uid()`, and an active `shop_verified_sessions` row).
+  - Acquires `pg_advisory_xact_lock(hashtext('shop_write:' || p_shop_id::text))` and `SELECT ... FOR UPDATE` on `public.shops` to serialize concurrent multi-device writes per shop cleanly without deadlocks.
+- **Idempotency (`public.sync_operations`):**
+  - Every write RPC checks `(shop_id, operation_id)` first; replays return `{ status: 'duplicate', idempotent: true, outcome, has_resolution }` without mutating stock, sales, or customer balances.
+- **Core & Supporting RPCs (`src/data/shopWriteRpc.ts`):**
+  - `public.record_sale`: computes all line totals, revenue, cost, `missing_cost_revenue_ngwee`, and `profit_ngwee` server-side in integer ngwee; clamps oversold stock at `0` (never negative, never dropping a sale) while inserting an unresolved `stock_conflicts` (`kind = 'shortfall'`) row and flagging `stock_movements.recount_needed = true`; enforces server-time `sales_access_until` and the bounded `72h` (`259,200s`) offline window (`offline_window_flagged` + `offline_flag_reason`).
+  - `public.undo_sale`: soft-voids `sales.is_deleted = true`, restores only the physical units actually deducted (`GREATEST(0, -mv.delta)`), resolves open shortfall conflicts for that sale, returns `already-voided` on duplicate multi-device undos, and raises `CREDIT_BALANCE_CONFLICT` if customer debt was already repaid below the sale total.
+  - `public.record_repayment` & `public.resolve_sync_conflict`: enforce `total_owed_ngwee >= amount_ngwee` and resolve credit conflicts (`keep-sale`, `cancel-payment`, `correct-payment`) with optimistic server-balance checks and `sync_correction` metadata.
+  - `public.apply_stock_count` & `public.resolve_stock_conflict`: handle both `delta` adjustments and `set` physical counts (detecting stale `observed_quantity` without overwriting newer server stock, creating a `kind = 'recount'` conflict instead).
+  - `public.upsert_shop_item`, `public.upsert_shop_customer`, `public.upsert_shop_expense`: preserve invariant columns (`quantity`, `total_owed_ngwee`) against metadata overwrites while writing `initial` stock movements on new item creation.
+  - `public.apply_sync_batch`: processes up to `50` queued operations per RPC call (`SYNC_BATCH_CHUNK_SIZE = 50`) using per-operation PL/pgSQL subtransaction savepoints, committing earlier entries and stopping on the first conflict/error so strict FIFO ordering is preserved across 500+ item offline queues.
+- **Ledger & Stock Reconciliation (`public.reconcile_shop_ledger`):**
+  - Verifies four shop-wide / platform-wide invariants in one query report (`total_differences = 0`):
+    1. `sales.total_amount_ngwee = SUM(sale_lines.line_total_ngwee)` and `items_count = SUM(sale_lines.quantity)`
+    2. `sales.profit_ngwee = total_amount_ngwee - total_cost_ngwee - missing_cost_revenue_ngwee`
+    3. `customers.total_owed_ngwee = SUM(non-deleted credit sales) - SUM(credit_payments)`
+    4. `items.quantity = SUM(stock_movements.delta)` (initial + restocks + sales + voids + adjustments)
+

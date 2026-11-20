@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_SMS_RATE_LIMIT_POLICY,
   DomainPinCredentials,
   DomainPinResetRequest,
   DomainShopRecord,
@@ -483,12 +484,18 @@ describe('Phase 2 + All 9 Follow-Ups: Auth, SIM-Swap, MFA, SMS Caps & PIN Securi
         return harness.asServiceRole(async (tx) => {
           const phone15mRes = await tx.query<{ cnt: string }>(
             `SELECT COUNT(*)::text AS cnt FROM public.sms_rate_events
-             WHERE phone_hash = $1 AND blocked = false AND created_at >= $2`,
+             WHERE phone_hash = $1
+               AND purpose IN ('otp', 'otp_registration', 'otp_signin')
+               AND blocked = false
+               AND created_at >= $2`,
             [phoneHash, since15mIso]
           );
           const phone24hRes = await tx.query<{ cnt: string }>(
             `SELECT COUNT(*)::text AS cnt FROM public.sms_rate_events
-             WHERE phone_hash = $1 AND blocked = false AND created_at >= $2`,
+             WHERE phone_hash = $1
+               AND purpose IN ('otp', 'otp_registration', 'otp_signin')
+               AND blocked = false
+               AND created_at >= $2`,
             [phoneHash, since24hIso]
           );
           let ip15mCount = 0;
@@ -496,24 +503,39 @@ describe('Phase 2 + All 9 Follow-Ups: Auth, SIM-Swap, MFA, SMS Caps & PIN Securi
           if (ipHash) {
             const ip15Res = await tx.query<{ cnt: string }>(
               `SELECT COUNT(*)::text AS cnt FROM public.sms_rate_events
-               WHERE ip_hash = $1 AND blocked = false AND created_at >= $2`,
+               WHERE ip_hash = $1
+                 AND purpose IN ('otp', 'otp_registration', 'otp_signin')
+                 AND blocked = false
+                 AND created_at >= $2`,
               [ipHash, since15mIso]
             );
             const ip24Res = await tx.query<{ cnt: string }>(
               `SELECT COUNT(*)::text AS cnt FROM public.sms_rate_events
-               WHERE ip_hash = $1 AND blocked = false AND created_at >= $2`,
+               WHERE ip_hash = $1
+                 AND purpose IN ('otp', 'otp_registration', 'otp_signin')
+                 AND blocked = false
+                 AND created_at >= $2`,
               [ipHash, since24hIso]
             );
             ip15mCount = Number(ip15Res.rows[0]?.cnt ?? 0);
             ip24hCount = Number(ip24Res.rows[0]?.cnt ?? 0);
           }
-          const globalDayRes = await tx.query<{ cnt: string }>(
+          const newRegRes = await tx.query<{ cnt: string }>(
             `SELECT COUNT(*)::text AS cnt FROM public.sms_rate_events
-             WHERE blocked = false AND day_utc = $1::date`,
+             WHERE blocked = false AND day_utc = $1::date AND purpose = 'otp_registration'`,
             [dayUtc]
           );
+          const existingSignInRes = await tx.query<{ cnt: string }>(
+            `SELECT COUNT(*)::text AS cnt FROM public.sms_rate_events
+             WHERE blocked = false AND day_utc = $1::date AND purpose IN ('otp_signin', 'otp')`,
+            [dayUtc]
+          );
+          const dailyNewRegistrationCount = Number(newRegRes.rows[0]?.cnt ?? 0);
+          const dailyExistingSignInCount = Number(existingSignInRes.rows[0]?.cnt ?? 0);
           return {
-            dailySentCount: Number(globalDayRes.rows[0]?.cnt ?? 0),
+            dailySentCount: dailyNewRegistrationCount + dailyExistingSignInCount,
+            dailyNewRegistrationCount,
+            dailyExistingSignInCount,
             phone15mCount: Number(phone15mRes.rows[0]?.cnt ?? 0),
             phone24hCount: Number(phone24hRes.rows[0]?.cnt ?? 0),
             ip15mCount,
@@ -527,7 +549,7 @@ describe('Phase 2 + All 9 Follow-Ups: Auth, SIM-Swap, MFA, SMS Caps & PIN Securi
           const found = await tx.query<{ id: string }>(
             `SELECT id::text AS id FROM public.sms_rate_events
              WHERE phone_hash = $1
-               AND purpose = 'otp'
+               AND purpose IN ('otp', 'otp_registration', 'otp_signin')
                AND blocked = false
                AND block_reason = 'precheck_pending'
                AND created_at >= $2
@@ -1157,5 +1179,157 @@ describe('Phase 2 + All 9 Follow-Ups: Auth, SIM-Swap, MFA, SMS Caps & PIN Securi
     expect(reg3.trialGranted).toBe(false);
     expect(reg3.shop.plan_status).toBe('suspended');
     expect(reg3.shop.is_deactivated).toBe(true);
+  });
+
+  it('Pre-3b Adjustments: enforces CGNAT per-IP defaults (30/15m, 100/24h), split daily OTP budgets with 80% warning alert, security-notice SMS exemption, and backup-admin aal2 support', async () => {
+    expect(DEFAULT_SMS_RATE_LIMIT_POLICY.maxPerIp15m).toBe(30);
+    expect(DEFAULT_SMS_RATE_LIMIT_POLICY.maxPerIp24h).toBe(100);
+
+    // Register an existing shop so its owner phone classifies as `otp_signin`
+    const existingOwner = await harness.createAuthUser({ phone: '+260977555111' });
+    await handleRegisterShop(repo, {
+      userId: existingOwner.id,
+      verifiedPhone: existingOwner.phone,
+      sessionId: 'existing-sess-1',
+      shopName: 'Chilenje Corner Store',
+      pin: '4321',
+      pepper: PEPPER,
+      iterations: FAST_ITERATIONS,
+    });
+
+    // Use a fresh UTC day so counts are isolated from earlier tests
+    const splitDay = new Date('2026-11-28T09:00:00.000Z');
+    const splitPolicy = {
+      dailyNewRegistrationCap: 5,
+      dailyExistingSignInCap: 5,
+      budgetWarningRatio: 0.8,
+    };
+
+    // 1..3 new-registration OTPs (60%) -> allowed, no 80% warning yet
+    for (let i = 1; i <= 3; i += 1) {
+      const res = await handleCheckAndRecordSmsAllowance(repo, {
+        purpose: 'otp',
+        stage: 'precheck',
+        phone: `+26096111000${i}`,
+        clientIp: '102.140.96.10',
+        pepper: PEPPER,
+        policy: splitPolicy,
+        now: new Date(splitDay.getTime() + i * 1_000),
+      });
+      expect(res.resolvedPurpose).toBe('otp_registration');
+    }
+
+    const beforeWarning = await harness.asServiceRole(async (tx) => {
+      const res = await tx.query(
+        `SELECT alert_key FROM public.platform_alerts WHERE alert_key = 'sms_budget_80pct:new_registration:2026-11-28'`
+      );
+      return res.rows;
+    });
+    expect(beforeWarning).toHaveLength(0);
+
+    // 4th new-registration OTP reaches 80% (4/5) -> emits warning alert on Admin screen!
+    await handleCheckAndRecordSmsAllowance(repo, {
+      purpose: 'otp',
+      stage: 'precheck',
+      phone: '+260961110004',
+      clientIp: '102.140.96.10',
+      pepper: PEPPER,
+      policy: splitPolicy,
+      now: new Date(splitDay.getTime() + 4_000),
+    });
+
+    const warningAlerts = await harness.asServiceRole(async (tx) => {
+      const res = await tx.query<{ severity: string; title: string }>(
+        `SELECT severity, title FROM public.platform_alerts WHERE alert_key = 'sms_budget_80pct:new_registration:2026-11-28'`
+      );
+      return res.rows;
+    });
+    expect(warningAlerts).toHaveLength(1);
+    expect(warningAlerts[0]?.severity).toBe('warning');
+    expect(warningAlerts[0]?.title).toContain('80%');
+
+    // 5th new-registration OTP reaches 5/5; 6th hits 100% cap and pauses ONLY new registrations
+    await handleCheckAndRecordSmsAllowance(repo, {
+      purpose: 'otp',
+      stage: 'precheck',
+      phone: '+260961110005',
+      clientIp: '102.140.96.10',
+      pepper: PEPPER,
+      policy: splitPolicy,
+      now: new Date(splitDay.getTime() + 5_000),
+    });
+    await expect(
+      handleCheckAndRecordSmsAllowance(repo, {
+        purpose: 'otp',
+        stage: 'precheck',
+        phone: '+260961110006',
+        clientIp: '102.140.96.10',
+        pepper: PEPPER,
+        policy: splitPolicy,
+        now: new Date(splitDay.getTime() + 6_000),
+      })
+    ).rejects.toMatchObject({ code: 'sms_daily_cap_reached', status: 503 });
+
+    // Existing-shop sign-in OTP STILL succeeds even while new-registration cap is 100% exhausted!
+    const existingOtp = await handleCheckAndRecordSmsAllowance(repo, {
+      purpose: 'otp',
+      stage: 'precheck',
+      phone: existingOwner.phone!,
+      clientIp: '102.140.96.10',
+      pepper: PEPPER,
+      policy: splitPolicy,
+      now: new Date(splitDay.getTime() + 7_000),
+    });
+    expect(existingOtp.resolvedPurpose).toBe('otp_signin');
+
+    // Security notice SMS (PIN reset warning + recovery-code alert) are exempt even when BOTH OTP caps are 1!
+    await expect(
+      handleCheckAndRecordSmsAllowance(repo, {
+        purpose: 'pin_reset_notice',
+        stage: 'dispatch',
+        phone: existingOwner.phone!,
+        pepper: PEPPER,
+        policy: { dailyNewRegistrationCap: 1, dailyExistingSignInCap: 1 },
+        now: new Date(splitDay.getTime() + 8_000),
+      })
+    ).resolves.toMatchObject({ allowed: true, resolvedPurpose: 'pin_reset_notice' });
+
+    await expect(
+      handleCheckAndRecordSmsAllowance(repo, {
+        purpose: 'recovery_code_notice',
+        stage: 'dispatch',
+        phone: existingOwner.phone!,
+        pepper: PEPPER,
+        policy: { dailyNewRegistrationCap: 1, dailyExistingSignInCap: 1 },
+        now: new Date(splitDay.getTime() + 9_000),
+      })
+    ).resolves.toMatchObject({ allowed: true, resolvedPurpose: 'recovery_code_notice' });
+
+    // Backup-admin email in comma-separated list still strictly requires aal2
+    const backupAdmin = await harness.createAuthUser({
+      email: 'ops-backup@countup.zm',
+      emailVerified: true,
+    });
+    await expect(
+      handleVerifyPlatformAdmin(repo, {
+        userId: backupAdmin.id,
+        email: backupAdmin.email,
+        emailVerified: true,
+        alreadyAdmin: false,
+        aal: 'aal1',
+        configuredAdminEmail: 'ops-primary@countup.zm, ops-backup@countup.zm',
+      })
+    ).rejects.toMatchObject({ code: 'mfa_required', status: 403 });
+
+    await expect(
+      handleVerifyPlatformAdmin(repo, {
+        userId: backupAdmin.id,
+        email: backupAdmin.email,
+        emailVerified: true,
+        alreadyAdmin: false,
+        aal: 'aal2',
+        configuredAdminEmail: 'ops-primary@countup.zm, ops-backup@countup.zm',
+      })
+    ).resolves.toEqual({ isAdmin: true, claimsUpdated: true });
   });
 });

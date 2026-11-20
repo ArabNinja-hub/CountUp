@@ -24,6 +24,7 @@ export interface PendingSyncAction {
   writes?: { path: string; data: object }[];
   adjustments?: SyncAdjustment[];
   reservedOwnerUid?: string;
+  queuedOffline?: boolean;
 }
 
 /** Merging server snapshots with the offline queue. */

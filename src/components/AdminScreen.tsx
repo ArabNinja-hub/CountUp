@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { getSubscriptionInfo } from '../config/plans';
 import { useShop } from '../context/ShopContext';
+import type { LedgerReconciliationReport } from '../data';
 import { ManualPaymentNetwork, Shop, SubscriptionPayment } from '../types';
 import { useToast } from './Toast';
 
@@ -36,12 +37,16 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     adminToggleDeactivate,
     adminResetPinLockout,
     adminInitiatePinReset,
+    adminReconcileLedgers,
     platformAlerts,
     subscriptionPayments,
     reviewSubscriptionPayment,
   } = useShop();
   const { notify } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
+  const [reconciliationReport, setReconciliationReport] =
+    useState<LedgerReconciliationReport | null>(null);
+  const [isReconciling, setIsReconciling] = useState(false);
   const [shopFilter, setShopFilter] = useState<
     'all' | 'active' | 'trial' | 'pending_payment' | 'expired' | 'suspended'
   >('all');
@@ -264,6 +269,32 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     }
   };
 
+  const handleRunReconciliation = async () => {
+    setIsReconciling(true);
+    try {
+      const report = await adminReconcileLedgers(null);
+      setReconciliationReport(report);
+      if (report.total_differences === 0) {
+        notify('All shop ledgers reconciled (0 differences)', {
+          kind: 'success',
+          detail: `Verified sales, profit, credit balances, and stock movements across ${report.shops_checked} shop(s).`,
+        });
+      } else {
+        notify(`${report.total_differences} ledger discrepancy(ies) detected`, {
+          kind: 'error',
+          detail: 'Inspect the reconciliation breakdown below.',
+        });
+      }
+    } catch (error) {
+      notify('Could not run ledger reconciliation', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsReconciling(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-5 px-3 py-4 sm:px-6">
       <header className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
@@ -329,6 +360,50 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
             <p className="mt-1 text-lg font-extrabold tabular-nums text-slate-950">{value}</p>
           </div>
         ))}
+      </section>
+
+      <section
+        aria-label="Ledger and stock reconciliation"
+        className="rounded-xl border border-slate-200 bg-white p-3.5"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Ledger & stock reconciliation</h2>
+            <p className="text-xs text-slate-500">
+              Verifies sale totals = lines, profit = revenue − cost, customer balances, and stock =
+              initial + movements across every shop.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRunReconciliation}
+            disabled={isReconciling}
+            className="min-h-[38px] rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
+          >
+            {isReconciling ? 'Checking ledgers…' : 'Verify all ledgers'}
+          </button>
+        </div>
+        {reconciliationReport && (
+          <div
+            className={`mt-3 rounded-lg border p-3 text-xs ${
+              reconciliationReport.total_differences === 0
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+                : 'border-rose-300 bg-rose-50 text-rose-950'
+            }`}
+          >
+            <p className="font-bold">
+              {reconciliationReport.total_differences === 0
+                ? `0 differences across ${reconciliationReport.shops_checked} shop(s)`
+                : `${reconciliationReport.total_differences} difference(s) across ${reconciliationReport.shops_checked} shop(s)`}
+            </p>
+            <p className="mt-0.5 text-[11px] opacity-90">
+              Sale lines: {reconciliationReport.sale_line_mismatch_count} · Profit:{' '}
+              {reconciliationReport.sale_profit_mismatch_count} · Credit balances:{' '}
+              {reconciliationReport.customer_balance_mismatch_count} · Stock movements:{' '}
+              {reconciliationReport.stock_movement_mismatch_count}
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="space-y-3" aria-labelledby="payments-title">

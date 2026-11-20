@@ -22,20 +22,34 @@ const RECOVERY_DOMAIN = 'countup-recovery-v2';
 export const PIN_RESET_WAITING_PERIOD_MS = 72 * 60 * 60 * 1000; // 72 hours
 export const PIN_RESET_COMPLETION_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours after 72h wait
 
+export type SmsRatePurpose =
+  'otp' | 'otp_registration' | 'otp_signin' | 'pin_reset_notice' | 'recovery_code_notice';
+
 export interface SmsRateLimitPolicy {
   maxPerPhone15m: number;
   maxPerPhone24h: number;
   maxPerIp15m: number;
   maxPerIp24h: number;
-  globalDailyCap: number;
+  dailyNewRegistrationCap: number;
+  dailyExistingSignInCap: number;
+  budgetWarningRatio: number;
+  /** Optional combined cap override for legacy callers/tests. */
+  globalDailyCap?: number;
 }
 
+/**
+ * Tuned for Zambian mobile carrier CGNAT (MTN, Airtel, Zamtel share public IPv4
+ * pools across many handsets) and split daily OTP budgets so registration bursts
+ * never lock out existing paying shop owners or block security notice SMS.
+ */
 export const DEFAULT_SMS_RATE_LIMIT_POLICY: SmsRateLimitPolicy = {
   maxPerPhone15m: 3,
   maxPerPhone24h: 8,
-  maxPerIp15m: 6,
-  maxPerIp24h: 20,
-  globalDailyCap: 250,
+  maxPerIp15m: 30,
+  maxPerIp24h: 100,
+  dailyNewRegistrationCap: 150,
+  dailyExistingSignInCap: 200,
+  budgetWarningRatio: 0.8,
 };
 
 export interface DomainShopRecord {
@@ -188,7 +202,7 @@ export interface EdgeAuthRepository {
     nowIso: string;
     reason?: string | null;
   }): Promise<void>;
-  // SMS abuse rate-limiting & fail-safe daily cap
+  // SMS abuse rate-limiting & split daily OTP budgets
   getSmsUsageCounts(params: {
     phoneHash: string;
     ipHash: string | null;
@@ -197,6 +211,8 @@ export interface EdgeAuthRepository {
     dayUtc: string;
   }): Promise<{
     dailySentCount: number;
+    dailyNewRegistrationCount: number;
+    dailyExistingSignInCount: number;
     phone15mCount: number;
     phone24hCount: number;
     ip15mCount: number;
@@ -206,7 +222,7 @@ export interface EdgeAuthRepository {
   recordSmsRateEvent(params: {
     phoneHash: string;
     ipHash: string | null;
-    purpose: 'otp' | 'pin_reset_notice';
+    purpose: SmsRatePurpose;
     blocked: boolean;
     blockReason: string | null;
     dayUtc: string;
@@ -285,25 +301,68 @@ function formatUtcDay(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+async function maybeEmitBudgetWarningAlert(
+  repo: EdgeAuthRepository,
+  params: {
+    bucketKey: 'new_registration' | 'existing_signin';
+    bucketLabel: string;
+    projectedCount: number;
+    bucketCap: number;
+    warningRatio: number;
+    dayUtc: string;
+  }
+): Promise<void> {
+  if (params.bucketCap <= 0) return;
+  const ratio = params.projectedCount / params.bucketCap;
+  if (ratio < params.warningRatio || params.projectedCount > params.bucketCap) return;
+  const pct = Math.min(100, Math.round(ratio * 100));
+  await repo
+    .upsertPlatformAlert({
+      alertKey: `sms_budget_80pct:${params.bucketKey}:${params.dayUtc}`,
+      severity: 'warning',
+      category: 'sms_cap',
+      title: `Daily SMS budget at ${pct}% (${params.bucketLabel})`,
+      detail: `${params.bucketLabel} OTP usage reached ${params.projectedCount}/${params.bucketCap} (${pct}%) on ${params.dayUtc} (UTC).`,
+      metadata: {
+        day_utc: params.dayUtc,
+        bucket: params.bucketKey,
+        sent_count: params.projectedCount,
+        daily_cap: params.bucketCap,
+        percent_used: pct,
+      },
+    })
+    .catch(() => undefined);
+}
+
 /**
- * Enforces per-phone, per-IP, and global daily SMS caps.
- * Fails safe: if the global daily cap is reached OR the database check itself
- * fails, outbound SMS is blocked immediately and a critical alert is raised
- * for the Admin screen.
+ * Enforces per-phone, per-IP (tuned for Zambian mobile CGNAT), and split daily
+ * OTP budgets:
+ *   - New registrations (`otp_registration` -> `dailyNewRegistrationCap`)
+ *   - Existing-shop sign-ins (`otp_signin` -> `dailyExistingSignInCap`)
+ *   - Security notice SMS (`pin_reset_notice`, `recovery_code_notice`) are
+ *     audited in `sms_rate_events` but NEVER counted against or blocked by
+ *     either OTP daily cap.
+ * Emits a `warning` platform alert when any OTP budget reaches/passes 80%, and
+ * fails safe (`503`) + emits a `critical` alert when a bucket hits 100% or if
+ * the database ledger cannot be verified.
  */
 export async function handleCheckAndRecordSmsAllowance(
   repo: EdgeAuthRepository,
   input: {
     phone: string;
     clientIp?: string | null;
-    purpose: 'otp' | 'pin_reset_notice';
+    purpose: SmsRatePurpose;
     stage: 'precheck' | 'dispatch';
     pepper: string;
     policy?: Partial<SmsRateLimitPolicy>;
     actorUserId?: string | null;
     now?: Date;
   }
-): Promise<{ allowed: true; canonicalPhone: string }> {
+): Promise<{
+  allowed: true;
+  canonicalPhone: string;
+  resolvedPurpose: SmsRatePurpose;
+}> {
   const pepper = requirePepper(input.pepper);
   let canonicalPhone: string;
   try {
@@ -332,12 +391,58 @@ export async function handleCheckAndRecordSmsAllowance(
   const cleanIp = input.clientIp?.trim() || null;
   const ipHash = cleanIp ? await hashRateLimitIdentifier(cleanIp, pepper, 'ip') : null;
 
+  const isSecurityNotice =
+    input.purpose === 'pin_reset_notice' || input.purpose === 'recovery_code_notice';
+
+  // Security notice SMS (72h PIN reset warning & recovery-code usage alert) are
+  // exempt from OTP daily caps and OTP per-IP/per-phone throttles so an OTP surge
+  // can never silence owner anti-takeover warnings.
+  if (isSecurityNotice) {
+    try {
+      await repo.recordSmsRateEvent({
+        phoneHash,
+        ipHash,
+        purpose: input.purpose,
+        blocked: false,
+        blockReason: 'security_notice_dispatched',
+        dayUtc,
+        createdAtIso: nowIso,
+      });
+    } catch {
+      throw new EdgeDomainError(
+        503,
+        'sms_failsafe_unavailable',
+        'SMS security notifications are temporarily paused for safety. Please try again shortly.'
+      );
+    }
+    return { allowed: true, canonicalPhone, resolvedPurpose: input.purpose };
+  }
+
+  let resolvedPurpose: 'otp_registration' | 'otp_signin';
   let counts: Awaited<ReturnType<EdgeAuthRepository['getSmsUsageCounts']>>;
   try {
+    if (input.purpose === 'otp_registration' || input.purpose === 'otp_signin') {
+      resolvedPurpose = input.purpose;
+    } else {
+      const existingShop = await repo.findShopByPhone(canonicalPhone);
+      resolvedPurpose = existingShop ? 'otp_signin' : 'otp_registration';
+    }
+
+    const bucketCap =
+      resolvedPurpose === 'otp_signin'
+        ? policy.dailyExistingSignInCap
+        : policy.dailyNewRegistrationCap;
+    const bucketKey =
+      resolvedPurpose === 'otp_signin'
+        ? ('existing_signin' as const)
+        : ('new_registration' as const);
+    const bucketLabel =
+      resolvedPurpose === 'otp_signin' ? 'Existing-shop sign-in' : 'New shop registration';
+
     // When GoTrue invokes `send-sms-hook` right after a browser `precheck`,
     // claim that recent precheck row so one OTP is counted once, while still
-    // verifying the global daily cap has not been exceeded.
-    if (input.purpose === 'otp' && input.stage === 'dispatch') {
+    // verifying the bucket cap has not been exceeded.
+    if (input.stage === 'dispatch') {
       const claimed = await repo.claimRecentOtpPrecheck({
         phoneHash,
         sinceIso: since60sIso,
@@ -350,14 +455,29 @@ export async function handleCheckAndRecordSmsAllowance(
           since24hIso,
           dayUtc,
         });
-        if (counts.dailySentCount > policy.globalDailyCap) {
+        const bucketCount =
+          resolvedPurpose === 'otp_signin'
+            ? counts.dailyExistingSignInCount
+            : counts.dailyNewRegistrationCount;
+        if (
+          bucketCount > bucketCap ||
+          (policy.globalDailyCap !== undefined && counts.dailySentCount > policy.globalDailyCap)
+        ) {
           throw new EdgeDomainError(
             503,
             'sms_daily_cap_reached',
             'SMS verification is temporarily unavailable today. Try again later or contact support.'
           );
         }
-        return { allowed: true, canonicalPhone };
+        await maybeEmitBudgetWarningAlert(repo, {
+          bucketKey,
+          bucketLabel,
+          projectedCount: bucketCount,
+          bucketCap,
+          warningRatio: policy.budgetWarningRatio,
+          dayUtc,
+        });
+        return { allowed: true, canonicalPhone, resolvedPurpose };
       }
     }
 
@@ -378,35 +498,59 @@ export async function handleCheckAndRecordSmsAllowance(
     );
   }
 
-  // 1. Global daily SMS cap (fail-safe stop + critical Admin Screen alert)
-  if (counts.dailySentCount >= policy.globalDailyCap) {
+  const bucketKey =
+    resolvedPurpose === 'otp_signin' ? ('existing_signin' as const) : ('new_registration' as const);
+  const bucketLabel =
+    resolvedPurpose === 'otp_signin' ? 'Existing-shop sign-in' : 'New shop registration';
+  const bucketCap =
+    resolvedPurpose === 'otp_signin'
+      ? policy.dailyExistingSignInCap
+      : policy.dailyNewRegistrationCap;
+  const bucketSentCount =
+    resolvedPurpose === 'otp_signin'
+      ? counts.dailyExistingSignInCount
+      : counts.dailyNewRegistrationCount;
+
+  const legacyGlobalReached =
+    policy.globalDailyCap !== undefined && counts.dailySentCount >= policy.globalDailyCap;
+
+  // 1. Split daily OTP budget cap (fail-safe stop for ONLY the exhausted bucket + critical Admin alert)
+  if (bucketSentCount >= bucketCap || legacyGlobalReached) {
+    const effectiveCap = legacyGlobalReached ? (policy.globalDailyCap ?? bucketCap) : bucketCap;
+    const effectiveSent = legacyGlobalReached ? counts.dailySentCount : bucketSentCount;
     try {
       await repo.recordSmsRateEvent({
         phoneHash,
         ipHash,
-        purpose: input.purpose,
+        purpose: resolvedPurpose,
         blocked: true,
-        blockReason: 'global_daily_cap',
+        blockReason: legacyGlobalReached ? 'global_daily_cap' : `${bucketKey}_daily_cap`,
         dayUtc,
         createdAtIso: nowIso,
       });
       await repo.upsertPlatformAlert({
-        alertKey: `sms_daily_cap:${dayUtc}`,
+        alertKey: `sms_daily_cap:${bucketKey}:${dayUtc}`,
         severity: 'critical',
         category: 'sms_cap',
-        title: 'Global daily SMS cap reached — SMS sending paused',
-        detail: `CountUp reached ${counts.dailySentCount}/${policy.globalDailyCap} outbound SMS messages on ${dayUtc} (UTC). Outbound SMS has stopped automatically to prevent billing abuse.`,
+        title: `${bucketLabel} daily SMS cap reached — paused`,
+        detail: `CountUp reached ${effectiveSent}/${effectiveCap} ${bucketLabel.toLowerCase()} OTP messages on ${dayUtc} (UTC). This OTP bucket paused automatically to prevent billing abuse.`,
         metadata: {
           day_utc: dayUtc,
-          daily_sent_count: counts.dailySentCount,
-          global_daily_cap: policy.globalDailyCap,
+          bucket: bucketKey,
+          daily_sent_count: effectiveSent,
+          daily_cap: effectiveCap,
         },
       });
       await repo.writeAudit({
-        action: 'sms_global_daily_cap_reached',
+        action: 'sms_daily_cap_reached',
         actorUserId: input.actorUserId ?? null,
-        reason: `Daily SMS cap (${policy.globalDailyCap}) reached on ${dayUtc}`,
-        metadata: { day_utc: dayUtc, daily_sent_count: counts.dailySentCount },
+        reason: `${bucketLabel} daily SMS cap (${effectiveCap}) reached on ${dayUtc}`,
+        metadata: {
+          day_utc: dayUtc,
+          bucket: bucketKey,
+          daily_sent_count: effectiveSent,
+          daily_cap: effectiveCap,
+        },
       });
     } catch {
       // Even if alert persistence fails, fail safe and refuse to send SMS.
@@ -414,12 +558,14 @@ export async function handleCheckAndRecordSmsAllowance(
     throw new EdgeDomainError(
       503,
       'sms_daily_cap_reached',
-      'SMS verification is temporarily paused because today’s platform SMS limit was reached. Please try again later.'
+      resolvedPurpose === 'otp_registration'
+        ? 'New shop SMS verification is temporarily paused because today’s registration SMS limit was reached. Existing shops can still sign in.'
+        : 'SMS sign-in verification is temporarily paused because today’s daily SMS limit was reached. Please try again later.'
     );
   }
 
-  // 2. Per-IP limits (checked when client IP is available)
-  if (ipHash && input.purpose === 'otp') {
+  // 2. Per-IP limits (tuned for Zambian mobile CGNAT: 30 / 15m, 100 / 24h)
+  if (ipHash) {
     if (counts.ip15mCount >= policy.maxPerIp15m || counts.ip24hCount >= policy.maxPerIp24h) {
       const reason =
         counts.ip15mCount >= policy.maxPerIp15m ? 'ip_rate_limit_15m' : 'ip_rate_limit_24h';
@@ -427,7 +573,7 @@ export async function handleCheckAndRecordSmsAllowance(
         .recordSmsRateEvent({
           phoneHash,
           ipHash,
-          purpose: 'otp',
+          purpose: resolvedPurpose,
           blocked: true,
           blockReason: reason,
           dayUtc,
@@ -453,41 +599,39 @@ export async function handleCheckAndRecordSmsAllowance(
   }
 
   // 3. Per-phone limits
-  if (input.purpose === 'otp') {
-    if (
-      counts.phone15mCount >= policy.maxPerPhone15m ||
-      counts.phone24hCount >= policy.maxPerPhone24h
-    ) {
-      const reason =
-        counts.phone15mCount >= policy.maxPerPhone15m
-          ? 'phone_rate_limit_15m'
-          : 'phone_rate_limit_24h';
-      await repo
-        .recordSmsRateEvent({
-          phoneHash,
-          ipHash,
-          purpose: 'otp',
-          blocked: true,
-          blockReason: reason,
-          dayUtc,
-          createdAtIso: nowIso,
-        })
-        .catch(() => undefined);
-      throw new EdgeDomainError(
-        429,
-        'sms_phone_rate_limited',
-        counts.phone15mCount >= policy.maxPerPhone15m
-          ? 'Too many SMS codes requested for this phone number. Wait 15 minutes and try again.'
-          : 'Daily SMS verification limit reached for this phone number. Try again tomorrow.'
-      );
-    }
+  if (
+    counts.phone15mCount >= policy.maxPerPhone15m ||
+    counts.phone24hCount >= policy.maxPerPhone24h
+  ) {
+    const reason =
+      counts.phone15mCount >= policy.maxPerPhone15m
+        ? 'phone_rate_limit_15m'
+        : 'phone_rate_limit_24h';
+    await repo
+      .recordSmsRateEvent({
+        phoneHash,
+        ipHash,
+        purpose: resolvedPurpose,
+        blocked: true,
+        blockReason: reason,
+        dayUtc,
+        createdAtIso: nowIso,
+      })
+      .catch(() => undefined);
+    throw new EdgeDomainError(
+      429,
+      'sms_phone_rate_limited',
+      counts.phone15mCount >= policy.maxPerPhone15m
+        ? 'Too many SMS codes requested for this phone number. Wait 15 minutes and try again.'
+        : 'Daily SMS verification limit reached for this phone number. Try again tomorrow.'
+    );
   }
 
   try {
     await repo.recordSmsRateEvent({
       phoneHash,
       ipHash,
-      purpose: input.purpose,
+      purpose: resolvedPurpose,
       blocked: false,
       blockReason: input.stage === 'precheck' ? 'precheck_pending' : 'dispatched',
       dayUtc,
@@ -501,7 +645,16 @@ export async function handleCheckAndRecordSmsAllowance(
     );
   }
 
-  return { allowed: true, canonicalPhone };
+  await maybeEmitBudgetWarningAlert(repo, {
+    bucketKey,
+    bucketLabel,
+    projectedCount: bucketSentCount + 1,
+    bucketCap,
+    warningRatio: policy.budgetWarningRatio,
+    dayUtc,
+  });
+
+  return { allowed: true, canonicalPhone, resolvedPurpose };
 }
 
 export async function handleRegisterShop(
@@ -804,6 +957,8 @@ export async function handleRecoverShopPin(
     newPin: string;
     pepper: string;
     iterations?: number;
+    smsPolicy?: Partial<SmsRateLimitPolicy>;
+    sendSms?: (params: { toE164: string; message: string }) => Promise<void>;
     now?: Date;
   }
 ): Promise<{ shop: DomainShopRecord; recoveryCode: string }> {
@@ -928,6 +1083,27 @@ export async function handleRecoverShopPin(
     actorUserId: input.userId,
     shopId: shop.id,
   });
+
+  if (input.sendSms) {
+    try {
+      await handleCheckAndRecordSmsAllowance(repo, {
+        phone: shop.owner_phone,
+        purpose: 'recovery_code_notice',
+        stage: 'dispatch',
+        pepper,
+        policy: input.smsPolicy,
+        actorUserId: input.userId,
+        now,
+      });
+      await input.sendSms({
+        toE164: shop.owner_phone,
+        message: `CountUp Security Alert: Your one-time recovery code was used to unlock "${shop.name}" on a new device and change the PIN. If this was not you, open Settings in CountUp immediately to sign out other devices.`,
+      });
+    } catch {
+      // Recovery itself already rotated secrets and posted in-app security_notice;
+      // do not roll back valid recovery if carrier SMS gateway is unreachable.
+    }
+  }
 
   const updatedShop = (await repo.findShopById(shop.id)) ?? {
     ...shop,
@@ -1165,8 +1341,11 @@ export async function handleVerifyPlatformAdmin(
   if (input.alreadyAdmin) {
     return { isAdmin: true, claimsUpdated: false };
   }
-  const expected = input.configuredAdminEmail.trim().toLowerCase();
-  if (!expected) {
+  const allowedEmails = input.configuredAdminEmail
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (allowedEmails.length === 0) {
     throw new EdgeDomainError(
       500,
       'admin_not_configured',
@@ -1174,7 +1353,7 @@ export async function handleVerifyPlatformAdmin(
     );
   }
   const actual = (input.email ?? '').trim().toLowerCase();
-  if (!input.emailVerified || !actual || actual !== expected) {
+  if (!input.emailVerified || !actual || !allowedEmails.includes(actual)) {
     throw new EdgeDomainError(
       403,
       'permission_denied',
