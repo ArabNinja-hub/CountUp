@@ -52,6 +52,7 @@ import {
 } from '../services/backupImport';
 import {
   acknowledgeShopSecurityNoticeOnServer,
+  acknowledgeShopSubscriptionNoticeOnServer,
   adminInitiateShopPinReset,
   adminResetShopPinLockout,
   AdminSignInOutcome,
@@ -98,8 +99,10 @@ import {
   readShopDomainCache,
   readVersionedActiveShop,
   reconcileShopLedger,
+  reconcileSubscriptions,
   resolveShopSyncReviewOnServer,
   ShopDomainCacheSnapshot,
+  SubscriptionReconciliationReport,
   SYNC_BATCH_CHUNK_SIZE,
   writeVersionedActiveShop,
   writeVersionedDomainCollection,
@@ -188,6 +191,7 @@ interface ShopContextType {
   cancelEmailLogin: () => Promise<void>;
   resetEmailPassword: (email: string) => Promise<void>;
   acknowledgeSecurityNotice: () => Promise<void>;
+  acknowledgeSubscriptionNotice: () => Promise<void>;
   platformAlerts: PlatformAlertRow[];
   subscriptionPayments: SubscriptionPayment[];
   submitSubscriptionPayment: (input: {
@@ -196,11 +200,13 @@ interface ShopContextType {
     transactionReference: string;
     payerPhone: string;
     paymentDate: string;
+    operationId?: string;
   }) => Promise<void>;
   reviewSubscriptionPayment: (input: {
     paymentId: string;
     decision: 'approve' | 'reject';
     reason?: string;
+    operationId?: string;
   }) => Promise<void>;
   logout: () => Promise<void>;
   /** Permanently deletes this shop and every record that belongs to it after server verification. */
@@ -285,14 +291,17 @@ interface ShopContextType {
 
   // Platform Admin
   allShops: Shop[];
-  adminExtendShop: (shopId: string, days: number) => Promise<void>;
-  adminToggleDeactivate: (shopId: string) => Promise<void>;
+  adminExtendShop: (shopId: string, days: number, operationId?: string) => Promise<void>;
+  adminToggleDeactivate: (shopId: string, operationId?: string) => Promise<void>;
   adminResetPinLockout: (shopId: string, identityCheckNote: string) => Promise<void>;
   adminInitiatePinReset: (
     shopId: string,
     identityCheckNote: string
   ) => Promise<{ availableAt: string; expiresAt: string }>;
   adminReconcileLedgers: (shopId?: string | null) => Promise<LedgerReconciliationReport>;
+  adminReconcileSubscriptions: (
+    shopId?: string | null
+  ) => Promise<SubscriptionReconciliationReport>;
 }
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
@@ -601,6 +610,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...data,
           securityNotice: data.securityNotice ?? prev?.securityNotice ?? null,
           securityNoticeAt: data.securityNoticeAt ?? prev?.securityNoticeAt ?? null,
+          subscriptionNotice:
+            data.subscriptionNotice !== undefined
+              ? data.subscriptionNotice
+              : (prev?.subscriptionNotice ?? null),
+          subscriptionNoticeAt:
+            data.subscriptionNoticeAt !== undefined
+              ? data.subscriptionNoticeAt
+              : (prev?.subscriptionNoticeAt ?? null),
         }));
       }
     };
@@ -965,6 +982,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       syncingRef.current = true;
       setIsSyncing(true);
       let synced = 0;
+      let lateKeptCount = 0;
       let failure: unknown = null;
       let conflict: BlockedSyncState | null = null;
       try {
@@ -1069,6 +1087,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 );
               }
               const rpcRes = outcome.result ?? {};
+              if (rpcRes.offline_window_flagged === true || rpcRes.outcome === 'flagged') {
+                lateKeptCount++;
+              }
               const needsRebase =
                 rpcRes.outcome === 'already-voided' || rpcRes.has_resolution === true;
               const base = needsRebase
@@ -1099,6 +1120,15 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       if (synced > 0) {
         void readSyncCoordinatorRef.current?.triggerNow();
+      }
+      if (lateKeptCount > 0) {
+        notify('Synced late, kept', {
+          kind: 'info',
+          detail:
+            lateKeptCount === 1
+              ? '1 offline sale synced after 72 hours and was kept in your sales book.'
+              : `${lateKeptCount} offline sales synced after 72 hours and were kept in your sales book.`,
+        });
       }
       if (failure) {
         setBlockedSync(conflict);
@@ -1642,12 +1672,50 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setShop((prev) => (prev ? { ...prev, securityNotice: null, securityNoticeAt: null } : null));
   };
 
+  const acknowledgeSubscriptionNotice = async () => {
+    if (!navigator.onLine || !currentUserRef.current) {
+      throw new Error('Connect to the internet to dismiss this subscription notice.');
+    }
+    await acknowledgeShopSubscriptionNoticeOnServer();
+    setShop((prev) =>
+      prev ? { ...prev, subscriptionNotice: null, subscriptionNoticeAt: null } : null
+    );
+  };
+
+  const refreshAdminAndPaymentsAfterMutation = async () => {
+    const activeUser = currentUserRef.current;
+    const testOverride = getShopReadSyncOverrideForTests();
+    if (!testOverride?.subscribeSubscriptionPayments && activeUser) {
+      const records = await fetchSubscriptionPaymentsFromServer({
+        userId: activeUser.uid,
+        isAdmin,
+      }).catch(() => null);
+      if (records) setSubscriptionPayments(records);
+    }
+    if (isAdmin) {
+      const [rows, alerts] = await Promise.all([
+        fetchAllShopsForAdmin().catch(() => null),
+        fetchActivePlatformAlerts().catch(() => null),
+      ]);
+      if (rows && rows.length > 0) {
+        setAllShops((prev) => {
+          const merged = new Map(prev.map((entry) => [entry.id, entry]));
+          for (const row of rows) merged.set(row.id, row);
+          return [...merged.values()];
+        });
+      }
+      if (alerts) setPlatformAlerts(alerts);
+    }
+    void readSyncCoordinatorRef.current?.triggerNow();
+  };
+
   const submitSubscriptionPayment = async (input: {
     planId: PlanBillingCycle;
     network: ManualPaymentNetwork;
     transactionReference: string;
     payerPhone: string;
     paymentDate: string;
+    operationId?: string;
   }) => {
     if (!navigator.onLine || !user || !shop)
       throw new Error(
@@ -1658,15 +1726,18 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (user.uid !== shop.ownerUid && user.uid !== shop.id)
       throw new Error('Only the shop owner can submit a subscription payment.');
     await submitManualSubscriptionPayment({ ...input, shopId: shop.id });
+    await refreshAdminAndPaymentsAfterMutation();
   };
 
   const reviewSubscriptionPayment = async (input: {
     paymentId: string;
     decision: 'approve' | 'reject';
     reason?: string;
+    operationId?: string;
   }) => {
     if (!isAdmin || !user) throw new Error('Administrator access is required.');
     await reviewManualSubscriptionPayment(input);
+    await refreshAdminAndPaymentsAfterMutation();
   };
 
   const resetEmailPassword = async (email: string) => {
@@ -2461,6 +2532,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       operationId,
       fileSha256,
       backupJson: prepared.parsedJson,
+      prepared,
+      rawByteLength: new TextEncoder().encode(raw).byteLength,
     });
     return {
       prepared,
@@ -2484,6 +2557,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       operationId,
       fileSha256,
       backupJson: prepared.parsedJson,
+      prepared,
+      rawByteLength: new TextEncoder().encode(raw).byteLength,
       allowNonEmptyShop: Boolean(options?.allowNonEmptyShop),
     });
 
@@ -2562,15 +2637,21 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!target) throw new Error('Shop not found. Refresh the list and try again.');
     return target;
   };
-  const adminExtendShop = async (shopId: string, days: number) => {
+  const adminExtendShop = async (shopId: string, days: number, operationId?: string) => {
     adminTarget(shopId);
     if (!Number.isInteger(days) || days <= 0) throw new Error('Enter a valid number of days.');
-    await extendShopSubscription({ shopId, days });
+    await extendShopSubscription({ shopId, days, operationId });
+    await refreshAdminAndPaymentsAfterMutation();
   };
 
-  const adminToggleDeactivate = async (shopId: string) => {
+  const adminToggleDeactivate = async (shopId: string, operationId?: string) => {
     const targetShop = adminTarget(shopId);
-    await setShopSuspended({ shopId, suspended: !targetShop.isDeactivated });
+    await setShopSuspended({
+      shopId,
+      suspended: !targetShop.isDeactivated,
+      operationId,
+    });
+    await refreshAdminAndPaymentsAfterMutation();
   };
 
   const adminResetPinLockout = async (shopId: string, identityCheckNote: string) => {
@@ -2610,6 +2691,16 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return reconcileShopLedger(shopId);
   };
 
+  const adminReconcileSubscriptions = async (
+    shopId: string | null = null
+  ): Promise<SubscriptionReconciliationReport> => {
+    if (!navigator.onLine) throw new Error('Connect to the internet to reconcile subscriptions.');
+    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
+      throw new Error('Admin MFA (aal2) access is required. Sign in again.');
+    }
+    return reconcileSubscriptions(shopId);
+  };
+
   return (
     <ShopContext.Provider
       value={{
@@ -2637,6 +2728,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cancelEmailLogin,
         resetEmailPassword,
         acknowledgeSecurityNotice,
+        acknowledgeSubscriptionNotice,
         platformAlerts,
         subscriptionPayments,
         submitSubscriptionPayment,
@@ -2694,6 +2786,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         adminResetPinLockout,
         adminInitiatePinReset,
         adminReconcileLedgers,
+        adminReconcileSubscriptions,
       }}
     >
       {children}

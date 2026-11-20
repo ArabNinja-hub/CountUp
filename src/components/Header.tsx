@@ -40,6 +40,7 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
     logout,
     lockScreen,
     acknowledgeSecurityNotice,
+    acknowledgeSubscriptionNotice,
     cancelPendingPinReset,
     items,
     customers,
@@ -399,6 +400,36 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
                 {dismissingNotice ? 'Dismissing…' : 'Dismiss alert'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subscription Status Notice (kept separate from PIN/security alerts) */}
+      {shop?.subscriptionNotice && (
+        <div
+          role="status"
+          className="border-b border-sky-200 bg-sky-50 px-3 py-2 text-sky-950 sm:px-6"
+        >
+          <div className="mx-auto flex max-w-7xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 text-xs leading-relaxed">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-sky-700" />
+              <span className="font-medium">{shop.subscriptionNotice}</span>
+            </div>
+            <button
+              type="button"
+              disabled={dismissingNotice || !isOnline}
+              onClick={async () => {
+                setDismissingNotice(true);
+                try {
+                  await acknowledgeSubscriptionNotice();
+                } finally {
+                  setDismissingNotice(false);
+                }
+              }}
+              className="self-start rounded-lg border border-sky-300 bg-white px-2.5 py-1 text-xs font-bold text-sky-900 hover:bg-sky-100 disabled:opacity-50 sm:self-auto"
+            >
+              {dismissingNotice ? 'Dismissing…' : 'Dismiss'}
+            </button>
           </div>
         </div>
       )}

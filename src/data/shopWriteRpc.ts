@@ -2,7 +2,12 @@ import { supabase } from '../supabase/client';
 import type { CreditPayment, Customer, Expense, Item, Sale, StockMovement } from '../types';
 import { fromNgwee, toNgwee } from '../utils/money';
 import { PendingSyncAction, SyncProjectionDocument } from '../utils/sync';
-import type { ShopBackupPreview } from '../services/backupImport';
+import {
+  buildBackupImportChunks,
+  type PreparedShopBackup,
+  type ShopBackupPreview,
+  type StagedBackupChunkDescriptor,
+} from '../services/backupImport';
 import {
   CreditBalanceConflict,
   describeQueuedActionSummary,
@@ -20,6 +25,7 @@ import type {
   SaleLineRow,
   SaleRow,
   StockMovementRow,
+  SubscriptionReconciliationReport,
   SyncOperationRow,
 } from './database.types';
 import {
@@ -1202,9 +1208,33 @@ export async function previewShopBackupOnServer(
     operationId: string;
     fileSha256: string;
     backupJson: Record<string, unknown>;
+    prepared?: PreparedShopBackup;
+    rawByteLength?: number;
+    useChunkedThresholdRecords?: number;
   },
   client: ShopRpcQueryClient = getActiveShopWriteClient()
 ): Promise<ServerBackupRestoreResponse> {
+  const threshold = params.useChunkedThresholdRecords ?? 1_000;
+  if (
+    params.prepared &&
+    (params.prepared.preview.totalRecordsCount > threshold || (params.rawByteLength ?? 0) > 512_000)
+  ) {
+    return importShopBackupChunkedOnServer(
+      {
+        shopId: params.shopId,
+        operationId: params.operationId,
+        fileSha256: params.fileSha256,
+        prepared: params.prepared,
+        rawByteLength:
+          params.rawByteLength ??
+          new TextEncoder().encode(JSON.stringify(params.backupJson)).byteLength,
+        allowNonEmptyShop: false,
+        dryRun: true,
+      },
+      client
+    );
+  }
+
   const { data, error } = await client.rpc('import_shop_backup', {
     p_shop_id: params.shopId,
     p_operation_id: params.operationId,
@@ -1219,16 +1249,138 @@ export async function previewShopBackupOnServer(
   return mapServerBackupResponse((data ?? {}) as Record<string, unknown>);
 }
 
+export async function importShopBackupChunkedOnServer(
+  params: {
+    shopId: string;
+    operationId: string;
+    fileSha256: string;
+    prepared: PreparedShopBackup;
+    rawByteLength: number;
+    allowNonEmptyShop?: boolean;
+    dryRun?: boolean;
+    maxRecordsPerChunk?: number;
+  },
+  client: ShopRpcQueryClient = getActiveShopWriteClient()
+): Promise<ServerBackupRestoreResponse> {
+  const chunks: StagedBackupChunkDescriptor[] = buildBackupImportChunks(
+    params.prepared,
+    params.maxRecordsPerChunk ?? 500
+  );
+
+  const { data: beginData, error: beginErr } = await client.rpc('begin_shop_backup_import', {
+    p_shop_id: params.shopId,
+    p_operation_id: params.operationId,
+    p_file_sha256: params.fileSha256,
+    p_format: params.prepared.format,
+    p_total_bytes: Math.max(2, params.rawByteLength),
+    p_expected_chunks: chunks.length,
+    p_source_shop_name: params.prepared.sourceShopName,
+    p_allow_non_empty_shop: Boolean(params.allowNonEmptyShop),
+  });
+  if (beginErr) {
+    throw normalizeSupabaseError(beginErr);
+  }
+
+  const beginObj = (beginData ?? {}) as Record<string, unknown>;
+  if (beginObj.status === 'duplicate' || beginObj.already_imported === true) {
+    return {
+      status: 'duplicate',
+      dryRun: false,
+      idempotent: true,
+      alreadyImported: true,
+      shopHasExistingData: Boolean(beginObj.shop_has_existing_data),
+      fileSha256: String(beginObj.file_sha256 ?? params.fileSha256),
+      preview: params.prepared.preview,
+    };
+  }
+
+  const sessionId = String(beginObj.session_id ?? '');
+  if (!sessionId) {
+    throw new Error('Failed to start staged backup import session.');
+  }
+
+  const alreadyUploaded = new Set<number>(
+    Array.isArray(beginObj.uploaded_chunks)
+      ? (beginObj.uploaded_chunks as unknown[]).map((idx) => Number(idx))
+      : []
+  );
+
+  try {
+    for (const chunk of chunks) {
+      if (alreadyUploaded.has(chunk.chunkIndex)) continue;
+      const { error: chunkErr } = await client.rpc('append_shop_backup_chunk', {
+        p_shop_id: params.shopId,
+        p_session_id: sessionId,
+        p_chunk_index: chunk.chunkIndex,
+        p_section: chunk.section,
+        p_records: chunk.records,
+      });
+      if (chunkErr) {
+        throw normalizeSupabaseError(chunkErr);
+      }
+    }
+
+    const { data: finalData, error: finalErr } = await client.rpc('finalize_shop_backup_import', {
+      p_shop_id: params.shopId,
+      p_session_id: sessionId,
+      p_dry_run: Boolean(params.dryRun),
+    });
+    if (finalErr) {
+      throw normalizeSupabaseError(finalErr);
+    }
+    if (params.dryRun) {
+      await Promise.resolve(
+        client.rpc('abort_shop_backup_import', {
+          p_shop_id: params.shopId,
+          p_session_id: sessionId,
+        })
+      ).catch(() => undefined);
+    }
+    return mapServerBackupResponse((finalData ?? {}) as Record<string, unknown>);
+  } catch (err) {
+    await Promise.resolve(
+      client.rpc('abort_shop_backup_import', {
+        p_shop_id: params.shopId,
+        p_session_id: sessionId,
+      })
+    ).catch(() => undefined);
+    throw err;
+  }
+}
+
 export async function importShopBackupOnServer(
   params: {
     shopId: string;
     operationId: string;
     fileSha256: string;
     backupJson: Record<string, unknown>;
+    prepared?: PreparedShopBackup;
+    rawByteLength?: number;
     allowNonEmptyShop?: boolean;
+    useChunkedThresholdRecords?: number;
   },
   client: ShopRpcQueryClient = getActiveShopWriteClient()
 ): Promise<ServerBackupRestoreResponse> {
+  const threshold = params.useChunkedThresholdRecords ?? 1_000;
+  if (
+    params.prepared &&
+    (params.prepared.preview.totalRecordsCount > threshold || (params.rawByteLength ?? 0) > 512_000)
+  ) {
+    return importShopBackupChunkedOnServer(
+      {
+        shopId: params.shopId,
+        operationId: params.operationId,
+        fileSha256: params.fileSha256,
+        prepared: params.prepared,
+        rawByteLength:
+          params.rawByteLength ??
+          new TextEncoder().encode(JSON.stringify(params.backupJson)).byteLength,
+        allowNonEmptyShop: params.allowNonEmptyShop,
+      },
+      client
+    );
+  }
+
   const { data, error } = await client.rpc('import_shop_backup', {
     p_shop_id: params.shopId,
     p_operation_id: params.operationId,
@@ -1275,4 +1427,17 @@ export async function reconcileShopLedger(
     throw normalizeSupabaseError(error);
   }
   return data as LedgerReconciliationReport;
+}
+
+export async function reconcileSubscriptions(
+  shopId: string | null = null,
+  client: ShopRpcQueryClient = getActiveShopWriteClient()
+): Promise<SubscriptionReconciliationReport> {
+  const { data, error } = await client.rpc('reconcile_subscriptions', {
+    p_shop_id: shopId,
+  });
+  if (error) {
+    throw normalizeSupabaseError(error);
+  }
+  return data as SubscriptionReconciliationReport;
 }

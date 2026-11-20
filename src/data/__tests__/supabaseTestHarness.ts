@@ -5,6 +5,7 @@ import { PGlite, Transaction } from '@electric-sql/pglite';
 
 export interface TestIdentity {
   id: string;
+  sessionId?: string;
   phone?: string;
   email?: string;
   emailVerified?: boolean;
@@ -113,6 +114,7 @@ export function buildJwtClaims(
     role,
     sub: identity.id,
     aal: identity.aal ?? 'aal1',
+    ...(identity.sessionId ? { session_id: identity.sessionId } : {}),
     ...(identity.phone ? { phone: identity.phone } : {}),
     ...(identity.email ? { email: identity.email } : {}),
     email_verified: Boolean(identity.emailVerified),
@@ -135,6 +137,7 @@ export async function createTestSupabaseDb() {
   async function createAuthUser(input: Partial<TestIdentity> = {}): Promise<TestIdentity> {
     const identity: TestIdentity = {
       id: input.id ?? randomUUID(),
+      sessionId: input.sessionId,
       phone: input.phone,
       email: input.email,
       emailVerified: input.emailVerified ?? false,

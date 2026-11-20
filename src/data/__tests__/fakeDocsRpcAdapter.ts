@@ -22,6 +22,8 @@ export interface FakeDocsStateBridge {
   transactionError: Error | null;
   failMarker: string | null;
   failNextVerification: boolean;
+  failWrite?: boolean;
+  serverShops?: Map<string, { shop: unknown }>;
 }
 
 function docToRow(
@@ -1354,6 +1356,103 @@ export function createFakeDocsRpcClient(bridge: FakeDocsStateBridge): ShopRpcQue
             customer_balance_mismatches: [],
             stock_movement_mismatches: [],
           },
+          error: null,
+        } as unknown as ReturnType<ShopRpcQueryClient['rpc']>;
+      }
+
+      if (fnName === 'reconcile_subscriptions') {
+        return {
+          data: {
+            checked_at: new Date().toISOString(),
+            shops_checked: 1,
+            total_differences: 0,
+            expiry_mismatch_count: 0,
+            payment_amount_mismatch_count: 0,
+            reference_lock_mismatch_count: 0,
+            shop_pointer_mismatch_count: 0,
+            details: [],
+          },
+          error: null,
+        } as unknown as ReturnType<ShopRpcQueryClient['rpc']>;
+      }
+
+      if (
+        fnName === 'admin_extend_shop_subscription' ||
+        fnName === 'admin_set_shop_suspended' ||
+        fnName === 'submit_subscription_payment' ||
+        fnName === 'review_subscription_payment'
+      ) {
+        if (bridge.failWrite) {
+          return {
+            data: null,
+            error: makeRpcError('Write rejected', '42501', 'WRITE_REJECTED'),
+          } as unknown as ReturnType<ShopRpcQueryClient['rpc']>;
+        }
+
+        if (fnName === 'submit_subscription_payment') {
+          const shopId = String(args.p_shop_id ?? '');
+          const paymentId = `payment_${Date.now()}`;
+          const path = `shops/${shopId}`;
+          const currentDoc = bridge.docs.get(path);
+          if (currentDoc) {
+            const updated = {
+              ...currentDoc,
+              pendingPaymentId: paymentId,
+              planStatus: currentDoc.isDeactivated ? 'suspended' : 'pending_payment',
+            };
+            bridge.docs.set(path, updated);
+            const serverEntry = bridge.serverShops?.get(shopId);
+            if (serverEntry) serverEntry.shop = updated;
+          }
+          bridge.emit();
+          return {
+            data: { id: paymentId, status: 'pending', idempotent: false },
+            error: null,
+          } as unknown as ReturnType<ShopRpcQueryClient['rpc']>;
+        }
+
+        if (fnName === 'review_subscription_payment') {
+          const decision = String(args.p_decision ?? '');
+          bridge.emit();
+          return {
+            data: {
+              status: decision === 'approve' ? 'approved' : 'rejected',
+              idempotent: false,
+            },
+            error: null,
+          } as unknown as ReturnType<ShopRpcQueryClient['rpc']>;
+        }
+
+        const shopId = String(args.p_shop_id ?? '');
+        const path = `shops/${shopId}`;
+        const currentDoc = bridge.docs.get(path) ?? {};
+        let updated: Record<string, unknown>;
+        if (fnName === 'admin_extend_shop_subscription') {
+          const days = Number(args.p_days ?? 0);
+          updated = {
+            ...currentDoc,
+            planStatus: currentDoc.isDeactivated ? 'suspended' : 'active',
+            planExpiryDate: new Date(Date.now() + days * 86_400_000).toISOString(),
+          };
+        } else {
+          const suspended = Boolean(args.p_suspended);
+          const restored = (currentDoc.statusBeforeSuspension as string | undefined) ?? 'active';
+          updated = {
+            ...currentDoc,
+            isDeactivated: suspended,
+            statusBeforeSuspension: suspended ? (currentDoc.planStatus ?? 'active') : undefined,
+            planStatus: suspended ? 'suspended' : restored,
+          };
+        }
+        bridge.docs.set(path, updated);
+        const serverEntry = bridge.serverShops?.get(shopId);
+        if (serverEntry) serverEntry.shop = updated;
+        bridge.emit();
+        return {
+          data:
+            fnName === 'admin_extend_shop_subscription'
+              ? { extended: true, idempotent: false }
+              : { suspended: Boolean(args.p_suspended), idempotent: false },
           error: null,
         } as unknown as ReturnType<ShopRpcQueryClient['rpc']>;
       }

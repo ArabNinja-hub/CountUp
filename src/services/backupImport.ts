@@ -3,10 +3,36 @@ import { CreditPayment, Customer, Expense, Item, Sale, StockMovement } from '../
 import { fromNgwee } from '../utils/money';
 
 export const MAX_BACKUP_FILE_BYTES = 5_000_000; // 5 MB
-export const MAX_BACKUP_TOTAL_RECORDS = 10_000;
+/**
+ * Cap on primary ledger entities (`items + sales + customers + expenses + creditPayments`),
+ * sized to comfortably restore 2+ years of normal daily sales (~15,000–30,000 sales).
+ */
+export const MAX_BACKUP_PRIMARY_RECORDS = 50_000;
+/**
+ * Cap on total expanded database rows, which EXPLICITLY includes `sale_lines` and
+ * `stock_movements` (including synthesized `:opening` movements):
+ * `items + sales + sale_lines + customers + expenses + creditPayments + stockMovements`.
+ */
+export const MAX_BACKUP_TOTAL_RECORDS = 200_000;
+export const BACKUP_CHUNK_MAX_ROWS = 500;
 export const MAX_NGWEE_AMOUNT = 10_000_000_000; // K100,000,000.00
 
 export type SupportedBackupFormat = 'shopbook-backup-v1' | 'countup-backup-v2';
+
+export type BackupChunkSection =
+  | 'items'
+  | 'archivedItems'
+  | 'customers'
+  | 'sales'
+  | 'creditPayments'
+  | 'expenses'
+  | 'stockMovements';
+
+export interface StagedBackupChunkDescriptor {
+  chunkIndex: number;
+  section: BackupChunkSection;
+  records: Array<Record<string, unknown>>;
+}
 
 export interface ShopBackupPreview {
   format: SupportedBackupFormat;
@@ -15,10 +41,12 @@ export interface ShopBackupPreview {
   activeItemsCount: number;
   archivedItemsCount: number;
   salesCount: number;
+  saleLinesCount?: number;
   customersCount: number;
   expensesCount: number;
   creditPaymentsCount: number;
   stockMovementsCount: number;
+  primaryRecordsCount?: number;
   totalRecordsCount: number;
   totalStockValueNgwee: number;
   totalOwedNgwee: number;
@@ -265,12 +293,12 @@ const v1BackupSchema = z
     format: z.literal('shopbook-backup-v1'),
     exportedAt: timestamp,
     shopSettings: z.object({ shopName: text }).passthrough(),
-    products: z.array(productSchema).max(2000),
-    customers: z.array(customerSchema).max(2000),
-    sales: z.array(saleSchema).max(5000),
-    saleItems: z.array(saleItemSchema).max(15000),
-    stockMovements: z.array(movementSchema).max(15000),
-    creditTransactions: z.array(creditSchema).max(10000),
+    products: z.array(productSchema).max(5000),
+    customers: z.array(customerSchema).max(5000),
+    sales: z.array(saleSchema).max(30000),
+    saleItems: z.array(saleItemSchema).max(80000),
+    stockMovements: z.array(movementSchema).max(80000),
+    creditTransactions: z.array(creditSchema).max(40000),
   })
   .strict();
 
@@ -343,18 +371,22 @@ function buildPreview(params: {
     totalOwedNgwee += params.customerOwedNgweeById.get(cust.id) ?? 0;
   }
 
-  const totalRecordsCount =
+  const primaryRecordsCount =
     params.items.length +
     params.sales.length +
-    params.saleLinesCount +
     params.customers.length +
     params.expenses.length +
-    params.creditPayments.length +
-    params.stockMovements.length;
+    params.creditPayments.length;
 
-  if (totalRecordsCount > MAX_BACKUP_TOTAL_RECORDS) {
+  const totalRecordsCount =
+    primaryRecordsCount + params.saleLinesCount + params.stockMovements.length;
+
+  if (
+    primaryRecordsCount > MAX_BACKUP_PRIMARY_RECORDS ||
+    totalRecordsCount > MAX_BACKUP_TOTAL_RECORDS
+  ) {
     throw new Error(
-      `Backup contains ${totalRecordsCount} records, exceeding the ${MAX_BACKUP_TOTAL_RECORDS}-record restore limit.`
+      `Backup contains ${primaryRecordsCount} primary records (${totalRecordsCount} total rows including sale lines and stock movements), exceeding the ${MAX_BACKUP_PRIMARY_RECORDS}-primary / ${MAX_BACKUP_TOTAL_RECORDS}-total restore limit.`
     );
   }
 
@@ -365,10 +397,12 @@ function buildPreview(params: {
     activeItemsCount: activeItems.length,
     archivedItemsCount: archivedItems.length,
     salesCount: params.sales.length,
+    saleLinesCount: params.saleLinesCount,
     customersCount: params.customers.length,
     expensesCount: params.expenses.length,
     creditPaymentsCount: params.creditPayments.length,
     stockMovementsCount: params.stockMovements.length,
+    primaryRecordsCount,
     totalRecordsCount,
     totalStockValueNgwee,
     totalOwedNgwee,
@@ -767,14 +801,14 @@ const v2BackupSchema = z
       .nullable()
       .optional(),
     subscription: z.record(z.string(), z.unknown()).nullable().optional(),
-    items: z.array(v2ItemSchema).max(2000),
-    archivedItems: z.array(v2ItemSchema).max(2000).optional(),
-    sales: z.array(v2SaleSchema).max(5000),
-    customers: z.array(v2CustomerSchema).max(2000),
-    creditPayments: z.array(v2CreditPaymentSchema).max(5000).optional(),
-    expenses: z.array(v2ExpenseSchema).max(5000).optional(),
-    stockMovements: z.array(v2MovementSchema).max(15000).optional(),
-    stockConflicts: z.array(z.record(z.string(), z.unknown())).max(5000).optional(),
+    items: z.array(v2ItemSchema).max(5000),
+    archivedItems: z.array(v2ItemSchema).max(5000).optional(),
+    sales: z.array(v2SaleSchema).max(30000),
+    customers: z.array(v2CustomerSchema).max(5000),
+    creditPayments: z.array(v2CreditPaymentSchema).max(25000).optional(),
+    expenses: z.array(v2ExpenseSchema).max(15000).optional(),
+    stockMovements: z.array(v2MovementSchema).max(80000).optional(),
+    stockConflicts: z.array(z.record(z.string(), z.unknown())).max(10000).optional(),
   })
   .strict();
 
@@ -1199,4 +1233,52 @@ export function prepareLegacyBackupImport(raw: string, shopId: string): LegacyBa
     creditPayments: prepared.creditPayments,
     stockMovements: prepared.stockMovements,
   };
+}
+
+/**
+ * Splits a validated `PreparedShopBackup` (whether originally `shopbook-backup-v1`
+ * or `countup-backup-v2`) into canonical v2 section chunks (`<= 500` records per
+ * chunk by default) for staged upload via `begin_shop_backup_import` ->
+ * `append_shop_backup_chunk` -> `finalize_shop_backup_import`.
+ */
+export function buildBackupImportChunks(
+  prepared: PreparedShopBackup,
+  maxRecordsPerChunk = 500
+): StagedBackupChunkDescriptor[] {
+  const chunkSize = Math.max(1, Math.min(2000, Math.floor(maxRecordsPerChunk)));
+  const activeItems = prepared.items.filter((i) => !i.isDeleted);
+  const archivedItems = prepared.items.filter((i) => i.isDeleted);
+
+  const sections: Array<[BackupChunkSection, unknown[]]> = [
+    ['items', activeItems],
+    ['archivedItems', archivedItems],
+    ['customers', prepared.customers],
+    ['sales', prepared.sales],
+    ['creditPayments', prepared.creditPayments],
+    ['expenses', prepared.expenses],
+    ['stockMovements', prepared.stockMovements],
+  ];
+
+  const chunks: StagedBackupChunkDescriptor[] = [];
+  for (const [section, list] of sections) {
+    if (list.length === 0) continue;
+    for (let offset = 0; offset < list.length; offset += chunkSize) {
+      chunks.push({
+        chunkIndex: chunks.length,
+        section,
+        records: list.slice(offset, offset + chunkSize) as Array<Record<string, unknown>>,
+      });
+    }
+  }
+
+  // An empty backup still needs at least 1 chunk so expected_chunks >= 1
+  if (chunks.length === 0) {
+    chunks.push({
+      chunkIndex: 0,
+      section: 'items',
+      records: [],
+    });
+  }
+
+  return chunks;
 }

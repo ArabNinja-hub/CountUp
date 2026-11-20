@@ -10,9 +10,10 @@ import {
   Search,
   ShieldCheck,
 } from 'lucide-react';
+import { SUBSCRIPTION_PLAN_TERMS } from '../../shared/subscriptionPlans';
 import { getSubscriptionInfo } from '../config/plans';
 import { useShop } from '../context/ShopContext';
-import type { LedgerReconciliationReport } from '../data';
+import type { LedgerReconciliationReport, SubscriptionReconciliationReport } from '../data';
 import { ManualPaymentNetwork, Shop, SubscriptionPayment } from '../types';
 import { useToast } from './Toast';
 
@@ -38,6 +39,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     adminResetPinLockout,
     adminInitiatePinReset,
     adminReconcileLedgers,
+    adminReconcileSubscriptions,
     platformAlerts,
     subscriptionPayments,
     reviewSubscriptionPayment,
@@ -47,6 +49,9 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
   const [reconciliationReport, setReconciliationReport] =
     useState<LedgerReconciliationReport | null>(null);
   const [isReconciling, setIsReconciling] = useState(false);
+  const [subscriptionReconciliationReport, setSubscriptionReconciliationReport] =
+    useState<SubscriptionReconciliationReport | null>(null);
+  const [isReconcilingSubscriptions, setIsReconcilingSubscriptions] = useState(false);
   const [shopFilter, setShopFilter] = useState<
     'all' | 'active' | 'trial' | 'pending_payment' | 'expired' | 'suspended'
   >('all');
@@ -152,6 +157,7 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
       await reviewSubscriptionPayment({
         paymentId: payment.id,
         decision,
+        operationId: `review:${payment.id}:${decision}`,
         ...(decision === 'reject' ? { reason: rejectionReason.trim() } : {}),
       });
       notify(
@@ -295,6 +301,44 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     }
   };
 
+  const securityAlerts = useMemo(
+    () =>
+      platformAlerts.filter((alert) => alert.severity !== 'info' && alert.category !== 'sync_note'),
+    [platformAlerts]
+  );
+
+  const lowPrioritySyncNotes = useMemo(
+    () =>
+      platformAlerts.filter((alert) => alert.severity === 'info' || alert.category === 'sync_note'),
+    [platformAlerts]
+  );
+
+  const handleRunSubscriptionReconciliation = async () => {
+    setIsReconcilingSubscriptions(true);
+    try {
+      const report = await adminReconcileSubscriptions(null);
+      setSubscriptionReconciliationReport(report);
+      if (report.total_differences === 0) {
+        notify('All subscriptions reconciled (0 differences)', {
+          kind: 'success',
+          detail: `Verified subscription expiry dates, plan prices, reference locks, and pointers across ${report.shops_checked} shop(s).`,
+        });
+      } else {
+        notify(`${report.total_differences} subscription discrepancy(ies) detected`, {
+          kind: 'error',
+          detail: 'Inspect the subscription reconciliation breakdown below.',
+        });
+      }
+    } catch (error) {
+      notify('Could not run subscription reconciliation', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsReconcilingSubscriptions(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-5 px-3 py-4 sm:px-6">
       <header className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
@@ -314,9 +358,9 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
         </button>
       </header>
 
-      {platformAlerts.length > 0 && (
+      {securityAlerts.length > 0 && (
         <section aria-label="System security and SMS alerts" className="space-y-2">
-          {platformAlerts.map((alert) => (
+          {securityAlerts.map((alert) => (
             <div
               key={alert.id}
               role="alert"
@@ -339,6 +383,25 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
               </div>
             </div>
           ))}
+        </section>
+      )}
+
+      {lowPrioritySyncNotes.length > 0 && (
+        <section
+          aria-label="Low-priority offline sync notes"
+          className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 space-y-1.5"
+        >
+          <p className="font-bold text-slate-800 flex items-center gap-1.5">
+            <Clock3 className="h-3.5 w-3.5 text-slate-500" />
+            Offline sync notes ({lowPrioritySyncNotes.length})
+          </p>
+          <div className="space-y-1">
+            {lowPrioritySyncNotes.map((note) => (
+              <p key={note.id} className="text-[11px] text-slate-600">
+                <span className="font-semibold text-slate-800">{note.title}:</span> {note.detail}
+              </p>
+            ))}
+          </div>
         </section>
       )}
 
@@ -374,14 +437,24 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
               initial + movements across every shop.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handleRunReconciliation}
-            disabled={isReconciling}
-            className="min-h-[38px] rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
-          >
-            {isReconciling ? 'Checking ledgers…' : 'Verify all ledgers'}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleRunReconciliation}
+              disabled={isReconciling}
+              className="min-h-[38px] rounded-lg bg-emerald-800 px-3 py-2 text-xs font-bold text-white disabled:opacity-60"
+            >
+              {isReconciling ? 'Checking ledgers…' : 'Verify all ledgers'}
+            </button>
+            <button
+              type="button"
+              onClick={handleRunSubscriptionReconciliation}
+              disabled={isReconcilingSubscriptions}
+              className="min-h-[38px] rounded-lg border border-emerald-800 bg-white px-3 py-2 text-xs font-bold text-emerald-900 hover:bg-emerald-50 disabled:opacity-60"
+            >
+              {isReconcilingSubscriptions ? 'Checking subscriptions…' : 'Verify subscriptions'}
+            </button>
+          </div>
         </div>
         {reconciliationReport && (
           <div
@@ -401,6 +474,27 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
               {reconciliationReport.sale_profit_mismatch_count} · Credit balances:{' '}
               {reconciliationReport.customer_balance_mismatch_count} · Stock movements:{' '}
               {reconciliationReport.stock_movement_mismatch_count}
+            </p>
+          </div>
+        )}
+        {subscriptionReconciliationReport && (
+          <div
+            className={`mt-3 rounded-lg border p-3 text-xs ${
+              subscriptionReconciliationReport.total_differences === 0
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+                : 'border-rose-300 bg-rose-50 text-rose-950'
+            }`}
+          >
+            <p className="font-bold">
+              {subscriptionReconciliationReport.total_differences === 0
+                ? `0 subscription differences across ${subscriptionReconciliationReport.shops_checked} shop(s)`
+                : `${subscriptionReconciliationReport.total_differences} subscription difference(s) across ${subscriptionReconciliationReport.shops_checked} shop(s)`}
+            </p>
+            <p className="mt-0.5 text-[11px] opacity-90">
+              Expiry windows: {subscriptionReconciliationReport.expiry_mismatch_count} · Plan
+              prices: {subscriptionReconciliationReport.payment_amount_mismatch_count} · Reference
+              locks: {subscriptionReconciliationReport.reference_lock_mismatch_count} · Shop
+              pointers: {subscriptionReconciliationReport.shop_pointer_mismatch_count}
             </p>
           </div>
         )}
@@ -476,16 +570,66 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
                       <p className="text-xs text-slate-600">
                         Shop {payment.shopId} · owner {payment.ownerUid}
                       </p>
-                      <p className="text-xs text-slate-600">
-                        {networkName(payment.network)} · {payment.planId} ·{' '}
-                        {money(payment.amountNgwee)}
-                      </p>
-                      <p className="break-all font-mono text-xs text-slate-800">
-                        Transaction ref: {payment.transactionReference}
-                      </p>
-                      <p className="text-xs text-slate-600">
-                        Payer {payment.payerPhone} · paid {payment.paymentDate} · submitted{' '}
-                        {dateTime(payment.submittedAtMs)}
+                      {(() => {
+                        const expectedPlan = SUBSCRIPTION_PLAN_TERMS[payment.planId];
+                        const expectedNgwee = expectedPlan?.priceNgwee ?? payment.amountNgwee;
+                        const priceMatches = payment.amountNgwee === expectedNgwee;
+                        return (
+                          <div className="mt-1.5 grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs sm:grid-cols-3">
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Plan &amp; expected
+                              </p>
+                              <p className="font-semibold text-slate-900">
+                                {expectedPlan?.name ?? payment.planId} · {money(expectedNgwee)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Recorded amount
+                              </p>
+                              <p
+                                className={`font-bold ${priceMatches ? 'text-emerald-900' : 'text-rose-800'}`}
+                              >
+                                {money(payment.amountNgwee)}{' '}
+                                {priceMatches ? '(matches plan)' : '(mismatch)'}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Network
+                              </p>
+                              <p className="font-semibold text-slate-900">
+                                {networkName(payment.network)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Transaction ref
+                              </p>
+                              <p className="break-all font-mono font-bold text-slate-900">
+                                {payment.transactionReference}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Payer phone
+                              </p>
+                              <p className="font-mono font-semibold text-slate-900">
+                                {payment.payerPhone}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Payment date
+                              </p>
+                              <p className="font-semibold text-slate-900">{payment.paymentDate}</p>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      <p className="text-xs text-slate-500">
+                        Submitted {dateTime(payment.submittedAtMs)}
                       </p>
                       {payment.reviewedAtMs && (
                         <p className="text-xs text-slate-500">

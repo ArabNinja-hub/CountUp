@@ -75,6 +75,8 @@ export interface DomainShopRecord {
   momo_zamtel_number: string | null;
   security_notice: string | null;
   security_notice_at: string | null;
+  subscription_notice?: string | null;
+  subscription_notice_at?: string | null;
   created_at: string;
   updated_at: string;
 }

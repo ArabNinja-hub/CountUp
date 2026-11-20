@@ -302,8 +302,9 @@ export const DataTools: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </p>
             <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">
               Restore requires an internet connection, an owner session, and no pending sync. Files
-              may be up to 5 MB and 10,000 records. By default, backups restore only into a new or
-              empty shop; duplicate imports are detected automatically.
+              may be up to 5 MB and 50,000 primary records (up to 200,000 total rows including sale
+              lines and stock movements). By default, backups restore only into a new or empty shop;
+              duplicate imports are detected automatically.
             </p>
             <label className="min-h-[44px] flex items-center justify-center gap-2 rounded-xl border border-emerald-300 text-emerald-800 text-xs font-bold cursor-pointer hover:bg-emerald-50">
               <Upload className="w-4 h-4" />

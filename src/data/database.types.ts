@@ -43,6 +43,8 @@ export interface ShopRow {
   last_server_contact_at: string;
   security_notice: string | null;
   security_notice_at: string | null;
+  subscription_notice?: string | null;
+  subscription_notice_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -103,8 +105,8 @@ export interface SmsRateEventRow {
 export interface PlatformAlertRow {
   id: string;
   alert_key: string;
-  severity: 'warning' | 'critical';
-  category: 'sms_cap' | 'sms_abuse' | 'security';
+  severity: 'info' | 'warning' | 'critical';
+  category: 'sms_cap' | 'sms_abuse' | 'security' | 'sync_note';
   title: string;
   detail: string;
   metadata: Record<string, unknown>;
@@ -359,4 +361,15 @@ export interface LedgerReconciliationReport {
   sale_profit_mismatches: Array<Record<string, unknown>>;
   customer_balance_mismatches: Array<Record<string, unknown>>;
   stock_movement_mismatches: Array<Record<string, unknown>>;
+}
+
+export interface SubscriptionReconciliationReport {
+  checked_at: string;
+  shops_checked: number;
+  total_differences: number;
+  expiry_mismatch_count: number;
+  payment_amount_mismatch_count: number;
+  reference_lock_mismatch_count: number;
+  shop_pointer_mismatch_count: number;
+  details: Array<Record<string, unknown>>;
 }

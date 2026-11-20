@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertSafeRawJsonNumbers,
+  BACKUP_CHUNK_MAX_ROWS,
+  buildBackupImportChunks,
+  MAX_BACKUP_PRIMARY_RECORDS,
+  MAX_BACKUP_TOTAL_RECORDS,
   parseStrictKwachaDecimalToNgwee,
   prepareLegacyBackupImport,
   prepareShopBackupImport,
@@ -336,5 +340,86 @@ describe('Legacy backup conversion', () => {
 
     // Reject > 5 MB raw input
     expect(() => prepareShopBackupImport('x'.repeat(5_000_010), 'shop_dest')).toThrow(/5 MB/i);
+  });
+
+  it('supports multi-year shop backups up to 50k primary / 200k total rows and builds FK-ordered chunks', () => {
+    expect(MAX_BACKUP_PRIMARY_RECORDS).toBe(50_000);
+    expect(MAX_BACKUP_TOTAL_RECORDS).toBe(200_000);
+
+    const baseMs = Date.parse('2025-01-01T08:00:00.000Z');
+    const items = Array.from({ length: 40 }, (_, i) => ({
+      id: `it_${i}`,
+      name: `Item ${i}`,
+      buyingPrice: 10,
+      buyingPriceKnown: true,
+      sellingPrice: 15,
+      unitLabel: 'pack',
+      quantity: 500,
+      lowStockThreshold: 5,
+      createdAt: '2025-01-01T08:00:00.000Z',
+    }));
+
+    // 7,500 sales (~10+ sales/day for 2 years) with 2 lines each = 15,000 sale_lines + synthesized movements
+    const sales = Array.from({ length: 7_500 }, (_, s) => {
+      const itemA = `it_${s % 40}`;
+      const itemB = `it_${(s + 1) % 40}`;
+      const atIso = new Date(baseMs + s * 60_000).toISOString();
+      return {
+        id: `sale_${s}`,
+        items: [
+          {
+            itemId: itemA,
+            name: `Item ${s % 40}`,
+            quantity: 1,
+            sellingPrice: 15,
+            buyingPrice: 10,
+            buyingPriceKnown: true,
+            total: 15,
+          },
+          {
+            itemId: itemB,
+            name: `Item ${(s + 1) % 40}`,
+            quantity: 1,
+            sellingPrice: 15,
+            buyingPrice: 10,
+            buyingPriceKnown: true,
+            total: 15,
+          },
+        ],
+        itemsCount: 2,
+        totalAmount: 30,
+        totalCost: 20,
+        profit: 10,
+        paymentType: 'cash' as const,
+        createdAt: atIso,
+      };
+    });
+
+    const raw = JSON.stringify({
+      format: 'countup-backup-v2',
+      exportedAt: '2026-11-20T00:00:00.000Z',
+      shop: { name: 'Two-Year Lusaka Store' },
+      items,
+      sales,
+      customers: [],
+      creditPayments: [],
+      expenses: [],
+      stockMovements: [],
+    });
+
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(5_000_000);
+
+    const prepared = prepareShopBackupImport(raw, 'shop_two_year');
+    expect(prepared.preview.salesCount).toBe(7_500);
+    expect(prepared.sales.reduce((sum, s) => sum + s.items.length, 0)).toBe(15_000);
+    expect(prepared.preview.totalRecordsCount).toBeGreaterThan(22_000);
+
+    const chunks = buildBackupImportChunks(prepared, BACKUP_CHUNK_MAX_ROWS);
+    expect(chunks.length).toBeGreaterThan(8);
+    for (const chunk of chunks) {
+      expect(chunk.records.length).toBeLessThanOrEqual(BACKUP_CHUNK_MAX_ROWS);
+    }
+    expect(chunks[0]?.section).toBe('items');
+    expect(chunks[chunks.length - 1]?.section).toBe('stockMovements');
   });
 });

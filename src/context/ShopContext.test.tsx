@@ -371,6 +371,15 @@ vi.mock('../auth/authService', async () => {
         fake.docs.set(`shops/${record.shop.id}`, { ...record.shop });
       }
     },
+    acknowledgeShopSubscriptionNoticeOnServer: async () => {
+      const caller = fake.auth.currentUser;
+      if (!caller?.verifiedShopId) throw new Error('No verified shop.');
+      const record = fake.serverShops.get(caller.verifiedShopId);
+      if (record) {
+        record.shop = { ...record.shop, subscriptionNotice: null, subscriptionNoticeAt: null };
+        fake.docs.set(`shops/${record.shop.id}`, { ...record.shop });
+      }
+    },
     fetchVerifiedShopFromServer: async (shopId: string) => {
       return fake.serverShops.get(shopId)?.shop ?? null;
     },
@@ -383,49 +392,6 @@ vi.mock('../auth/authService', async () => {
     },
   };
 });
-
-vi.mock('../firebase/functions', () => ({ functions: {} }));
-vi.mock('firebase/functions', () => ({
-  httpsCallable:
-    (_functions: unknown, name: string) =>
-    async (input: Record<string, unknown> = {}) => {
-      if (name === 'extendShopSubscription' || name === 'setShopSuspended') {
-        if (fake.failWrite) throw new Error('Write rejected');
-        const shopId = String(input.shopId);
-        const path = `shops/${shopId}`;
-        const currentDoc = fake.docs.get(path) ?? {};
-        const updated =
-          name === 'extendShopSubscription'
-            ? {
-                ...currentDoc,
-                planStatus: 'active',
-                planExpiryDate: new Date(Date.now() + Number(input.days) * 86400000).toISOString(),
-              }
-            : {
-                ...currentDoc,
-                isDeactivated: Boolean(input.suspended),
-                planStatus: input.suspended ? 'suspended' : 'active',
-              };
-        fake.docs.set(path, updated);
-        const serverEntry = fake.serverShops.get(shopId);
-        if (serverEntry) {
-          serverEntry.shop = updated as Shop;
-        }
-        fake.emit();
-        return {
-          data:
-            name === 'extendShopSubscription' ? { extended: true } : { suspended: input.suspended },
-        };
-      }
-      if (name === 'submitManualSubscriptionPayment')
-        return { data: { id: 'payment-test', status: 'pending' } };
-      if (name === 'reviewManualSubscriptionPayment')
-        return { data: { status: input.decision === 'approve' ? 'approved' : 'rejected' } };
-      if (name === 'getManualPaymentInstructions')
-        return { data: { mtn: 'test-mtn', airtel: 'test-airtel', verification: 'manual' } };
-      throw new Error(`Unexpected callable ${name}`);
-    },
-}));
 import { ShopProvider, useShop } from './ShopContext';
 import App from '../App';
 

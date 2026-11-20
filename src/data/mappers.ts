@@ -41,6 +41,8 @@ export function shopRowToDomain(
   row: ShopRow & {
     security_notice?: string | null;
     security_notice_at?: string | null;
+    subscription_notice?: string | null;
+    subscription_notice_at?: string | null;
   }
 ): Shop {
   const trialEndsMs = Date.parse(row.trial_ends_at);
@@ -81,6 +83,8 @@ export function shopRowToDomain(
     ...(row.momo_zamtel_number ? { momoZamtelNumber: row.momo_zamtel_number } : {}),
     securityNotice: row.security_notice ?? null,
     securityNoticeAt: row.security_notice_at ?? null,
+    subscriptionNotice: row.subscription_notice ?? null,
+    subscriptionNoticeAt: row.subscription_notice_at ?? null,
   };
 }
 
@@ -222,6 +226,7 @@ export function saleRowsToDomain(
     ...(changeGivenNgwee !== null ? { changeGiven: fromNgwee(changeGivenNgwee) } : {}),
     ...(row.is_demo ? { isDemo: true } : {}),
     ...(row.is_offline_sync ? { isOfflineSync: true } : {}),
+    ...(row.offline_window_flagged ? { offlineWindowFlagged: true } : {}),
     ...(row.is_deleted ? { isDeleted: true } : {}),
     createdAt: row.client_created_at ?? row.created_at,
     updatedAt: row.updated_at,

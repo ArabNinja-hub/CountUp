@@ -72,6 +72,7 @@ const password = `TestPass!${suffix}`;
 const shopAId = randomUUID();
 const shopBId = randomUUID();
 const shopCId = randomUUID();
+const shopDId = randomUUID();
 const createdUserIds = [];
 
 try {
@@ -656,8 +657,9 @@ try {
   assert.ifError(errC);
   createdUserIds.push(userCRes.user.id);
 
-  const nowPlus30d = new Date(Date.now() + 30 * 86_400_000).toISOString();
-  const nowPlus33d = new Date(Date.now() + 33 * 86_400_000).toISOString();
+  const nowC = Date.now();
+  const nowPlus30d = new Date(nowC + 30 * 86_400_000).toISOString();
+  const nowPlus33d = new Date(nowC + 33 * 86_400_000).toISOString();
   assert.ifError(
     (
       await adminDb.from('shops').insert({
@@ -902,6 +904,17 @@ try {
   assert.ifError(staleSaleErr);
   assert.equal(staleSale.offline_window_flagged, true);
   assert.equal(staleSale.outcome, 'flagged');
+  assert.equal(staleSale.shopkeeper_notice, 'Synced late, kept');
+
+  const { data: staleAlertRow, error: staleAlertErr } = await adminClient
+    .from('platform_alerts')
+    .select('severity, category, detail')
+    .eq('alert_key', `offline_window:${shopCId}:ci_sale_73h`)
+    .single();
+  assert.ifError(staleAlertErr);
+  assert.equal(staleAlertRow.severity, 'info');
+  assert.equal(staleAlertRow.category, 'sync_note');
+  assert.match(staleAlertRow.detail, /72h/);
 
   const { data: poisonRes, error: poisonErr } = await clientC.rpc('resolve_sync_conflict', {
     p_shop_id: shopCId,
@@ -932,12 +945,365 @@ try {
     'PASS: Phase 3c import_shop_backup, 72h receive-time window, poison-op audit & reconciliation verified'
   );
 
+  // ============================================================================
+  // 10. Pre-4 Multi-Year (~4.4 MB) Staged Chunked Backup Restore + Phase 4
+  //     Subscriptions, Manual Mobile-Money Payments & reconcile_subscriptions
+  // ============================================================================
+  const phoneD = `+26097${String(Math.floor(1_000_000 + Math.random() * 8_999_999))}`;
+  const { data: userDRes, error: errD } = await adminDb.auth.admin.createUser({
+    email: `owner_d_${suffix}@countup.local`,
+    phone: phoneD,
+    password,
+    email_confirm: true,
+    phone_confirm: true,
+  });
+  assert.ifError(errD);
+  createdUserIds.push(userDRes.user.id);
+
+  // Seed Shop D on 2027-01-31T12:30:00.000Z so Phase 4 approval also verifies live UTC Jan 31 -> Feb 28 clamping!
+  const jan31Iso = '2027-01-31T12:30:00.000Z';
+  const feb03Iso = '2027-02-03T12:30:00.000Z';
+  assert.ifError(
+    (
+      await adminDb.from('shops').insert({
+        id: shopDId,
+        owner_user_id: userDRes.user.id,
+        name: 'Pre-4 & Phase 4 Two-Year Shop',
+        owner_phone: phoneD,
+        plan_status: 'active',
+        plan_type: 'monthly',
+        trial_ends_at: jan31Iso,
+        plan_expiry_at: jan31Iso,
+        sales_access_until: feb03Iso,
+      })
+    ).error
+  );
+  assert.ifError(
+    (
+      await adminDb.from('shop_pin_credentials').insert({
+        shop_id: shopDId,
+        pin_salt: 'a'.repeat(32),
+        pin_hash: 'b'.repeat(64),
+        recovery_salt: 'c'.repeat(32),
+        recovery_hash: 'd'.repeat(64),
+      })
+    ).error
+  );
+
+  const clientD = makeAnonClient();
+  const { data: signInD, error: signInDErr } = await clientD.auth.signInWithPassword({
+    email: `owner_d_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(signInDErr);
+  const claimsD = decodeJwtPayload(signInD.session.access_token);
+  assert.ifError(
+    (
+      await adminDb.from('shop_verified_sessions').insert({
+        shop_id: shopDId,
+        session_id: claimsD.session_id,
+        user_id: userDRes.user.id,
+      })
+    ).error
+  );
+  await clientD.auth.refreshSession();
+
+  // 10a. Generate ~4.4 MB 2-year CountUp v2 backup (14,600 sales, 21,580 sale lines) and upload in 500-row chunks over live PostgREST
+  const baseMs = Date.parse('2024-11-20T08:00:00.000Z');
+  const twoYearItems = Array.from({ length: 50 }, (_, i) => ({
+    id: `d_item_${i}`,
+    name: `Product ${i}`,
+    buyingPrice: 12,
+    buyingPriceKnown: true,
+    sellingPrice: 18,
+    unitLabel: 'unit',
+    quantity: 1000,
+    lowStockThreshold: 5,
+    isDeleted: false,
+    createdAt: '2024-11-20T08:00:00.000Z',
+    updatedAt: '2024-11-20T08:00:00.000Z',
+  }));
+  const twoYearCustomers = Array.from({ length: 20 }, (_, c) => ({
+    id: `d_cust_${c}`,
+    name: `Customer ${c}`,
+    phone: `+260966000${String(c).padStart(3, '0')}`,
+    notes: '',
+    totalOwed: 18,
+    createdAt: '2024-11-20T08:00:00.000Z',
+    updatedAt: '2024-11-20T08:00:00.000Z',
+  }));
+  const twoYearSales = Array.from({ length: 14_600 }, (_, s) => {
+    const isCredit = s < 420;
+    const secondLine = s < 7_400 && !isCredit;
+    const custIdx = s % 20;
+    const lines = secondLine
+      ? [
+          {
+            itemId: `d_item_${s % 50}`,
+            name: `Product ${s % 50}`,
+            quantity: 1,
+            sellingPrice: 18,
+            buyingPrice: 12,
+            buyingPriceKnown: true,
+            total: 18,
+          },
+          {
+            itemId: `d_item_${(s + 1) % 50}`,
+            name: `Product ${(s + 1) % 50}`,
+            quantity: 1,
+            sellingPrice: 18,
+            buyingPrice: 12,
+            buyingPriceKnown: true,
+            total: 18,
+          },
+        ]
+      : [
+          {
+            itemId: `d_item_${s % 50}`,
+            name: `Product ${s % 50}`,
+            quantity: 1,
+            sellingPrice: 18,
+            buyingPrice: 12,
+            buyingPriceKnown: true,
+            total: 18,
+          },
+        ];
+    return {
+      id: `d_s_${s}`,
+      items: lines,
+      itemsCount: lines.length,
+      totalAmount: lines.length * 18,
+      totalCost: lines.length * 12,
+      profit: lines.length * 6,
+      paymentType: isCredit ? 'credit' : 'cash',
+      ...(isCredit ? { customerId: `d_cust_${custIdx}`, customerName: `Customer ${custIdx}` } : {}),
+      createdAt: new Date(baseMs + s * 3_600_000).toISOString(),
+    };
+  });
+  const twoYearRepayments = Array.from({ length: 400 }, (_, p) => ({
+    id: `d_cp_${p}`,
+    customerId: `d_cust_${p % 20}`,
+    customerName: `Customer ${p % 20}`,
+    amount: 18,
+    paymentMethod: 'cash',
+    createdAt: new Date(baseMs + (500 + p) * 3_600_000).toISOString(),
+  }));
+  const twoYearExpenses = Array.from({ length: 300 }, (_, e) => ({
+    id: `d_ex_${e}`,
+    category: 'transport',
+    amount: 25,
+    createdAt: new Date(baseMs + e * 86_400_000).toISOString(),
+  }));
+
+  const rawTwoYear = JSON.stringify({
+    format: 'countup-backup-v2',
+    exportedAt: '2026-11-20T09:00:00.000Z',
+    shop: { name: 'Two-Year Live PostgREST Shop' },
+    items: twoYearItems,
+    sales: twoYearSales,
+    customers: twoYearCustomers,
+    creditPayments: twoYearRepayments,
+    expenses: twoYearExpenses,
+    stockMovements: [],
+  });
+  const rawBytesD = Buffer.byteLength(rawTwoYear, 'utf8');
+  assert.ok(
+    rawBytesD > 3_500_000 && rawBytesD <= 5_000_000,
+    `Expected ~4.4MB backup, got ${rawBytesD}`
+  );
+  const shaD = createHash('sha256').update(rawTwoYear).digest('hex');
+
+  const sectionLists = [
+    ['items', twoYearItems],
+    ['customers', twoYearCustomers],
+    ['sales', twoYearSales],
+    ['creditPayments', twoYearRepayments],
+    ['expenses', twoYearExpenses],
+  ];
+  const stagedChunks = [];
+  for (const [section, list] of sectionLists) {
+    for (let off = 0; off < list.length; off += 500) {
+      stagedChunks.push({
+        chunkIndex: stagedChunks.length,
+        section,
+        records: list.slice(off, off + 500),
+      });
+    }
+  }
+
+  const chunkT0 = Date.now();
+  const { data: beginD, error: beginDErr } = await clientD.rpc('begin_shop_backup_import', {
+    p_shop_id: shopDId,
+    p_operation_id: 'ci_pre4_2yr_chunked',
+    p_file_sha256: shaD,
+    p_format: 'countup-backup-v2',
+    p_total_bytes: rawBytesD,
+    p_expected_chunks: stagedChunks.length,
+    p_source_shop_name: 'Two-Year Live PostgREST Shop',
+    p_allow_non_empty_shop: false,
+  });
+  assert.ifError(beginDErr);
+  assert.equal(beginD.status, 'staging');
+
+  for (const chunk of stagedChunks) {
+    const { error: chErr } = await clientD.rpc('append_shop_backup_chunk', {
+      p_shop_id: shopDId,
+      p_session_id: beginD.session_id,
+      p_chunk_index: chunk.chunkIndex,
+      p_section: chunk.section,
+      p_records: chunk.records,
+    });
+    assert.ifError(chErr);
+  }
+
+  const { data: finalD, error: finalDErr } = await clientD.rpc('finalize_shop_backup_import', {
+    p_shop_id: shopDId,
+    p_session_id: beginD.session_id,
+    p_dry_run: false,
+  });
+  assert.ifError(finalDErr);
+  const chunkElapsedMs = Date.now() - chunkT0;
+  assert.equal(finalD.status, 'imported');
+  assert.equal(finalD.reconciliation.total_differences, 0);
   console.log(
-    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC, PHASE 3B & PHASE 3C CHECKS PASSED.'
+    `PASS: Pre-4 live PostgREST 2-year backup (${(rawBytesD / 1_000_000).toFixed(2)} MB, 14,600 sales, ${stagedChunks.length} chunks) restored & reconciled in ${chunkElapsedMs}ms`
+  );
+
+  // 10b. Phase 4 Subscription Payments, Reference Lock, aal1/aal2 MFA, UTC Clamping & reconcile_subscriptions
+  const adminAal1Client = makeAnonClient();
+  const { error: adminAal1LoginErr } = await adminAal1Client.auth.signInWithPassword({
+    email: `platform_admin_${suffix}@countup.local`,
+    password,
+  });
+  assert.ifError(adminAal1LoginErr);
+
+  // Owner C submits MTN payment -> locked; Owner D duplicate MTN reference blocked; rejected -> unlocked -> resubmitted!
+  const sharedRef = `CIMTN${Date.now()}`;
+  const { data: payC1, error: payC1Err } = await clientC.rpc('submit_subscription_payment', {
+    p_shop_id: shopCId,
+    p_plan_id: 'monthly',
+    p_network: 'mtn',
+    p_transaction_reference: sharedRef,
+    p_payer_phone: '0966123456',
+    p_payment_date: '2026-11-20',
+    p_operation_id: 'ci_p4_sub_c1',
+    p_expected_amount_ngwee: 9900,
+  });
+  assert.ifError(payC1Err);
+  assert.equal(payC1.status, 'pending');
+  assert.equal(payC1.amount_ngwee, 9900);
+
+  // Duplicate reference on same network rejected
+  const { error: dupRefErr } = await clientD.rpc('submit_subscription_payment', {
+    p_shop_id: shopDId,
+    p_plan_id: 'monthly',
+    p_network: 'mtn',
+    p_transaction_reference: sharedRef,
+    p_payer_phone: '0977123456',
+    p_payment_date: '2026-11-20',
+    p_operation_id: 'ci_p4_sub_d_dup',
+  });
+  assert.ok(dupRefErr, 'Duplicate active MTN reference must be rejected');
+
+  // Platform admin at aal1 MUST be rejected on review_subscription_payment & reconcile_subscriptions
+  const { error: revAal1Err } = await adminAal1Client.rpc('review_subscription_payment', {
+    p_payment_id: payC1.id,
+    p_decision: 'approve',
+    p_reason: null,
+    p_operation_id: 'ci_p4_aal1_block',
+  });
+  assert.ok(revAal1Err, 'aal1 admin must be blocked from review_subscription_payment');
+
+  const { error: subReconAal1Err } = await adminAal1Client.rpc('reconcile_subscriptions', {
+    p_shop_id: shopCId,
+  });
+  assert.ok(subReconAal1Err, 'aal1 admin must be blocked from reconcile_subscriptions');
+
+  // Platform admin at aal2 rejects payC1 -> releases reference lock & posts subscription_notice
+  const { data: rejC1, error: rejC1Err } = await adminClient.rpc('review_subscription_payment', {
+    p_payment_id: payC1.id,
+    p_decision: 'reject',
+    p_reason: 'Incorrect sender digits',
+    p_operation_id: 'ci_p4_rej_c1',
+  });
+  assert.ifError(rejC1Err);
+  assert.equal(rejC1.status, 'rejected');
+
+  // Shop D can now reuse the released MTN reference, and approval clamps 2027-01-31 + 1m -> 2027-02-28!
+  const { data: payD1, error: payD1Err } = await clientD.rpc('submit_subscription_payment', {
+    p_shop_id: shopDId,
+    p_plan_id: 'monthly',
+    p_network: 'mtn',
+    p_transaction_reference: sharedRef,
+    p_payer_phone: '0977123456',
+    p_payment_date: '2026-11-20',
+    p_operation_id: 'ci_p4_sub_d1',
+    p_expected_amount_ngwee: 9900,
+  });
+  assert.ifError(payD1Err);
+
+  const { data: appD1, error: appD1Err } = await adminClient.rpc('review_subscription_payment', {
+    p_payment_id: payD1.id,
+    p_decision: 'approve',
+    p_reason: null,
+    p_operation_id: 'ci_p4_app_d1',
+  });
+  assert.ifError(appD1Err);
+  assert.equal(new Date(appD1.subscription_expiry_at).toISOString(), '2027-02-28T12:30:00.000Z');
+  assert.equal(new Date(appD1.sales_access_until).toISOString(), '2027-03-03T12:30:00.000Z');
+
+  // Idempotent admin extension on Shop D
+  const { data: extD1, error: extD1Err } = await adminClient.rpc('admin_extend_shop_subscription', {
+    p_shop_id: shopDId,
+    p_days: 5,
+    p_operation_id: 'ci_p4_ext_d1',
+    p_reason: 'CI goodwill extension',
+  });
+  assert.ifError(extD1Err);
+  assert.equal(extD1.idempotent, false);
+
+  const { data: extD1Replay, error: extD1ReplayErr } = await adminClient.rpc(
+    'admin_extend_shop_subscription',
+    {
+      p_shop_id: shopDId,
+      p_days: 5,
+      p_operation_id: 'ci_p4_ext_d1',
+      p_reason: 'CI goodwill extension',
+    }
+  );
+  assert.ifError(extD1ReplayErr);
+  assert.equal(extD1Replay.idempotent, true);
+  assert.equal(extD1Replay.plan_expiry_at, extD1.plan_expiry_at);
+
+  // reconcile_subscriptions: 0 differences on RPC-managed shops C & D, and detects synthetic raw seed drift on Shop A!
+  for (const cleanShopId of [shopCId, shopDId]) {
+    const { data: cleanSubRep, error: cleanSubErr } = await adminClient.rpc(
+      'reconcile_subscriptions',
+      { p_shop_id: cleanShopId }
+    );
+    assert.ifError(cleanSubErr);
+    assert.equal(cleanSubRep.total_differences, 0);
+  }
+
+  const { data: rawDriftRep, error: rawDriftErr } = await adminClient.rpc(
+    'reconcile_subscriptions',
+    { p_shop_id: shopAId }
+  );
+  assert.ifError(rawDriftErr);
+  assert.ok(
+    rawDriftRep.total_differences >= 2,
+    'reconcile_subscriptions must catch raw lock/pointer drift'
+  );
+  console.log(
+    'PASS: Phase 4 subscription payments, reference locks, aal2 MFA review, UTC month clamping & reconcile_subscriptions verified'
+  );
+
+  console.log(
+    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC, PHASE 3B, PHASE 3C, PRE-4 & PHASE 4 CHECKS PASSED.'
   );
 } finally {
-  await adminDb.from('shops').delete().in('id', [shopAId, shopBId, shopCId]);
-  await adminDb.from('platform_audit').delete().in('shop_id', [shopAId, shopCId]);
+  await adminDb.from('shops').delete().in('id', [shopAId, shopBId, shopCId, shopDId]);
+  await adminDb.from('platform_audit').delete().in('shop_id', [shopAId, shopCId, shopDId]);
   await adminDb
     .from('platform_alerts')
     .delete()

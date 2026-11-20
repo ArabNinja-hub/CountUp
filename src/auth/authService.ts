@@ -133,6 +133,8 @@ export function mapDomainShopToClientShop(record: DomainShopRecord): Shop {
     ...(record.momo_zamtel_number ? { momoZamtelNumber: record.momo_zamtel_number } : {}),
     securityNotice: record.security_notice ?? null,
     securityNoticeAt: record.security_notice_at ?? null,
+    subscriptionNotice: record.subscription_notice ?? null,
+    subscriptionNoticeAt: record.subscription_notice_at ?? null,
   };
 }
 
@@ -500,6 +502,13 @@ export async function fetchActivePlatformAlerts(): Promise<PlatformAlertRow[]> {
 
 export async function acknowledgeShopSecurityNoticeOnServer(): Promise<void> {
   const { error } = await supabase.rpc('acknowledge_shop_security_notice');
+  if (error) {
+    throw new AuthServiceError(error.message, error.code ?? 'rpc_failed');
+  }
+}
+
+export async function acknowledgeShopSubscriptionNoticeOnServer(): Promise<void> {
+  const { error } = await supabase.rpc('acknowledge_shop_subscription_notice');
   if (error) {
     throw new AuthServiceError(error.message, error.code ?? 'rpc_failed');
   }

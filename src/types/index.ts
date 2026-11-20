@@ -61,6 +61,9 @@ export interface Shop {
   // Server-set security notice (e.g. after support resets PIN lockout)
   securityNotice?: string | null;
   securityNoticeAt?: string | null;
+  // Server-set subscription notice (e.g. payment approved/rejected, plan extended, suspended/restored)
+  subscriptionNotice?: string | null;
+  subscriptionNoticeAt?: string | null;
 }
 
 export interface Item {
@@ -121,6 +124,8 @@ export interface Sale {
   isDemo?: boolean;
   createdAt: string;
   isOfflineSync?: boolean;
+  /** True when an offline sale synced >72h late on an active plan and was kept. */
+  offlineWindowFlagged?: boolean;
 }
 
 export interface Customer {
