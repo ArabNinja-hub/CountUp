@@ -106,7 +106,14 @@ export interface PlatformAlertRow {
   id: string;
   alert_key: string;
   severity: 'info' | 'warning' | 'critical';
-  category: 'sms_cap' | 'sms_abuse' | 'security' | 'sync_note';
+  category:
+    | 'sms_cap'
+    | 'sms_abuse'
+    | 'security'
+    | 'sync_note'
+    | 'sync_failure'
+    | 'reconcile_diff'
+    | 'client_error';
   title: string;
   detail: string;
   metadata: Record<string, unknown>;

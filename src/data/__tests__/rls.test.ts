@@ -1247,6 +1247,11 @@ describe('Phase 1 — Postgres Schema, Constraints, Triggers & Row Level Securit
       'parse_strict_integer_ngwee',
       'parse_strict_bounded_int',
       'import_shop_backup',
+      'begin_shop_backup_import',
+      'append_shop_backup_chunk',
+      'finalize_shop_backup_import',
+      'report_client_sync_alert',
+      'resolve_platform_alert',
     ];
 
     const foundNames = new Set(audit.rows.map((r) => r.proname));
@@ -1261,6 +1266,10 @@ describe('Phase 1 — Postgres Schema, Constraints, Triggers & Row Level Securit
     for (const fn of audit.rows) {
       expect(fn.anon_exec, `anon must NOT have EXECUTE on public.${fn.proname}`).toBe(false);
       expect(fn.public_exec, `PUBLIC must NOT have EXECUTE on public.${fn.proname}`).toBe(false);
+      expect(
+        fn.proconfig?.some((c) => /^statement_timeout\s*=/i.test(c)) ?? false,
+        `Pre-5 Check #1: public.${fn.proname} must NOT rely on function-level SET statement_timeout`
+      ).toBe(false);
       if (fn.prosecdef) {
         expect(
           fn.proconfig?.some((c) => c === 'search_path=""' || c === "search_path=''"),
@@ -1363,6 +1372,11 @@ describe('Phase 1 — Postgres Schema, Constraints, Triggers & Row Level Securit
       {
         label: 'import_shop_backup',
         sql: `SELECT public.import_shop_backup($1::uuid, 'op_priv_12', repeat('a', 64), '{"format":"shopbook-backup-v1"}'::jsonb, true, false)`,
+        params: [shopBId],
+      },
+      {
+        label: 'report_client_sync_alert',
+        sql: `SELECT public.report_client_sync_alert($1::uuid, 'client_error', 'op_priv_13', 'test', 'test', '{}'::jsonb)`,
         params: [shopBId],
       },
     ];

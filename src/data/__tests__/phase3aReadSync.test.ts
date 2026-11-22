@@ -252,7 +252,13 @@ describe('Phase 3a Data Read Path, (cursor - 120s) Overlap Sync, Realtime Wake-U
     const { querySource, sinceQueries } = createPgliteQuerySource();
     await pullShopCursorSync({ shopId, querySource, storage });
 
-    // Advance items cursor to 2026-11-21T10:10:00Z via a new item (using superuser db handle to set deterministic timestamp)
+    // Use a deterministic timestamp 24h ahead of current wall-clock time so trigger-stamped
+    // rows from earlier tests never exceed the synthetic cursor regardless of calendar date.
+    const futureBaseMs = Math.floor((Date.now() + 24 * 60 * 60 * 1000) / 60_000) * 60_000;
+    const cursorIso = new Date(futureBaseMs).toISOString();
+    const delayedCommitIso = new Date(futureBaseMs - 90_000).toISOString();
+    const expectedFloorIso = new Date(futureBaseMs - 120_000).toISOString();
+
     await harness.db.query(`ALTER TABLE public.items DISABLE TRIGGER trg_items_touch_updated_at`);
     await harness.db.query(
       `INSERT INTO public.items (
@@ -260,18 +266,18 @@ describe('Phase 3a Data Read Path, (cursor - 120s) Overlap Sync, Realtime Wake-U
          created_at, updated_at
        ) VALUES (
          'item-cooking-oil', $1, 'Cooking Oil 2.5L', 8500, 10500, 8, 2,
-         '2026-11-21T10:10:00Z', '2026-11-21T10:10:00Z'
+         $2::timestamptz, $2::timestamptz
        )`,
-      [shopId]
+      [shopId, cursorIso]
     );
     await harness.db.query(`ALTER TABLE public.items ENABLE TRIGGER trg_items_touch_updated_at`);
 
     const secondPull = await pullShopCursorSync({ shopId, querySource, storage });
-    expect(secondPull.cursors.items).toBe('2026-11-21T10:10:00.000Z');
+    expect(secondPull.cursors.items).toBe(cursorIso);
 
     // Simulate:
-    // 1. An out-of-order / delayed transaction that committed at updated_at = 2026-11-21T10:08:30Z
-    //    (90s BEFORE the 10:10:00Z cursor — inside the 120s overlap window!)
+    // 1. An out-of-order / delayed transaction that committed 90s BEFORE `cursorIso`
+    //    (inside the 120s overlap window!)
     // 2. Voiding sale-100 (`is_deleted = true`)
     // 3. Soft-deleting expense exp-100 (`is_deleted = true`)
     await harness.db.query(`ALTER TABLE public.items DISABLE TRIGGER trg_items_touch_updated_at`);
@@ -281,9 +287,9 @@ describe('Phase 3a Data Read Path, (cursor - 120s) Overlap Sync, Realtime Wake-U
          created_at, updated_at
        ) VALUES (
          'item-delayed-tx', $1, 'Salt 500g', 500, 800, 30, 5,
-         '2026-11-21T10:08:30Z', '2026-11-21T10:08:30Z'
+         $2::timestamptz, $2::timestamptz
        )`,
-      [shopId]
+      [shopId, delayedCommitIso]
     );
     await harness.db.query(`ALTER TABLE public.items ENABLE TRIGGER trg_items_touch_updated_at`);
 
@@ -301,10 +307,10 @@ describe('Phase 3a Data Read Path, (cursor - 120s) Overlap Sync, Realtime Wake-U
     sinceQueries.length = 0;
     const reconnectPull = await pullShopCursorSync({ shopId, querySource, storage });
 
-    // Verify items query subtracted 120s from 10:10:00Z -> queried from 2026-11-21T10:08:00.000Z!
+    // Verify items query subtracted 120s from cursorIso -> queried from expectedFloorIso!
     const itemsQuery = sinceQueries.find((q) => q.table === 'items');
-    expect(itemsQuery?.sinceIso).toBe(computeOverlapQueryFloor('2026-11-21T10:10:00.000Z'));
-    expect(itemsQuery?.sinceIso).toBe('2026-11-21T10:08:00.000Z');
+    expect(itemsQuery?.sinceIso).toBe(computeOverlapQueryFloor(cursorIso));
+    expect(itemsQuery?.sinceIso).toBe(expectedFloorIso);
 
     // Delayed row at 10:08:30Z was caught AND item-cooking-oil (re-fetched in overlap) was deduplicated!
     const activeItemIds = reconnectPull.domain.items.map((i) => i.id).sort();

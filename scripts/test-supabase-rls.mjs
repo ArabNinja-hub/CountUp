@@ -1155,18 +1155,25 @@ try {
     });
     assert.ifError(chErr);
   }
+  const stageElapsedMs = Date.now() - chunkT0;
 
+  const finalizeT0 = Date.now();
   const { data: finalD, error: finalDErr } = await clientD.rpc('finalize_shop_backup_import', {
     p_shop_id: shopDId,
     p_session_id: beginD.session_id,
     p_dry_run: false,
   });
   assert.ifError(finalDErr);
+  const finalizeElapsedMs = Date.now() - finalizeT0;
   const chunkElapsedMs = Date.now() - chunkT0;
   assert.equal(finalD.status, 'imported');
   assert.equal(finalD.reconciliation.total_differences, 0);
+  assert.ok(
+    finalizeElapsedMs < 8000,
+    `Pre-5 Check #1: finalize_shop_backup_import took ${finalizeElapsedMs}ms, must finish below 8000ms default statement_timeout without function-level override`
+  );
   console.log(
-    `PASS: Pre-4 live PostgREST 2-year backup (${(rawBytesD / 1_000_000).toFixed(2)} MB, 14,600 sales, ${stagedChunks.length} chunks) restored & reconciled in ${chunkElapsedMs}ms`
+    `PASS: Pre-4/Pre-5 live PostgREST 2-year backup (${(rawBytesD / 1_000_000).toFixed(2)} MB, 14,600 sales, ${stagedChunks.length} chunks) staged in ${stageElapsedMs}ms + finalized in ${finalizeElapsedMs}ms (total ${chunkElapsedMs}ms)`
   );
 
   // 10b. Phase 4 Subscription Payments, Reference Lock, aal1/aal2 MFA, UTC Clamping & reconcile_subscriptions
@@ -1300,8 +1307,91 @@ try {
     'PASS: Phase 4 subscription payments, reference locks, aal2 MFA review, UTC month clamping & reconcile_subscriptions verified'
   );
 
+  // 10c. Phase 5 Monitoring & Alert RPCs (sync_failure, client_error, reconcile_diff, aal2 resolve_platform_alert)
+  const { data: badBatchRes, error: badBatchErr } = await clientC.rpc('apply_sync_batch', {
+    p_shop_id: shopCId,
+    p_operations: [
+      {
+        operation_id: `ci_bad_batch_${suffix}`,
+        rpc: 'totally_unknown_sync_rpc',
+      },
+    ],
+  });
+  assert.ifError(badBatchErr);
+  assert.equal(badBatchRes.results[0].ok, false);
+
+  const syncFailAlertKey = `sync_fail:${shopCId}:ci_bad_batch_${suffix}`;
+  const { data: syncFailAlerts, error: syncFailFetchErr } = await adminClient
+    .from('platform_alerts')
+    .select('*')
+    .eq('alert_key', syncFailAlertKey);
+  assert.ifError(syncFailFetchErr);
+  assert.equal(syncFailAlerts.length, 1, 'apply_sync_batch halt must persist sync_failure alert');
+  assert.equal(syncFailAlerts[0].category, 'sync_failure');
+  assert.equal(syncFailAlerts[0].resolved_at, null);
+
+  // Verified shop session can report redacted client_error for its own shop, denied for other shop
+  const { error: crossAlertErr } = await clientC.rpc('report_client_sync_alert', {
+    p_shop_id: shopDId,
+    p_category: 'client_error',
+    p_key_suffix: `cross_${suffix}`,
+    p_title: 'Cross shop test',
+    p_detail: 'Should fail cross-shop check',
+    p_metadata: {},
+  });
+  assert.ok(crossAlertErr, 'Cross-shop report_client_sync_alert must be denied');
+
+  const { data: clientErrRes, error: clientErrRpcErr } = await clientC.rpc(
+    'report_client_sync_alert',
+    {
+      p_shop_id: shopCId,
+      p_category: 'client_error',
+      p_key_suffix: `ci_ui_err_${suffix}`,
+      p_title: 'Unhandled browser error',
+      p_detail: 'TypeError: redacted test payload',
+      p_metadata: { source: 'ci' },
+    }
+  );
+  assert.ifError(clientErrRpcErr);
+  assert.equal(clientErrRes.recorded, true);
+
+  // Global reconcile_subscriptions(NULL) persists critical reconcile_diff alert when raw seed drift exists on shopAId
+  const { data: globalSubRecon, error: globalSubReconErr } = await adminClient.rpc(
+    'reconcile_subscriptions',
+    { p_shop_id: null }
+  );
+  assert.ifError(globalSubReconErr);
+  assert.ok(globalSubRecon.total_differences >= 2);
+
+  const { data: reconDiffAlerts, error: reconDiffFetchErr } = await adminClient
+    .from('platform_alerts')
+    .select('*')
+    .eq('alert_key', 'reconcile_diff:subscriptions');
+  assert.ifError(reconDiffFetchErr);
+  assert.equal(reconDiffAlerts.length, 1);
+  assert.equal(reconDiffAlerts[0].category, 'reconcile_diff');
+  assert.equal(reconDiffAlerts[0].severity, 'critical');
+
+  // aal1 admin must be blocked from resolve_platform_alert; aal2 admin resolves & audits it
+  const { error: resAal1Err } = await adminAal1Client.rpc('resolve_platform_alert', {
+    p_alert_id: syncFailAlerts[0].id,
+  });
+  assert.ok(resAal1Err, 'aal1 admin must be blocked from resolve_platform_alert');
+
+  const { data: resolvedSyncAlert, error: resAal2Err } = await adminClient.rpc(
+    'resolve_platform_alert',
+    {
+      p_alert_id: syncFailAlerts[0].id,
+    }
+  );
+  assert.ifError(resAal2Err);
+  assert.ok(resolvedSyncAlert.resolved_at, 'aal2 admin must mark platform alert resolved');
   console.log(
-    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC, PHASE 3B, PHASE 3C, PRE-4 & PHASE 4 CHECKS PASSED.'
+    'PASS: Phase 5 monitoring alerts (sync_failure, client_error, reconcile_diff) & aal2 resolve_platform_alert verified'
+  );
+
+  console.log(
+    'ALL REAL-SUPABASE RLS, SESSION BINDING, MFA (AAL2), OVERLAP SYNC, PHASE 3B, PHASE 3C, PRE-4, PHASE 4 & PHASE 5 CHECKS PASSED.'
   );
 } catch (err) {
   const details =
@@ -1316,7 +1406,13 @@ try {
   await adminDb
     .from('platform_alerts')
     .delete()
-    .in('alert_key', [`ci_sms_alert_${suffix}`, `offline_window:${shopCId}:ci_sale_73h`]);
+    .in('alert_key', [
+      `ci_sms_alert_${suffix}`,
+      `offline_window:${shopCId}:ci_sale_73h`,
+      `sync_fail:${shopCId}:ci_bad_batch_${suffix}`,
+      `client_error:${shopCId}:ci_ui_err_${suffix}`,
+      'reconcile_diff:subscriptions',
+    ]);
   for (const uid of createdUserIds) {
     await adminDb.auth.admin.deleteUser(uid);
   }

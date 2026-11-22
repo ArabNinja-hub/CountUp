@@ -69,6 +69,7 @@ import {
   recoverShopPinWithCode,
   registerShopWithServer,
   requestPhoneOtp,
+  resolvePlatformAlertOnServer,
   revokeOtherShopSessionsOnServer,
   sendAdminPasswordReset,
   ShopUnlockStatus,
@@ -78,6 +79,7 @@ import {
   unlockShopSessionWithPin,
   verifyPhoneOtp,
 } from '../auth/authService';
+import { reportSyncBatchFailure, reportUnexpectedClientError } from '../services/errorReporting';
 import {
   clearVersionedShopCache,
   createShopReadSyncCoordinator,
@@ -302,6 +304,8 @@ interface ShopContextType {
   adminReconcileSubscriptions: (
     shopId?: string | null
   ) => Promise<SubscriptionReconciliationReport>;
+  adminResolvePlatformAlert: (alertId: string) => Promise<void>;
+  adminRefreshPlatformAlerts: () => Promise<void>;
 }
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
@@ -1075,6 +1079,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const err = outcome.error ?? new Error('Sync failed.');
               console.warn('Sync failed; this and later entries remain queued:', action.id, err);
               conflict = classifyBlockedHead(action, err);
+              if (conflict?.kind === 'poison') {
+                void reportSyncBatchFailure({
+                  shopId: activeShop.id,
+                  actionId: action.id,
+                  actionType: action.type,
+                  reason: conflict.reason,
+                });
+              }
               failure = err;
               stoppedOnError = true;
               break;
@@ -2681,6 +2693,47 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return res;
   };
 
+  // Best-effort runtime error telemetry for verified shop sessions (redacts PINs/tokens).
+  useEffect(() => {
+    if (!hasShopSession || !shop?.id) return;
+    const activeShopId = shop.id;
+    const onWindowError = (event: ErrorEvent) => {
+      void reportUnexpectedClientError({
+        shopId: activeShopId,
+        source: 'window.error',
+        error: event.error ?? event.message,
+      });
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      void reportUnexpectedClientError({
+        shopId: activeShopId,
+        source: 'unhandledrejection',
+        error: event.reason,
+      });
+    };
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, [hasShopSession, shop?.id]);
+
+  const adminRefreshPlatformAlerts = async (): Promise<void> => {
+    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) return;
+    const alerts = await fetchActivePlatformAlerts();
+    setPlatformAlerts(alerts);
+  };
+
+  const adminResolvePlatformAlert = async (alertId: string): Promise<void> => {
+    if (!navigator.onLine) throw new Error('Connect to the internet to resolve alerts.');
+    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
+      throw new Error('Admin MFA (aal2) access is required. Sign in again.');
+    }
+    await resolvePlatformAlertOnServer(alertId);
+    setPlatformAlerts((prev) => prev.filter((item) => item.id !== alertId));
+  };
+
   const adminReconcileLedgers = async (
     shopId: string | null = null
   ): Promise<LedgerReconciliationReport> => {
@@ -2688,7 +2741,13 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
       throw new Error('Admin MFA (aal2) access is required. Sign in again.');
     }
-    return reconcileShopLedger(shopId);
+    const report = await reconcileShopLedger(shopId);
+    if (shopId === null) {
+      void fetchActivePlatformAlerts()
+        .then((alerts) => setPlatformAlerts(alerts))
+        .catch(() => {});
+    }
+    return report;
   };
 
   const adminReconcileSubscriptions = async (
@@ -2698,7 +2757,13 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
       throw new Error('Admin MFA (aal2) access is required. Sign in again.');
     }
-    return reconcileSubscriptions(shopId);
+    const report = await reconcileSubscriptions(shopId);
+    if (shopId === null) {
+      void fetchActivePlatformAlerts()
+        .then((alerts) => setPlatformAlerts(alerts))
+        .catch(() => {});
+    }
+    return report;
   };
 
   return (
@@ -2787,6 +2852,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         adminInitiatePinReset,
         adminReconcileLedgers,
         adminReconcileSubscriptions,
+        adminResolvePlatformAlert,
+        adminRefreshPlatformAlerts,
       }}
     >
       {children}

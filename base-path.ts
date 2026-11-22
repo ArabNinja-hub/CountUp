@@ -1,17 +1,21 @@
 /**
  * Single source of truth for the subpath the app is served from.
  *
- * GitHub Pages hosts a project site at https://<owner>.github.io/<repo>/, so every
- * asset URL has to be prefixed with `/<repo>/`. Vite bakes this into the built HTML
- * (`base` below) and the Express server in server.ts mounts `dist/` at the same
- * path, so `npm run dev`, `npm start`, and Pages all agree.
+ * - Cloudflare Pages (`CF_PAGES=1` or `VITE_BASE_PATH=/`) serves the site from
+ *   the domain root `'/'` (`https://<project>.pages.dev/` or custom domain).
+ * - GitHub Pages hosts project sites at `https://<owner>.github.io/<repo>/`, so
+ *   when neither `VITE_BASE_PATH` nor `CF_PAGES=1` is set, the default remains
+ *   `'/CountUp/'`.
  *
- * Hardcoding this in only one side is what breaks a deploy: with `base` set but the
- * server mounting at `/`, every asset request falls through to the SPA catch-all and
- * returns index.html, which the browser rejects ("Expected a JavaScript module script
- * but the server responded with a MIME type of text/html").
- *
- * Override with VITE_BASE_PATH when hosting elsewhere, e.g. a custom domain at the
- * root ('/'), which is also the value to use if the repo is ever renamed.
+ * Always normalized with leading and trailing slashes (`'/'` or `'/subpath/'`).
  */
-export const BASE_PATH = process.env.VITE_BASE_PATH ?? '/CountUp/';
+function normalizeBasePath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '/') return '/';
+  const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
+}
+
+export const BASE_PATH = normalizeBasePath(
+  process.env.VITE_BASE_PATH ?? (process.env.CF_PAGES === '1' ? '/' : '/CountUp/')
+);

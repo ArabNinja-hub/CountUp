@@ -500,6 +500,37 @@ export async function fetchActivePlatformAlerts(): Promise<PlatformAlertRow[]> {
   return data as PlatformAlertRow[];
 }
 
+export async function resolvePlatformAlertOnServer(alertId: string): Promise<void> {
+  const { error } = await supabase.rpc('resolve_platform_alert', {
+    p_alert_id: alertId,
+  });
+  if (error) {
+    throw new AuthServiceError(error.message, error.code ?? 'rpc_failed');
+  }
+}
+
+export async function reportClientSyncAlertOnServer(input: {
+  shopId: string;
+  category: 'sync_failure' | 'client_error';
+  keySuffix: string;
+  title: string;
+  detail: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  const { error } = await supabase.rpc('report_client_sync_alert', {
+    p_shop_id: input.shopId,
+    p_category: input.category,
+    p_key_suffix: input.keySuffix,
+    p_title: input.title,
+    p_detail: input.detail,
+    p_metadata: input.metadata ?? {},
+  });
+  if (error) {
+    throw new AuthServiceError(error.message, error.code ?? 'rpc_failed');
+  }
+}
+
 export async function acknowledgeShopSecurityNoticeOnServer(): Promise<void> {
   const { error } = await supabase.rpc('acknowledge_shop_security_notice');
   if (error) {

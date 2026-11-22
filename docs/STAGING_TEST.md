@@ -121,3 +121,34 @@ Use this step-by-step checklist with **two real phones** (or one phone + a separ
 4. Register a brand-new shop on **Phone A** using the **same SIM card** (`Staging Reopened Shop`, PIN `1357`).
 5. **Expected**:
    - Registration succeeds, **but `plan_status` starts as `expired` (`trialGranted: false`)** — the same phone number cannot claim a second free 30-day trial.
+
+---
+
+## Step 9 — Verify on Staging: 4.5 MB Multi-Year Backup Import & Timeout Check
+
+> **Verify on Staging (Mandatory Before Production Launch)**: Do **not** assume function-level `SET statement_timeout` extends request timeouts on hosted Supabase. Hosted Supabase enforces role-level `statement_timeout` (`8s` default on `authenticated`) plus PostgREST/gateway timeouts. Run this exact 4.5 MB test against your **hosted Staging Supabase project** and record the observed durations.
+
+1. On your laptop, generate the ~4.5 MB two-year benchmark backup (`11,300` sales, `~16,800` sale lines, `400` repayments, `300` expenses):
+   ```bash
+   node scripts/generate-staging-4_5mb-backup.mjs /tmp/countup-staging-4_5mb-backup.json
+   ```
+2. Open your **Staging CountUp URL** on **Phone A** (or Chrome on your laptop with **DevTools → Network** open), sign in to a **new/empty** active staging shop, and open **Settings → Data & Backups**.
+3. Select `/tmp/countup-staging-4_5mb-backup.json` to run the **staged chunked dry-run preview**, then confirm **Restore backup**.
+4. In **Chrome DevTools → Network** (filtering by `rpc/`), record and note down:
+   - **Total staged upload time** (`begin_shop_backup_import` + `append_shop_backup_chunk` calls): `________ ms`
+   - **Single `finalize_shop_backup_import` request time**: `________ ms` *(must succeed with HTTP `200` well below hosted Supabase's `8,000 ms` `authenticated` statement timeout)*
+5. Open the **Admin Console**, click **Verify all ledgers**, and confirm **`0 differences`** across the restored shop (`11,300` sales, `50` items, `20` customers).
+
+---
+
+## Step 10 — Verify on Android Chrome: PWA Install, Strict CSP & Offline Reopen
+
+1. Open your **Staging Cloudflare Pages URL** in **Chrome on Android** (`https://...`).
+2. Open **Chrome DevTools Remote Inspection** (or verify zero broken widgets on-screen):
+   - Confirm **zero Content-Security-Policy (CSP) violation errors** while loading Google Fonts, rendering the **Cloudflare Turnstile** widget on the sign-in screen, signing in via SMS OTP + PIN, receiving **Supabase Realtime** updates, and registering `/sw.js`.
+3. Tap Chrome's **⋮ menu → Add to Home screen / Install app** and confirm **Install**:
+   - Confirm Android shows the **CountUp** name and crisp kiosk icon (`192×192` / `512×512` maskable icon without clipped edges).
+   - Launch **CountUp** from the Android home screen and confirm it opens in full **standalone** mode (`#064e3b` emerald status bar, no browser address bar).
+4. Turn **Airplane Mode ON**, force-close CountUp, and reopen CountUp from the Android home screen icon:
+   - Confirm the app reopens offline, unlocks with your 4-digit PIN, records a test cash sale into the pending queue, and syncs automatically once Airplane Mode is turned **OFF**.
+

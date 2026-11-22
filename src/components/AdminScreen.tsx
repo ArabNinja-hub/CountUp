@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   Ban,
   CalendarPlus,
@@ -7,13 +8,18 @@ import {
   Clock3,
   CreditCard,
   KeyRound,
+  RefreshCw,
   Search,
   ShieldCheck,
 } from 'lucide-react';
 import { SUBSCRIPTION_PLAN_TERMS } from '../../shared/subscriptionPlans';
 import { getSubscriptionInfo } from '../config/plans';
 import { useShop } from '../context/ShopContext';
-import type { LedgerReconciliationReport, SubscriptionReconciliationReport } from '../data';
+import type {
+  LedgerReconciliationReport,
+  PlatformAlertRow,
+  SubscriptionReconciliationReport,
+} from '../data';
 import { ManualPaymentNetwork, Shop, SubscriptionPayment } from '../types';
 import { useToast } from './Toast';
 
@@ -30,6 +36,25 @@ const dateTime = (value?: number) =>
 const networkName = (network: ManualPaymentNetwork) =>
   network === 'mtn' ? 'MTN Mobile Money' : 'Airtel Money';
 
+const alertCategoryLabel = (category: PlatformAlertRow['category']): string => {
+  switch (category) {
+    case 'sms_cap':
+      return 'SMS cap';
+    case 'sms_abuse':
+      return 'SMS abuse';
+    case 'sync_failure':
+      return 'Failed sync batch';
+    case 'reconcile_diff':
+      return 'Reconcile difference';
+    case 'client_error':
+      return 'Client error';
+    case 'sync_note':
+      return 'Offline sync note';
+    default:
+      return 'Security';
+  }
+};
+
 export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'Exit admin' }) => {
   const {
     allShops,
@@ -40,6 +65,8 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     adminInitiatePinReset,
     adminReconcileLedgers,
     adminReconcileSubscriptions,
+    adminResolvePlatformAlert,
+    adminRefreshPlatformAlerts,
     platformAlerts,
     subscriptionPayments,
     reviewSubscriptionPayment,
@@ -52,6 +79,8 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
   const [subscriptionReconciliationReport, setSubscriptionReconciliationReport] =
     useState<SubscriptionReconciliationReport | null>(null);
   const [isReconcilingSubscriptions, setIsReconcilingSubscriptions] = useState(false);
+  const [isRefreshingAlerts, setIsRefreshingAlerts] = useState(false);
+  const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null);
   const [shopFilter, setShopFilter] = useState<
     'all' | 'active' | 'trial' | 'pending_payment' | 'expired' | 'suspended'
   >('all');
@@ -313,6 +342,53 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
     [platformAlerts]
   );
 
+  const monitoringSummary = useMemo(() => {
+    let smsCount = 0;
+    let syncFailCount = 0;
+    let reconcileDiffCount = 0;
+    let securityAndClientCount = 0;
+    for (const alert of securityAlerts) {
+      if (alert.category === 'sms_cap' || alert.category === 'sms_abuse') smsCount++;
+      else if (alert.category === 'sync_failure') syncFailCount++;
+      else if (alert.category === 'reconcile_diff') reconcileDiffCount++;
+      else securityAndClientCount++;
+    }
+    return { smsCount, syncFailCount, reconcileDiffCount, securityAndClientCount };
+  }, [securityAlerts]);
+
+  const handleRefreshAlerts = async () => {
+    setIsRefreshingAlerts(true);
+    try {
+      await adminRefreshPlatformAlerts();
+      notify('Monitoring alerts refreshed', { kind: 'success' });
+    } catch (error) {
+      notify('Could not refresh alerts', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setIsRefreshingAlerts(false);
+    }
+  };
+
+  const handleResolveAlert = async (alert: PlatformAlertRow) => {
+    setResolvingAlertId(alert.id);
+    try {
+      await adminResolvePlatformAlert(alert.id);
+      notify('Alert marked resolved', {
+        kind: 'success',
+        detail: `${alert.title} was recorded as resolved in platform audit.`,
+      });
+    } catch (error) {
+      notify('Could not resolve alert', {
+        kind: 'error',
+        detail: error instanceof Error ? error.message : 'Check your connection and try again.',
+      });
+    } finally {
+      setResolvingAlertId(null);
+    }
+  };
+
   const handleRunSubscriptionReconciliation = async () => {
     setIsReconcilingSubscriptions(true);
     try {
@@ -358,33 +434,108 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
         </button>
       </header>
 
-      {securityAlerts.length > 0 && (
-        <section aria-label="System security and SMS alerts" className="space-y-2">
-          {securityAlerts.map((alert) => (
-            <div
-              key={alert.id}
-              role="alert"
-              className={`rounded-xl border p-3.5 text-xs ${
-                alert.severity === 'critical'
-                  ? 'border-rose-300 bg-rose-50 text-rose-950'
-                  : 'border-amber-300 bg-amber-50 text-amber-950'
-              }`}
-            >
-              <div className="flex items-start gap-2">
-                <AlertTriangle
-                  className={`mt-0.5 h-4 w-4 shrink-0 ${
-                    alert.severity === 'critical' ? 'text-rose-700' : 'text-amber-700'
-                  }`}
-                />
-                <div className="space-y-0.5">
-                  <p className="font-extrabold">{alert.title}</p>
-                  <p>{alert.detail}</p>
+      <section
+        aria-label="Platform monitoring and alerts"
+        className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <Activity className="mt-0.5 h-5 w-5 text-emerald-800 shrink-0" />
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Platform monitoring &amp; alerts</h2>
+              <p className="text-xs text-slate-500">
+                Tracks SMS cap warnings/stops, failed sync batches, ledger/subscription reconcile
+                differences, security events, and client runtime errors.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleRefreshAlerts()}
+            disabled={isRefreshingAlerts}
+            className="flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshingAlerts ? 'animate-spin' : ''}`} />
+            {isRefreshingAlerts ? 'Refreshing…' : 'Refresh alerts'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            ['SMS cap & abuse', monitoringSummary.smsCount],
+            ['Failed sync batches', monitoringSummary.syncFailCount],
+            ['Reconcile differences', monitoringSummary.reconcileDiffCount],
+            ['Security & client errors', monitoringSummary.securityAndClientCount],
+          ].map(([label, count]) => {
+            const numeric = Number(count);
+            return (
+              <div
+                key={String(label)}
+                className={`rounded-lg border p-2.5 ${
+                  numeric > 0
+                    ? 'border-amber-300 bg-amber-50/70 text-amber-950'
+                    : 'border-slate-200 bg-slate-50 text-slate-700'
+                }`}
+              >
+                <p className="text-[10px] font-bold uppercase tracking-wide opacity-80">{label}</p>
+                <p className="mt-0.5 text-base font-extrabold tabular-nums">{numeric}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        {securityAlerts.length === 0 ? (
+          <p className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs font-semibold text-emerald-900">
+            No unresolved SMS cap, sync batch, reconciliation, or security alerts.
+          </p>
+        ) : (
+          <div aria-label="System security and SMS alerts" className="space-y-2">
+            {securityAlerts.map((alert) => (
+              <div
+                key={alert.id}
+                role="alert"
+                className={`rounded-xl border p-3.5 text-xs ${
+                  alert.severity === 'critical'
+                    ? 'border-rose-300 bg-rose-50 text-rose-950'
+                    : 'border-amber-300 bg-amber-50 text-amber-950'
+                }`}
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-2 min-w-0">
+                    <AlertTriangle
+                      className={`mt-0.5 h-4 w-4 shrink-0 ${
+                        alert.severity === 'critical' ? 'text-rose-700' : 'text-amber-700'
+                      }`}
+                    />
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ring-1 ring-current/20">
+                          {alertCategoryLabel(alert.category)}
+                        </span>
+                        <p className="font-extrabold">{alert.title}</p>
+                      </div>
+                      <p className="break-words">{alert.detail}</p>
+                      {alert.created_at && (
+                        <p className="text-[10px] opacity-75">
+                          Recorded {new Date(alert.created_at).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={resolvingAlertId === alert.id}
+                    onClick={() => void handleResolveAlert(alert)}
+                    className="min-h-[36px] shrink-0 self-start rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {resolvingAlertId === alert.id ? 'Resolving…' : 'Mark resolved'}
+                  </button>
                 </div>
               </div>
-            </div>
-          ))}
-        </section>
-      )}
+            ))}
+          </div>
+        )}
+      </section>
 
       {lowPrioritySyncNotes.length > 0 && (
         <section
@@ -575,40 +726,41 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
                         const expectedNgwee = expectedPlan?.priceNgwee ?? payment.amountNgwee;
                         const priceMatches = payment.amountNgwee === expectedNgwee;
                         return (
-                          <div className="mt-1.5 grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs sm:grid-cols-3">
+                          <div
+                            aria-label="Payment verification details"
+                            className="mt-1.5 grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs sm:grid-cols-3 lg:grid-cols-6"
+                          >
                             <div>
-                              <p className="text-[10px] font-bold uppercase text-slate-500">
-                                Plan &amp; expected
+                              <p className="text-[10px] font-bold uppercase text-slate-500">Shop</p>
+                              <p className="font-semibold text-slate-900 break-words">
+                                {payment.shopNameSnapshot ||
+                                  allShops.find((s) => s.id === payment.shopId)?.name ||
+                                  payment.shopId}
                               </p>
+                              <p className="font-mono text-[10px] text-slate-500 truncate">
+                                {payment.shopId}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">Plan</p>
                               <p className="font-semibold text-slate-900">
-                                {expectedPlan?.name ?? payment.planId} · {money(expectedNgwee)}
+                                {expectedPlan?.name ?? payment.planId}
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                Expected {money(expectedNgwee)}
                               </p>
                             </div>
                             <div>
                               <p className="text-[10px] font-bold uppercase text-slate-500">
-                                Recorded amount
+                                Amount
                               </p>
                               <p
                                 className={`font-bold ${priceMatches ? 'text-emerald-900' : 'text-rose-800'}`}
                               >
-                                {money(payment.amountNgwee)}{' '}
-                                {priceMatches ? '(matches plan)' : '(mismatch)'}
+                                {money(payment.amountNgwee)}
                               </p>
-                            </div>
-                            <div>
-                              <p className="text-[10px] font-bold uppercase text-slate-500">
-                                Network
-                              </p>
-                              <p className="font-semibold text-slate-900">
-                                {networkName(payment.network)}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-[10px] font-bold uppercase text-slate-500">
-                                Transaction ref
-                              </p>
-                              <p className="break-all font-mono font-bold text-slate-900">
-                                {payment.transactionReference}
+                              <p className="text-[10px] text-slate-500">
+                                {priceMatches ? 'Matches plan' : 'Plan mismatch'}
                               </p>
                             </div>
                             <div>
@@ -617,6 +769,17 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
                               </p>
                               <p className="font-mono font-semibold text-slate-900">
                                 {payment.payerPhone}
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                {networkName(payment.network)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-bold uppercase text-slate-500">
+                                Reference
+                              </p>
+                              <p className="break-all font-mono font-bold text-slate-900">
+                                {payment.transactionReference}
                               </p>
                             </div>
                             <div>
@@ -676,13 +839,15 @@ export const AdminScreen: React.FC<AdminScreenProps> = ({ onBack, exitLabel = 'E
                   {pending && rejectingId === payment.id && (
                     <div className="mt-3 flex flex-col gap-2 border-t border-slate-100 pt-3 sm:flex-row">
                       <label className="flex-1 text-xs font-semibold text-slate-700">
-                        Rejection reason
+                        Rejection reason (required)
                         <input
+                          required
+                          aria-required="true"
                           value={rejectionReason}
                           onChange={(event) => setRejectionReason(event.target.value)}
                           maxLength={500}
                           className="mt-1 min-h-[42px] w-full rounded-lg border border-slate-300 px-3 text-sm font-normal"
-                          placeholder="For example, reference not found in the operator statement"
+                          placeholder="Required (min 3 characters), e.g., reference not found in operator statement"
                         />
                       </label>
                       <button
