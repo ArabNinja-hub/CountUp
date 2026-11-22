@@ -5,30 +5,45 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { ToastProvider } from '../components/Toast';
 import { Shop } from '../types';
 import { customerStatement, summarizeLedger } from '../utils/ledger';
+import { hasLocalPinRecord, saveLocalPinRecord, verifyLocalPin } from '../utils/pinLock';
+import { activeShopCacheKey, writeVersionedDomainCollection } from '../data/offlineCache';
+import { setShopReadSyncOverrideForTests } from '../data/shopReadRepository';
+import { setShopWriteClientOverrideForTests, SYNC_BATCH_CHUNK_SIZE } from '../data/shopWriteRpc';
+import {
+  createFakeDocsReadSyncOverride,
+  createFakeDocsRpcClient,
+} from '../data/__tests__/fakeDocsRpcAdapter';
+import type { AuthUserIdentity } from '../auth/authService';
 
 const fake = vi.hoisted(() => {
   const state = {
     auth: {
-      currentUser: {
-        uid: 'owner-1',
-        isAnonymous: true,
-        email: null as string | null,
-        getIdToken: async () => '',
-        getIdTokenResult: async () => ({ claims: {} as Record<string, unknown> }),
-      } as {
-        uid: string;
-        isAnonymous: boolean;
-        email: string | null;
-        getIdToken?: (forceRefresh?: boolean) => Promise<string>;
-        getIdTokenResult?: () => Promise<{ claims: Record<string, unknown> }>;
-      } | null,
+      currentUser: null as AuthUserIdentity | null,
     },
     docs: new Map<string, Record<string, unknown>>(),
-    listeners: [] as { path: string; callback: (snapshot: unknown) => void }[],
-    authListeners: [] as ((user: unknown) => void)[],
+    changeListeners: [] as (() => void)[],
+    authListeners: [] as ((identity: AuthUserIdentity | null) => void)[],
     accounts: new Map<string, { uid: string; password: string }>(),
+    phoneUsers: new Map<string, { uid: string; otp: string }>(),
+    serverShops: new Map<
+      string,
+      {
+        shop: Shop;
+        pin: string;
+        recoveryCode: string;
+        failedAttempts: number;
+        lockedUntilMs: number | null;
+      }
+    >(),
+    usedPhones: new Map<string, { wasSuspended: boolean }>(),
+    auditLogs: [] as { action: string; shopId?: string; reason?: string }[],
     adminUids: new Set<string>(),
-    emit: () => undefined,
+    emit: () => {
+      fake.changeListeners.forEach((fn) => fn());
+    },
+    emitAuth: () => {
+      state.authListeners.forEach((fn) => fn(state.auth.currentUser));
+    },
     resets: [] as string[],
     failAdminRead: false,
     failWrite: false,
@@ -37,235 +52,343 @@ const fake = vi.hoisted(() => {
     failMarker: null as string | null,
     failNextVerification: false,
     transactionAttempts: 0,
-    failDeletePath: null as string | null,
+    failDelete: false,
     deleteGate: null as Promise<void> | null,
-    deleteGates: new Map<string, Promise<void>>(),
-    deleteCalls: [] as string[],
-    failAnonymousSignIn: false,
-    anonymousSignIns: 0,
+    failOtpVerify: false,
+    failRegister: false,
+    nextUuidIndex: 1,
   };
   return state;
 });
-vi.mock('../firebase/functions', () => ({ functions: {} }));
-vi.mock('firebase/functions', () => ({
-  httpsCallable:
-    (_functions: unknown, name: string) =>
-    async (input: Record<string, unknown> = {}) => {
-      if (name === 'verifyPlatformAdmin') {
-        if (fake.failAdminRead)
-          throw Object.assign(new Error('Server unavailable'), { code: 'functions/unavailable' });
-        if (!fake.auth.currentUser || !fake.adminUids.has(fake.auth.currentUser.uid))
-          throw Object.assign(
-            new Error('This account is not authorized for platform administration.'),
-            { code: 'functions/permission-denied' }
-          );
-        return { data: { isAdmin: true, claimsUpdated: true } };
-      }
-      if (name === 'extendShopSubscription' || name === 'setShopSuspended') {
-        if (fake.failWrite) throw new Error('Write rejected');
-        const path = `shops/${String(input.shopId)}`;
-        const current = fake.docs.get(path) ?? {};
-        fake.docs.set(
-          path,
-          name === 'extendShopSubscription'
-            ? {
-                ...current,
-                planStatus: 'active',
-                planExpiryDate: new Date(Date.now() + Number(input.days) * 86400000).toISOString(),
-              }
-            : {
-                ...current,
-                isDeactivated: Boolean(input.suspended),
-                planStatus: input.suspended ? 'suspended' : 'active',
-              }
-        );
-        fake.emit();
-        return {
-          data:
-            name === 'extendShopSubscription' ? { extended: true } : { suspended: input.suspended },
-        };
-      }
-      if (name === 'submitManualSubscriptionPayment')
-        return { data: { id: 'payment-test', status: 'pending' } };
-      if (name === 'reviewManualSubscriptionPayment')
-        return { data: { status: input.decision === 'approve' ? 'approved' : 'rejected' } };
-      if (name === 'getManualPaymentInstructions')
-        return { data: { mtn: 'test-mtn', airtel: 'test-airtel', verification: 'manual' } };
-      throw new Error(`Unexpected callable ${name}`);
-    },
-}));
-vi.mock('../firebase/config', () => ({
-  auth: fake.auth,
-  db: {},
-  testConnection: vi.fn().mockResolvedValue(true),
-}));
-vi.mock('firebase/auth', () => ({
-  onAuthStateChanged: (_auth: unknown, callback: (user: unknown) => void) => {
-    fake.authListeners.push(callback);
-    queueMicrotask(() => callback(fake.auth.currentUser));
-    return () => {
-      fake.authListeners = fake.authListeners.filter((fn) => fn !== callback);
-    };
-  },
-  signInAnonymously: async () => {
-    fake.anonymousSignIns++;
-    if (fake.failAnonymousSignIn) throw new Error('Anonymous sign-in failed');
-    if (!fake.auth.currentUser) {
-      fake.auth.currentUser = {
-        uid: 'new-anonymous-owner',
-        isAnonymous: true,
-        email: null,
-        getIdToken: async () => '',
-        getIdTokenResult: async () => ({ claims: {} }),
-      };
-      fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
-    }
-    return { user: fake.auth.currentUser };
-  },
-  EmailAuthProvider: { credential: (email: string, password: string) => ({ email, password }) },
-  linkWithCredential: async (
-    user: { uid: string },
-    credential: { email: string; password: string }
-  ) => {
-    fake.accounts.set(credential.email, { uid: user.uid, password: credential.password });
-    fake.auth.currentUser = {
-      uid: user.uid,
-      isAnonymous: false,
-      email: credential.email,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({ claims: { platformAdmin: fake.adminUids.has(user.uid) } }),
-    };
-    fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
-    return { user: fake.auth.currentUser };
-  },
-  signInWithEmailAndPassword: async (_auth: unknown, email: string, password: string) => {
-    const account = fake.accounts.get(email);
-    if (!account || account.password !== password)
-      throw Object.assign(new Error('Invalid credentials'), { code: 'auth/invalid-credential' });
-    fake.auth.currentUser = {
-      uid: account.uid,
-      isAnonymous: false,
-      email,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({
-        claims: { platformAdmin: fake.adminUids.has(account.uid) },
-      }),
-    };
-    fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
-    return { user: fake.auth.currentUser };
-  },
-  signOut: async () => {
-    fake.auth.currentUser = null;
-    fake.authListeners.forEach((fn) => fn(null));
-  },
-  sendPasswordResetEmail: async (_auth: unknown, email: string) => {
-    fake.resets.push(email);
-  },
-}));
-vi.mock('firebase/firestore', () => {
-  const path = (...parts: unknown[]) => parts.slice(1).join('/');
-  const snapshot = (p: string) => ({
-    exists: () => fake.docs.has(p),
-    data: () => fake.docs.get(p),
-  });
-  const collectionSnapshot = (p: string) => {
-    const docs = [...fake.docs.entries()]
-      .filter(
-        ([key]) => key.startsWith(`${p}/`) && key.split('/').length === p.split('/').length + 1
-      )
-      .map(([key, data]) => ({ ref: { path: key }, data: () => data }));
-    return { docs, forEach: (fn: (doc: unknown) => void) => docs.forEach(fn) };
-  };
-  const emit = () =>
-    fake.listeners.forEach(({ path: p, callback }) =>
-      callback(p.split('/').length % 2 ? collectionSnapshot(p) : snapshot(p))
-    );
-  fake.emit = emit;
-  const write = (p: string, data: Record<string, unknown>, merge: boolean) =>
-    fake.docs.set(p, merge ? { ...fake.docs.get(p), ...data } : { ...data });
+
+vi.mock('../auth/authService', async () => {
+  const security = await import('../../shared/authSecurity');
   return {
-    doc: (...parts: unknown[]) => ({ path: path(...parts) }),
-    collection: (...parts: unknown[]) => ({ path: path(...parts) }),
-    query: (ref: unknown) => ref,
-    where: () => ({}),
-    getDoc: async (ref: { path: string }) => snapshot(ref.path),
-    getDocFromServer: async (ref: { path: string }) => {
-      if (fake.failAdminRead && ref.path.startsWith('admins/'))
-        throw Object.assign(new Error('Server unavailable'), { code: 'unavailable' });
-      return snapshot(ref.path);
+    AuthServiceError: class AuthServiceError extends Error {
+      readonly code: string;
+      constructor(message: string, code = 'auth_error') {
+        super(message);
+        this.code = code;
+      }
     },
-    getDocs: async (ref: { path: string }) => {
-      const result = collectionSnapshot(ref.path);
-      if (ref.path === 'shops')
-        result.docs = result.docs.filter((d) => d.data().ownerUid === fake.auth.currentUser?.uid);
-      return result;
-    },
-    getDocsFromServer: async (ref: { path: string }) => collectionSnapshot(ref.path),
-    setDoc: async (
-      ref: { path: string },
-      data: Record<string, unknown>,
-      options?: { merge: boolean }
-    ) => {
-      if (fake.failWrite) throw new Error('Write rejected');
-      write(ref.path, data, Boolean(options?.merge));
-      emit();
-    },
-    deleteDoc: async (ref: { path: string }) => {
-      fake.deleteCalls.push(ref.path);
-      if (fake.deleteGate) await fake.deleteGate;
-      const pathGate = fake.deleteGates.get(ref.path);
-      if (pathGate) await pathGate;
-      if (fake.failDeletePath === ref.path) throw new Error('Delete interrupted');
-      fake.docs.delete(ref.path);
-      emit();
-    },
-    onSnapshot: (ref: { path: string }, callback: (snapshot: unknown) => void) => {
-      const listener = { path: ref.path, callback };
-      fake.listeners.push(listener);
-      queueMicrotask(() =>
-        callback(ref.path.split('/').length % 2 ? collectionSnapshot(ref.path) : snapshot(ref.path))
-      );
+    subscribeToAuthIdentity: (listener: (identity: AuthUserIdentity | null) => void) => {
+      fake.authListeners.push(listener);
+      queueMicrotask(() => listener(fake.auth.currentUser));
       return () => {
-        fake.listeners = fake.listeners.filter((item) => item !== listener);
+        fake.authListeners = fake.authListeners.filter((fn) => fn !== listener);
       };
     },
-    writeBatch: () => {
-      const writes: { path: string; data: Record<string, unknown>; merge: boolean }[] = [];
-      return {
-        set: (ref: { path: string }, data: Record<string, unknown>, opts?: { merge: boolean }) =>
-          writes.push({ path: ref.path, data, merge: Boolean(opts?.merge) }),
-        commit: async () => {
-          if (fake.failBatch) throw new Error('Batch rejected');
-          writes.forEach((w) => write(w.path, w.data, w.merge));
-          emit();
-        },
-      };
-    },
-    runTransaction: async (_db: unknown, callback: (tx: unknown) => Promise<unknown>) => {
-      fake.transactionAttempts++;
-      if (fake.transactionError) throw fake.transactionError;
-      const writes: { path: string; data: Record<string, unknown>; merge: boolean }[] = [];
-      const tx = {
-        get: async (ref: { path: string }) => {
-          if (fake.failMarker && ref.path.endsWith(`/sync_operations/${fake.failMarker}`))
-            throw Object.assign(new Error('Write permission denied'), {
-              code: 'permission-denied',
-            });
-          return snapshot(ref.path);
-        },
-        set: (ref: { path: string }, data: Record<string, unknown>, opts?: { merge: boolean }) =>
-          writes.push({ path: ref.path, data, merge: Boolean(opts?.merge) }),
-      };
-      const result = await callback(tx);
-      writes.forEach((w) => write(w.path, w.data, w.merge));
-      emit();
-      if (fake.failNextVerification && writes.some((entry) => entry.data.hasResolution === true)) {
-        fake.failNextVerification = false;
-        fake.transactionError = Object.assign(new Error('Network lost after commit'), {
-          code: 'unavailable',
+    requestPhoneOtp: async (rawPhone: string) => {
+      const phoneE164 = security.normalizeZambianPhoneE164(rawPhone);
+      if (!fake.phoneUsers.has(phoneE164)) {
+        fake.phoneUsers.set(phoneE164, {
+          uid: `phone-user-${fake.phoneUsers.size + 1}`,
+          otp: '123456',
         });
       }
-      return result;
+      return { phoneE164 };
+    },
+    verifyPhoneOtp: async (rawPhone: string, otpToken: string) => {
+      if (fake.failOtpVerify) throw new Error('SMS verification unavailable');
+      const phoneE164 = security.normalizeZambianPhoneE164(rawPhone);
+      const entry = fake.phoneUsers.get(phoneE164);
+      if (!entry || entry.otp !== otpToken.trim()) {
+        throw new Error('Invalid or expired SMS verification code.');
+      }
+      // Before PIN unlock on a new session, verifiedShopId is null (SIM-swap session gating!)
+      const identity: AuthUserIdentity = {
+        id: entry.uid,
+        phone: phoneE164,
+        email: null,
+        isPlatformAdmin: fake.adminUids.has(entry.uid),
+        verifiedShopId: null,
+      };
+      fake.auth.currentUser = identity;
+      fake.emitAuth();
+      return identity;
+    },
+    checkShopUnlockStatus: async () => {
+      const uid = fake.auth.currentUser?.id;
+      const found = [...fake.serverShops.values()].find((entry) => entry.shop.ownerUid === uid);
+      if (!found) {
+        return { hasShop: false, sessionVerified: false, isLockedOut: false, lockedUntil: null };
+      }
+      const isLockedOut = Boolean(found.lockedUntilMs && found.lockedUntilMs > Date.now());
+      return {
+        hasShop: true,
+        sessionVerified: fake.auth.currentUser?.verifiedShopId === found.shop.id,
+        isLockedOut,
+        lockedUntil: isLockedOut ? new Date(found.lockedUntilMs!).toISOString() : null,
+      };
+    },
+    registerShopWithServer: async ({ name, pin }: { name: string; pin: string }) => {
+      if (fake.failRegister || fake.failWrite) throw new Error('Server registration unavailable');
+      const caller = fake.auth.currentUser;
+      if (!caller?.phone) throw new Error('Verify your phone number first.');
+      const cleanName = security.validateShopName(name);
+      if (!security.isValidFourDigitPin(pin)) throw new Error('Enter a 4-digit PIN.');
+      const duplicate = [...fake.serverShops.values()].find(
+        (entry) => entry.shop.ownerUid === caller.id || entry.shop.ownerPhone === caller.phone
+      );
+      if (duplicate) {
+        throw new Error('A shop is already registered for this phone number. Sign in instead.');
+      }
+      const used = fake.usedPhones.get(caller.phone);
+      const now = Date.now();
+      const trialEnds = new Date(now + 30 * 86_400_000).toISOString();
+      const trialGranted = !used;
+      const isSuspended = Boolean(used?.wasSuspended);
+      const shopId = `550e8400-e29b-41d4-a716-${String(fake.nextUuidIndex++).padStart(12, '0')}`;
+      const recoveryCode = security.generateOneTimeRecoveryCode();
+      const created: Shop = {
+        id: shopId,
+        name: cleanName,
+        ownerPhone: caller.phone,
+        ownerUid: caller.id,
+        planStatus: trialGranted ? 'trial' : isSuspended ? 'suspended' : 'expired',
+        planType: 'trial',
+        createdAt: new Date(now).toISOString(),
+        trialEndsAt: trialGranted ? trialEnds : new Date(now).toISOString(),
+        planExpiryDate: trialGranted ? trialEnds : new Date(now).toISOString(),
+        salesAccessUntilMs: trialGranted ? now + 33 * 86_400_000 : now,
+        isDeactivated: isSuspended,
+        currency: 'ZMW',
+      };
+      if (!used) {
+        fake.usedPhones.set(caller.phone, { wasSuspended: false });
+      }
+      fake.serverShops.set(shopId, {
+        shop: created,
+        pin,
+        recoveryCode,
+        failedAttempts: 0,
+        lockedUntilMs: null,
+      });
+      fake.docs.set(`shops/${shopId}`, { ...created });
+      fake.auth.currentUser = { ...caller, verifiedShopId: shopId };
+      fake.emitAuth();
+      return { shop: created, recoveryCode, trialGranted };
+    },
+    unlockShopSessionWithPin: async (pin: string) => {
+      const caller = fake.auth.currentUser;
+      if (!caller) throw new Error('Sign in first.');
+      const record = [...fake.serverShops.values()].find((e) => e.shop.ownerUid === caller.id);
+      if (!record) throw new Error('Shop not found.');
+      if (record.lockedUntilMs && record.lockedUntilMs > Date.now()) {
+        throw new Error('Too many incorrect PIN attempts on a new device.');
+      }
+      if (record.pin !== pin) {
+        record.failedAttempts += 1;
+        const delay = security.calculateNewDeviceLockoutMs(record.failedAttempts);
+        record.lockedUntilMs = delay > 0 ? Date.now() + delay : null;
+        throw new Error(
+          delay > 0
+            ? 'New-device sign-in is locked. Use your one-time recovery code.'
+            : 'Incorrect PIN.'
+        );
+      }
+      record.failedAttempts = 0;
+      record.lockedUntilMs = null;
+      fake.auth.currentUser = { ...caller, verifiedShopId: record.shop.id };
+      fake.emitAuth();
+      return { shop: record.shop };
+    },
+    recoverShopPinWithCode: async ({
+      recoveryCode,
+      newPin,
+    }: {
+      recoveryCode: string;
+      newPin: string;
+    }) => {
+      const caller = fake.auth.currentUser;
+      if (!caller) throw new Error('Sign in first.');
+      const record = [...fake.serverShops.values()].find((e) => e.shop.ownerUid === caller.id);
+      if (!record) throw new Error('Shop not found.');
+      const normalized = security.normalizeRecoveryCode(recoveryCode);
+      if (normalized !== record.recoveryCode) {
+        throw new Error('That recovery code does not match.');
+      }
+      if (!security.isValidFourDigitPin(newPin)) throw new Error('Enter a 4-digit PIN.');
+      const nextCode = security.generateOneTimeRecoveryCode();
+      record.pin = newPin;
+      record.recoveryCode = nextCode;
+      record.failedAttempts = 0;
+      record.lockedUntilMs = null;
+      fake.auth.currentUser = { ...caller, verifiedShopId: record.shop.id };
+      fake.emitAuth();
+      return { shop: record.shop, recoveryCode: nextCode };
+    },
+    changeShopPinOnServer: async ({
+      currentPin,
+      newPin,
+    }: {
+      currentPin: string;
+      newPin: string;
+    }) => {
+      if (fake.failWrite) throw new Error('Write rejected');
+      const caller = fake.auth.currentUser;
+      if (!caller) throw new Error('Sign in first.');
+      const record = [...fake.serverShops.values()].find((e) => e.shop.ownerUid === caller.id);
+      if (!record || record.pin !== currentPin || currentPin === newPin) {
+        throw new Error('That is not your current PIN.');
+      }
+      record.pin = newPin;
+    },
+    deleteShopOnServer: async ({
+      confirmationName,
+      pin,
+    }: {
+      confirmationName: string;
+      pin: string;
+    }) => {
+      if (fake.deleteGate) await fake.deleteGate;
+      if (fake.failDelete) throw new Error('Some records may already have been removed.');
+      const caller = fake.auth.currentUser;
+      if (!caller) throw new Error('Sign in first.');
+      const record = [...fake.serverShops.values()].find((e) => e.shop.ownerUid === caller.id);
+      if (!record) throw new Error('Shop not found.');
+      if (confirmationName.trim().toLowerCase() !== record.shop.name.trim().toLowerCase()) {
+        throw new Error('Confirmation name mismatch.');
+      }
+      if (record.pin !== pin) {
+        throw new Error('Incorrect PIN.');
+      }
+      const prevUsed = fake.usedPhones.get(record.shop.ownerPhone);
+      fake.usedPhones.set(record.shop.ownerPhone, {
+        wasSuspended: Boolean(
+          prevUsed?.wasSuspended ||
+          record.shop.isDeactivated ||
+          record.shop.planStatus === 'suspended'
+        ),
+      });
+      fake.serverShops.delete(record.shop.id);
+      fake.docs.delete(`shops/${record.shop.id}`);
+    },
+    signInPlatformAdmin: async (email: string, password: string) => {
+      const cleanEmail = email.trim();
+      const account = fake.accounts.get(cleanEmail);
+      if (!account || account.password !== password) {
+        throw Object.assign(
+          new Error('The account or password is incorrect. Use the authorized platform account.'),
+          { code: 'invalid_credentials' }
+        );
+      }
+      if (fake.failAdminRead) {
+        fake.auth.currentUser = null;
+        fake.emitAuth();
+        throw Object.assign(new Error('Server unavailable'), { code: 'unavailable' });
+      }
+      if (!fake.adminUids.has(account.uid)) {
+        fake.auth.currentUser = null;
+        fake.emitAuth();
+        throw Object.assign(
+          new Error('This account is not authorized for platform administration.'),
+          { code: 'permission_denied' }
+        );
+      }
+      const identity: AuthUserIdentity = {
+        id: account.uid,
+        phone: null,
+        email: cleanEmail,
+        isPlatformAdmin: true,
+        verifiedShopId: null,
+      };
+      fake.auth.currentUser = identity;
+      fake.emitAuth();
+      return { status: 'authenticated' as const, identity };
+    },
+    completePlatformAdminMfa: async () => {
+      if (!fake.auth.currentUser) throw new Error('Not signed in.');
+      return fake.auth.currentUser;
+    },
+    sendAdminPasswordReset: async (email: string) => {
+      fake.resets.push(email.trim());
+    },
+    adminInitiateShopPinReset: async ({
+      shopId,
+      identityCheckNote,
+    }: {
+      shopId: string;
+      identityCheckNote: string;
+    }) => {
+      const note = security.validateIdentityCheckNote(identityCheckNote);
+      const record = fake.serverShops.get(shopId);
+      if (!record) throw new Error('Shop not found.');
+      const availableAt = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
+      record.shop = {
+        ...record.shop,
+        securityNotice: `Urgent security alert: Support initiated a 72-hour PIN reset (${availableAt}).`,
+        securityNoticeAt: new Date().toISOString(),
+      };
+      fake.docs.set(`shops/${shopId}`, { ...record.shop });
+      fake.auditLogs.push({ action: 'shop_pin_reset_72h_initiated', shopId, reason: note });
+      fake.emit();
+      return { requestId: 'req-1', availableAt };
+    },
+    completeApprovedShopPinReset: async ({ newPin }: { newPin: string }) => {
+      const caller = fake.auth.currentUser;
+      if (!caller) throw new Error('Sign in first.');
+      const record = [...fake.serverShops.values()].find((e) => e.shop.ownerUid === caller.id);
+      if (!record) throw new Error('Shop not found.');
+      const nextCode = security.generateOneTimeRecoveryCode();
+      record.pin = newPin;
+      record.recoveryCode = nextCode;
+      fake.auth.currentUser = { ...caller, verifiedShopId: record.shop.id };
+      fake.emitAuth();
+      return { shop: record.shop, recoveryCode: nextCode };
+    },
+    revokeOtherShopSessionsOnServer: async () => ({ revokedCount: 1 }),
+    cancelPendingPinResetOnServer: async () => true,
+    fetchActivePlatformAlerts: async () => [],
+    adminResetShopPinLockout: async ({
+      shopId,
+      identityCheckNote,
+    }: {
+      shopId: string;
+      identityCheckNote: string;
+    }) => {
+      const note = security.validateIdentityCheckNote(identityCheckNote);
+      const record = fake.serverShops.get(shopId);
+      if (!record) throw new Error('Shop not found.');
+      record.failedAttempts = 0;
+      record.lockedUntilMs = null;
+      record.shop = {
+        ...record.shop,
+        securityNotice:
+          'Security alert: Platform support reset your shop’s new-device PIN lockout after an identity check.',
+        securityNoticeAt: new Date().toISOString(),
+      };
+      fake.docs.set(`shops/${shopId}`, { ...record.shop });
+      fake.auditLogs.push({ action: 'shop_pin_lockout_reset', shopId, reason: note });
+      fake.emit();
+    },
+    acknowledgeShopSecurityNoticeOnServer: async () => {
+      const caller = fake.auth.currentUser;
+      if (!caller?.verifiedShopId) throw new Error('No verified shop.');
+      const record = fake.serverShops.get(caller.verifiedShopId);
+      if (record) {
+        record.shop = { ...record.shop, securityNotice: null, securityNoticeAt: null };
+        fake.docs.set(`shops/${record.shop.id}`, { ...record.shop });
+      }
+    },
+    acknowledgeShopSubscriptionNoticeOnServer: async () => {
+      const caller = fake.auth.currentUser;
+      if (!caller?.verifiedShopId) throw new Error('No verified shop.');
+      const record = fake.serverShops.get(caller.verifiedShopId);
+      if (record) {
+        record.shop = { ...record.shop, subscriptionNotice: null, subscriptionNoticeAt: null };
+        fake.docs.set(`shops/${record.shop.id}`, { ...record.shop });
+      }
+    },
+    fetchVerifiedShopFromServer: async (shopId: string) => {
+      return fake.serverShops.get(shopId)?.shop ?? null;
+    },
+    fetchAllShopsForAdmin: async () => {
+      return [...fake.serverShops.values()].map((entry) => entry.shop);
+    },
+    signOutSupabase: async () => {
+      fake.auth.currentUser = null;
+      fake.emitAuth();
     },
   };
 });
@@ -278,11 +401,10 @@ function Capture() {
   return null;
 }
 const shop: Shop = {
-  id: 'shop_0977000000',
+  id: '550e8400-e29b-41d4-a716-446655440000',
   name: 'CountUp Test',
-  ownerPhone: '0977000000',
+  ownerPhone: '+260977000000',
   ownerUid: 'owner-1',
-  pin: '1234',
   planStatus: 'trial',
   planType: 'trial',
   createdAt: new Date().toISOString(),
@@ -304,12 +426,16 @@ async function mount() {
   await waitFor(() => expect(current?.isLoading).toBe(false));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear();
   fake.docs.clear();
-  fake.listeners = [];
+  fake.changeListeners = [];
   fake.authListeners = [];
   fake.accounts.clear();
+  fake.phoneUsers.clear();
+  fake.serverShops.clear();
+  fake.usedPhones.clear();
+  fake.auditLogs = [];
   fake.adminUids.clear();
   fake.resets = [];
   fake.failAdminRead = false;
@@ -319,24 +445,44 @@ beforeEach(() => {
   fake.failMarker = null;
   fake.failNextVerification = false;
   fake.transactionAttempts = 0;
-  fake.failDeletePath = null;
+  fake.failDelete = false;
   fake.deleteGate = null;
-  fake.deleteGates.clear();
-  fake.deleteCalls = [];
-  fake.failAnonymousSignIn = false;
-  fake.anonymousSignIns = 0;
+  fake.failOtpVerify = false;
+  fake.failRegister = false;
+  fake.nextUuidIndex = 1;
+  fake.phoneUsers.set('+260977000000', { uid: 'owner-1', otp: '123456' });
+  fake.serverShops.set(shop.id, {
+    shop: { ...shop },
+    pin: '1234',
+    recoveryCode: 'CU-ABCD-EFGH-JKLM',
+    failedAttempts: 0,
+    lockedUntilMs: null,
+  });
+  fake.usedPhones.set('+260977000000', { wasSuspended: false });
   fake.auth.currentUser = {
-    uid: 'owner-1',
-    isAnonymous: true,
+    id: 'owner-1',
+    phone: '+260977000000',
     email: null,
-    getIdToken: async () => '',
-    getIdTokenResult: async () => ({ claims: {} }),
+    isPlatformAdmin: false,
+    verifiedShopId: shop.id,
   };
   online(false);
+  setShopReadSyncOverrideForTests(
+    createFakeDocsReadSyncOverride(fake.docs, (fn) => {
+      fake.changeListeners.push(fn);
+      return () => {
+        fake.changeListeners = fake.changeListeners.filter((item) => item !== fn);
+      };
+    })
+  );
+  setShopWriteClientOverrideForTests(createFakeDocsRpcClient(fake));
   localStorage.setItem('countup_active_shop', JSON.stringify(shop));
+  await saveLocalPinRecord(shop.id, '1234', { iterations: 1_000 });
   fake.docs.set(`shops/${shop.id}`, { ...shop });
 });
 afterEach(() => {
+  setShopReadSyncOverrideForTests(null);
+  setShopWriteClientOverrideForTests(null);
   cleanup();
   vi.restoreAllMocks();
 });
@@ -845,7 +991,16 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(current.pendingSyncCount).toBe(1);
     expect(fake.docs.has(`shops/${shop.id}/sync_operations/${id}`)).toBe(false);
     expect([...fake.docs.keys()].some((key) => key.includes('/credit_payments/'))).toBe(false);
-    fake.auth.currentUser = { uid: 'wrong-owner', isAnonymous: true, email: null };
+    await act(async () => {
+      fake.auth.currentUser = {
+        id: 'wrong-owner',
+        phone: '+260966000000',
+        email: null,
+        isPlatformAdmin: false,
+        verifiedShopId: null,
+      };
+      fake.emitAuth();
+    });
     await expect(current.loadSyncReview(id)).rejects.toThrow(/original shop account/i);
     expect(current.pendingSyncCount).toBe(1);
   });
@@ -1332,30 +1487,26 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     }
   });
 
-  it('links and reauthenticates the existing shop identity without general email shop sign-in', async () => {
+  it('reauthenticates the existing shop identity via SMS OTP without discarding state and supports admin password reset', async () => {
     online(true);
     await mount();
-    await act(async () => {
-      await current.linkEmailAccount('owner@example.com', 'strongpass123');
-    });
-    expect(fake.auth.currentUser).toMatchObject({
-      uid: 'owner-1',
-      isAnonymous: false,
-      email: 'owner@example.com',
-    });
+    expect(current.user?.uid).toBe('owner-1');
     expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
 
-    // Simulate an expired Firebase session while the original shop data is still open.
-    fake.auth.currentUser = null;
-    fake.authListeners.forEach((listener) => listener(null));
-    await expect(current.restoreShopAccount('owner@example.com', 'wrong')).rejects.toThrow(
-      /Invalid credentials/
+    // Simulate an expired Supabase session while the original shop data is still open.
+    await act(async () => {
+      fake.auth.currentUser = null;
+      fake.emitAuth();
+    });
+    expect(current.needsShopAccountRecovery).toBe(true);
+    await expect(current.restoreShopSessionWithOtp('000000')).rejects.toThrow(
+      /Invalid or expired SMS verification code/
     );
     await act(async () => {
-      await current.restoreShopAccount('owner@example.com', 'strongpass123');
+      await current.restoreShopSessionWithOtp('123456');
     });
     expect(current.shop?.id).toBe(shop.id);
-    expect(fake.auth.currentUser?.uid).toBe(shop.ownerUid);
+    expect(fake.auth.currentUser?.id).toBe(shop.ownerUid);
     await act(async () => {
       await current.resetEmailPassword('owner@example.com');
     });
@@ -1403,11 +1554,10 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect([...fake.docs.entries()]).toEqual(before);
   });
 
-  it('recovers an offline shop and its records from the durable queue after an interrupted cache update', async () => {
+  it('recovers an open shop and its queued business records after an interrupted cache update', async () => {
     fake.auth.currentUser = null;
     fake.docs.clear();
-    localStorage.removeItem('countup_active_shop');
-    const pendingShop = { ...shop, ownerUid: shop.id };
+    localStorage.setItem('countup_active_shop', JSON.stringify(shop));
     const product = {
       id: 'item_queued',
       shopId: shop.id,
@@ -1442,7 +1592,6 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     localStorage.setItem(
       'countup_pending_queue',
       JSON.stringify([
-        action('create-shop', [{ path: `shops/${shop.id}`, data: pendingShop }]),
         action('create-item', [{ path: `shops/${shop.id}/items/${product.id}`, data: product }]),
         action('sale', [
           { path: `shops/${shop.id}/sales/${sale.id}`, data: sale },
@@ -1454,10 +1603,10 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(current.shop?.id).toBe(shop.id);
     expect(current.items[0]).toMatchObject({ name: 'Tea', quantity: 3 });
     expect(current.sales[0]).toMatchObject({ id: sale.id, totalAmount: 4 });
-    expect(current.pendingSyncCount).toBe(3);
+    expect(current.pendingSyncCount).toBe(2);
   });
 
-  it('replays queued archives, expense deletions and PIN changes after restart', async () => {
+  it('replays queued archives and expense deletions after restart and strips any legacy plain-text PIN', async () => {
     const product = {
       id: 'old-item',
       shopId: shop.id,
@@ -1476,8 +1625,9 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
       amount: 1,
       createdAt: shop.createdAt,
     };
-    localStorage.setItem('countup_items', JSON.stringify([product]));
-    localStorage.setItem('countup_expenses', JSON.stringify([expense]));
+    localStorage.setItem('countup_active_shop', JSON.stringify({ ...shop, pin: '4321' }));
+    writeVersionedDomainCollection(shop.id, 'items', [product], localStorage);
+    writeVersionedDomainCollection(shop.id, 'expenses', [expense], localStorage);
     localStorage.setItem(
       'countup_pending_queue',
       JSON.stringify([
@@ -1495,28 +1645,44 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
           path: `shops/${shop.id}/expenses/${expense.id}`,
           data: { isDeleted: true },
         },
-        { id: 'pin', type: 'shop', timestamp: 3, path: `shops/${shop.id}`, data: { pin: '4321' } },
       ])
     );
     await mount();
     expect(current.items).toHaveLength(0);
     expect(current.archivedItems[0]).toMatchObject({ id: product.id, isDeleted: true });
     expect(current.expenses).toHaveLength(0);
-    expect(current.shop?.pin).toBe('4321');
-    expect(current.pendingSyncCount).toBe(3);
+    expect((current.shop as unknown as { pin?: string })?.pin).toBeUndefined();
+    expect(current.pendingSyncCount).toBe(2);
   });
 
-  it('starts a real online shop with empty business records and no fabricated sync work', async () => {
+  it('starts a real online shop via verified SMS OTP with random UUID, one-time recovery code, salted PBKDF2 PIN, and empty business records', async () => {
     localStorage.removeItem('countup_active_shop');
     fake.docs.clear();
+    fake.serverShops.clear();
+    fake.usedPhones.clear();
     fake.auth.currentUser = null;
     online(true);
     await mount();
+
     await act(async () => {
-      expect(await current.registerNewShop('Owner entered shop', '0977000000', '1234')).toBe(true);
+      await current.sendPhoneVerificationCode('0966 123 456');
+      const status = await current.verifyPhoneVerificationCode('0966 123 456', '123456');
+      expect(status.hasShop).toBe(false);
     });
 
+    let regResult!: { recoveryCode: string; trialGranted: boolean };
+    await act(async () => {
+      regResult = await current.completeShopRegistration('Owner entered shop', '2580');
+    });
+
+    expect(regResult.trialGranted).toBe(true);
+    expect(regResult.recoveryCode).toMatch(/^CU-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    expect(current.pendingRecoveryCode).toBe(regResult.recoveryCode);
     expect(current.shop?.name).toBe('Owner entered shop');
+    expect(current.shop?.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    );
+    expect(current.shop?.id).not.toContain('966123456');
     expect(current.items).toHaveLength(0);
     expect(current.archivedItems).toHaveLength(0);
     expect(current.sales).toHaveLength(0);
@@ -1525,107 +1691,78 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(current.expenses).toHaveLength(0);
     expect(current.stockMovements).toHaveLength(0);
     expect(current.pendingSyncCount).toBe(0);
-    expect(fake.docs.get(`shops/${shop.id}`)?.name).toBe('Owner entered shop');
+    expect(hasLocalPinRecord(current.shop!.id)).toBe(true);
+    expect((await verifyLocalPin(current.shop!.id, '2580')).unlocked).toBe(true);
+    expect(JSON.stringify(localStorage)).not.toContain('"2580"');
   });
 
-  it('creates a shop offline immediately and binds its temporary owner to the authenticated UID on sync', async () => {
+  it('enforces one free trial per verified phone across shop deletion and re-registration', async () => {
     localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
+    fake.serverShops.clear();
+    fake.usedPhones.clear();
     fake.auth.currentUser = null;
-    await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('New shop', '+260 977 000 000', '1234')).toBe(true);
-    });
-    expect(current.shop).toMatchObject({
-      id: shop.id,
-      ownerPhone: '0977000000',
-      ownerUid: shop.id,
-    });
-    expect(current.pendingSyncCount).toBe(1);
     online(true);
-    fake.auth.currentUser = {
-      uid: 'owner-1',
-      isAnonymous: true,
-      email: null,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({ claims: {} }),
-    };
+    await mount();
+
     await act(async () => {
-      await current.syncNow();
+      await current.sendPhoneVerificationCode('+260 977 222 333');
+      await current.verifyPhoneVerificationCode('+260 977 222 333', '123456');
+      const first = await current.completeShopRegistration('First Shop', '1234');
+      expect(first.trialGranted).toBe(true);
     });
-    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
-    expect(current.shop?.ownerUid).toBe('owner-1');
-    expect(current.pendingSyncCount).toBe(0);
+    expect(current.shop?.planStatus).toBe('trial');
+
+    await act(async () => {
+      expect(await current.deleteShopAccount('First Shop', '1234')).toBe(true);
+    });
+    expect(current.shop).toBeNull();
+
+    await act(async () => {
+      await current.sendPhoneVerificationCode('0977222333');
+      await current.verifyPhoneVerificationCode('0977222333', '123456');
+      const second = await current.completeShopRegistration('Second Shop', '4321');
+      expect(second.trialGranted).toBe(false);
+    });
+    expect(current.shop?.planStatus).toBe('expired');
   });
 
-  it('authenticates and syncs an offline-created shop after reopening online', async () => {
-    localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
-    fake.auth.currentUser = null;
+  it('locks and unlocks the open shop 100% offline on the same device without calling the server', async () => {
+    online(false);
     await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+    expect(current.isScreenLocked).toBe(false);
+
+    act(() => {
+      current.lockScreen();
     });
-    let itemId = '';
+    expect(current.isScreenLocked).toBe(true);
+
     await act(async () => {
-      itemId = await current.addItem({
-        name: 'Sugar',
-        buyingPrice: 1,
-        sellingPrice: 2,
-        quantity: 4,
-        lowStockThreshold: 1,
-      });
+      const bad = await current.unlockLocalScreen('9999');
+      expect(bad.unlocked).toBe(false);
     });
+    expect(current.isScreenLocked).toBe(true);
+
     await act(async () => {
-      await current.recordSale({
-        items: [{ itemId, name: 'Sugar', quantity: 1, buyingPrice: 1, sellingPrice: 2 }],
-        itemsCount: 1,
-        totalAmount: 2,
-        totalCost: 1,
-        profit: 1,
-        paymentType: 'cash',
-      });
+      const good = await current.unlockLocalScreen('1234');
+      expect(good.unlocked).toBe(true);
     });
-    expect(current.pendingSyncCount).toBe(3);
-    cleanup();
-    online(true);
-    fake.auth.currentUser = null;
-    await mount();
-    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
-    expect(fake.anonymousSignIns).toBe(1);
-    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('new-anonymous-owner');
-    expect(fake.docs.get(`shops/${shop.id}/items/${itemId}`)?.quantity).toBe(3);
-    await waitFor(() => expect(current.items[0].quantity).toBe(3));
-    expect(current.sales).toHaveLength(1);
+    expect(current.isScreenLocked).toBe(false);
   });
 
-  it('keeps a temporary shop queued when anonymous sign-in fails, then retries safely', async () => {
+  it('refuses new shop registration while offline or before SMS OTP is verified', async () => {
     localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
     fake.auth.currentUser = null;
+    online(false);
     await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
-    });
-    cleanup();
-    fake.failAnonymousSignIn = true;
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    online(true);
-    await mount();
-    await waitFor(() =>
-      expect(current.lastOfflineNotice).toMatch(/Could not create a cloud session/i)
+
+    await expect(current.sendPhoneVerificationCode('0977000000')).rejects.toThrow(/internet/i);
+    await expect(current.completeShopRegistration('Offline shop', '1234')).rejects.toThrow(
+      /Verify your phone number online/i
     );
-    expect(current.pendingSyncCount).toBe(1);
-    expect(current.shop?.ownerUid).toBe(shop.id);
-    fake.failAnonymousSignIn = false;
-    await act(async () => {
-      await current.syncNow();
-    });
-    expect(current.pendingSyncCount).toBe(0);
-    expect(current.shop?.ownerUid).toBe('new-anonymous-owner');
+    expect(current.shop).toBeNull();
   });
 
-  it('keeps an existing shop queue safe when its original Firebase account is missing', async () => {
+  it('keeps an existing shop queue safe when its Supabase session expires', async () => {
     fake.auth.currentUser = null;
     online(true);
     localStorage.setItem(
@@ -1642,13 +1779,19 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     );
     await mount();
     await waitFor(() => expect(current.lastOfflineNotice).toMatch(/original shop account/i));
-    expect(fake.anonymousSignIns).toBe(0);
+    expect(current.needsShopAccountRecovery).toBe(true);
     expect(current.pendingSyncCount).toBe(1);
     expect(fake.docs.has(`shops/${shop.id}/expenses/expense-a`)).toBe(false);
   });
 
   it('does not sync an established shop with a different signed-in UID', async () => {
-    fake.auth.currentUser = { uid: 'other-owner', isAnonymous: true, email: null };
+    fake.auth.currentUser = {
+      id: 'other-owner',
+      phone: '+260966999888',
+      email: null,
+      isPlatformAdmin: false,
+      verifiedShopId: null,
+    };
     localStorage.setItem(
       'countup_pending_queue',
       JSON.stringify([
@@ -1666,15 +1809,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await waitFor(() => expect(current.lastOfflineNotice).toMatch(/different account/i));
     expect(current.needsShopAccountRecovery).toBe(true);
     expect(current.pendingSyncCount).toBe(1);
-    expect(fake.auth.currentUser?.uid).toBe('other-owner');
-    expect(fake.anonymousSignIns).toBe(0);
+    expect(fake.auth.currentUser?.id).toBe('other-owner');
     expect(fake.docs.has(`shops/${shop.id}/expenses/expense-a`)).toBe(false);
   });
 
-  it('reconnects only the original linked owner without discarding pending entries', async () => {
+  it('reconnects only the original owner phone via SMS OTP without discarding pending entries', async () => {
     fake.auth.currentUser = null;
-    fake.accounts.set('owner@example.com', { uid: 'owner-1', password: 'password123' });
-    fake.accounts.set('other@example.com', { uid: 'other-owner', password: 'password123' });
+    fake.phoneUsers.set('+260977000000', { uid: 'wrong-uid', otp: '999999' });
     localStorage.setItem(
       'countup_pending_queue',
       JSON.stringify([
@@ -1690,270 +1831,209 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     online(true);
     await mount();
     expect(current.needsShopAccountRecovery).toBe(true);
+
     await act(async () => {
-      await expect(current.restoreShopAccount('other@example.com', 'password123')).rejects.toThrow(
-        /not linked to the original shop/i
+      await expect(current.restoreShopSessionWithOtp('999999')).rejects.toThrow(
+        /does not match the original shop/i
       );
     });
     expect(fake.auth.currentUser).toBeNull();
     expect(current.pendingSyncCount).toBe(1);
     expect(fake.docs.has(`shops/${shop.id}/expenses/expense-a`)).toBe(false);
+
+    fake.phoneUsers.set('+260977000000', { uid: 'owner-1', otp: '123456' });
     await act(async () => {
-      await current.restoreShopAccount('owner@example.com', 'password123');
+      await current.restoreShopSessionWithOtp('123456');
     });
     await waitFor(() => expect(current.pendingSyncCount).toBe(0));
     expect(fake.docs.get(`shops/${shop.id}/expenses/expense-a`)).toMatchObject({ amount: 2 });
     expect(current.needsShopAccountRecovery).toBe(false);
   });
 
-  it('does not bind a temporary shop owner until its cloud creation succeeds', async () => {
+  it('keeps verifiedShopId null after SMS OTP until new-device PIN unlock succeeds (SIM-swap protection)', async () => {
     localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
     fake.auth.currentUser = null;
-    await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
-    });
-    fake.failBatch = true;
-    fake.auth.currentUser = {
-      uid: 'owner-1',
-      isAnonymous: true,
-      email: null,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({ claims: {} }),
-    };
     online(true);
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await mount();
+
     await act(async () => {
-      await current.syncNow();
+      const status = await current.verifyPhoneVerificationCode('+260977000000', '123456');
+      expect(status.hasShop).toBe(true);
+      expect(status.sessionVerified).toBe(false);
     });
-    expect(current.shop?.ownerUid).toBe(shop.id);
-    expect(JSON.parse(localStorage.getItem('countup_active_shop') || '{}').ownerUid).toBe(shop.id);
-    expect(current.pendingSyncCount).toBe(1);
-    fake.failBatch = false;
+    expect(current.user?.verifiedShopId).toBeNull();
+    expect(current.shop).toBeNull();
+
+    await expect(current.unlockCloudShopWithPin('0000')).rejects.toThrow(/Incorrect PIN/i);
+    expect(current.shop).toBeNull();
+
     await act(async () => {
-      await current.syncNow();
+      await current.unlockCloudShopWithPin('1234');
     });
-    expect(current.shop?.ownerUid).toBe('owner-1');
-    expect(current.pendingSyncCount).toBe(0);
+    expect(current.shop?.id).toBe(shop.id);
+    expect(current.user?.verifiedShopId).toBe(shop.id);
   });
 
-  it('does not replay stale shop creation fields when the same creation was already accepted', async () => {
+  it('recovers a locked-out shop on a new device with the one-time recovery code and rotates the code', async () => {
     localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
     fake.auth.currentUser = null;
-    await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
-    });
-    const created = JSON.parse(localStorage.getItem('countup_pending_queue')!)[0].writes[0].data;
-    fake.docs.set(`shops/${created.id}`, {
-      ...created,
-      ownerUid: 'owner-1',
-      pin: '9999',
-      planStatus: 'active',
-    });
-    fake.auth.currentUser = {
-      uid: 'owner-1',
-      isAnonymous: true,
-      email: null,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({ claims: {} }),
-    };
+    fake.serverShops.get(shop.id)!.lockedUntilMs = Date.now() + 60 * 60_000;
     online(true);
+    await mount();
+
     await act(async () => {
-      await current.syncNow();
+      const status = await current.verifyPhoneVerificationCode('0977 000 000', '123456');
+      expect(status.isLockedOut).toBe(true);
     });
-    expect(current.pendingSyncCount).toBe(0);
-    expect(fake.docs.get(`shops/${created.id}`)).toMatchObject({
-      ownerUid: 'owner-1',
-      pin: '9999',
-      planStatus: 'active',
+
+    await expect(current.unlockCloudShopWithPin('1234')).rejects.toThrow(/Too many incorrect PIN/i);
+
+    let rotated = '';
+    await act(async () => {
+      const res = await current.recoverCloudShopPin('cu abcd efgh jklm', '8888');
+      rotated = res.recoveryCode;
     });
+    expect(rotated).not.toBe('CU-ABCD-EFGH-JKLM');
+    expect(current.pendingRecoveryCode).toBe(rotated);
+    expect(current.shop?.id).toBe(shop.id);
+    expect((await verifyLocalPin(shop.id, '8888')).unlocked).toBe(true);
   });
 
-  it('defers listeners for a queued online creation until its parent exists', async () => {
-    localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
+  it('blocks opening or creating another shop when unsynced entries exist on this phone', async () => {
     online(true);
-    fake.failWrite = true;
-    fake.failBatch = true;
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Queued online', '0977000000', '1234')).toBe(true);
-    });
-    await waitFor(() => expect(current.pendingSyncCount).toBe(1));
-    expect(fake.listeners.some((entry) => entry.path.startsWith(`shops/${shop.id}`))).toBe(false);
-    fake.failWrite = false;
-    fake.failBatch = false;
-    await act(async () => {
-      await current.syncNow();
-    });
-    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
-    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
-    await waitFor(() =>
-      expect(fake.listeners.some((entry) => entry.path === `shops/${shop.id}/items`)).toBe(true)
+    localStorage.setItem(
+      'countup_pending_queue',
+      JSON.stringify([
+        {
+          id: 'pending',
+          type: 'expense',
+          path: `shops/${shop.id}/expenses/expense-a`,
+          data: { id: 'expense-a', amount: 5 },
+          timestamp: 1,
+        },
+      ])
     );
-  });
-
-  it('defers remote listeners until an offline shop create is acknowledged', async () => {
-    localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
-    fake.auth.currentUser = null;
-    await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
-    });
     fake.auth.currentUser = {
-      uid: 'owner-1',
-      isAnonymous: true,
+      id: 'new-user',
+      phone: '+260955111222',
       email: null,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({ claims: {} }),
+      isPlatformAdmin: false,
+      verifiedShopId: null,
     };
-    await act(async () => {
-      fake.authListeners.forEach((listener) => listener(fake.auth.currentUser));
-    });
-    expect(fake.listeners.some((entry) => entry.path.startsWith(`shops/${shop.id}`))).toBe(false);
-    online(true);
-    await act(async () => {
-      await current.syncNow();
-    });
-    await waitFor(() =>
-      expect(fake.listeners.some((entry) => entry.path === `shops/${shop.id}/items`)).toBe(true)
+    await mount();
+
+    await expect(current.completeShopRegistration('Another Shop', '1234')).rejects.toThrow(
+      /Sync pending entries/i
     );
-    expect(current.shop?.ownerUid).toBe('owner-1');
-    expect(current.pendingSyncCount).toBe(0);
+    await expect(current.unlockCloudShopWithPin('1234')).rejects.toThrow(/Sync pending entries/i);
   });
 
-  it('keeps the reserved creation UID if a cloud acknowledgement and session are lost', async () => {
-    localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
-    fake.auth.currentUser = null;
-    await mount();
-    await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
-    });
-    fake.failBatch = true;
-    fake.auth.currentUser = { uid: 'original-owner', isAnonymous: true, email: null };
+  it('preserves suspension state across shop deletion so a suspended phone cannot escape suspension', async () => {
     online(true);
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    await act(async () => {
-      await current.syncNow();
+    const suspendedShop: Shop = { ...shop, isDeactivated: true, planStatus: 'suspended' };
+    localStorage.setItem('countup_active_shop', JSON.stringify(suspendedShop));
+    fake.serverShops.set(shop.id, {
+      shop: suspendedShop,
+      pin: '1234',
+      recoveryCode: 'CU-ABCD-EFGH-JKLM',
+      failedAttempts: 0,
+      lockedUntilMs: null,
     });
-    expect(JSON.parse(localStorage.getItem('countup_pending_queue') || '[]')[0]).toMatchObject({
-      reservedOwnerUid: 'original-owner',
-    });
-    expect(current.shop?.ownerUid).toBe(shop.id);
-    cleanup();
-    fake.auth.currentUser = null;
     await mount();
-    await waitFor(() => expect(current.lastOfflineNotice).toMatch(/original shop account/i));
-    expect(current.needsShopAccountRecovery).toBe(true);
-    expect(fake.anonymousSignIns).toBe(0);
-    expect(current.pendingSyncCount).toBe(1);
-    fake.failBatch = false;
-    fake.auth.currentUser = { uid: 'wrong-owner', isAnonymous: true, email: null };
+
     await act(async () => {
-      await current.syncNow();
+      expect(await current.deleteShopAccount(shop.name, '1234')).toBe(true);
     });
-    expect(current.lastOfflineNotice).toMatch(/different account/i);
-    expect(fake.docs.has(`shops/${shop.id}`)).toBe(false);
-    fake.auth.currentUser = { uid: 'original-owner', isAnonymous: true, email: null };
+    expect(current.shop).toBeNull();
+
     await act(async () => {
-      await current.syncNow();
+      await current.verifyPhoneVerificationCode(shop.ownerPhone, '123456');
+      await current.completeShopRegistration('Reopened Shop', '5678');
     });
-    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('original-owner');
-    expect(current.pendingSyncCount).toBe(0);
+    expect(current.shop?.isDeactivated).toBe(true);
+    expect(current.shop?.planStatus).toBe('suspended');
   });
 
-  it('does not send a shop create if its chosen UID cannot be saved locally', async () => {
+  it('admin reset PIN lockout requires an identity check note, writes audit log, and notifies the shop device', async () => {
+    online(true);
     localStorage.removeItem('countup_active_shop');
-    fake.docs.clear();
     fake.auth.currentUser = null;
+    fake.accounts.set('admin@example.com', { uid: 'admin-1', password: 'strongpass123' });
+    fake.adminUids.add('admin-1');
+    fake.serverShops.get(shop.id)!.lockedUntilMs = Date.now() + 60_000;
     await mount();
+
     await act(async () => {
-      expect(await current.registerNewShop('Offline shop', '0977000000', '1234')).toBe(true);
+      await current.loginAsAdmin('admin@example.com', 'strongpass123');
     });
-    fake.auth.currentUser = {
-      uid: 'owner-1',
-      isAnonymous: true,
-      email: null,
-      getIdToken: async () => '',
-      getIdTokenResult: async () => ({ claims: {} }),
+    await waitFor(() => expect(current.allShops).toHaveLength(1));
+
+    await expect(current.adminResetPinLockout(shop.id, 'too short')).rejects.toThrow(
+      /between 10 and 500 characters/i
+    );
+
+    await act(async () => {
+      await current.adminResetPinLockout(
+        shop.id,
+        'Spoke with owner on verified phone +260977000000 and confirmed recent items'
+      );
+    });
+    expect(fake.auditLogs).toContainEqual(
+      expect.objectContaining({ action: 'shop_pin_lockout_reset', shopId: shop.id })
+    );
+    expect(fake.serverShops.get(shop.id)?.lockedUntilMs).toBeNull();
+    expect(fake.serverShops.get(shop.id)?.shop.securityNotice).toMatch(/Security alert/i);
+  });
+
+  it('displays and acknowledges a server security notice on the shop owner device', async () => {
+    online(true);
+    const noticedShop: Shop = {
+      ...shop,
+      securityNotice: 'Security alert: Platform support reset your shop’s new-device PIN lockout.',
+      securityNoticeAt: new Date().toISOString(),
     };
-    online(true);
-    const original = Storage.prototype.setItem;
-    const storage = vi
-      .spyOn(Storage.prototype, 'setItem')
-      .mockImplementation(function (key, value) {
-        if (key === 'countup_pending_queue' && value.includes('reservedOwnerUid')) {
-          throw new Error('Storage full');
-        }
-        return original.call(this, key, value);
-      });
-    await act(async () => {
-      await current.syncNow();
-    });
-    expect(fake.docs.has(`shops/${shop.id}`)).toBe(false);
-    expect(current.pendingSyncCount).toBe(1);
-    expect(current.lastOfflineNotice).toMatch(/Storage full/);
-    storage.mockRestore();
-    await act(async () => {
-      await current.syncNow();
-    });
-    expect(fake.docs.get(`shops/${shop.id}`)?.ownerUid).toBe('owner-1');
-    expect(current.pendingSyncCount).toBe(0);
+    localStorage.setItem('countup_active_shop', JSON.stringify(noticedShop));
+    fake.serverShops.get(shop.id)!.shop = noticedShop;
+    fake.docs.set(`shops/${shop.id}`, { ...noticedShop });
+
+    render(<App />);
+    expect(await screen.findByText(/Platform support reset your shop/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss alert' }));
+    await waitFor(() => expect(screen.queryByText(/Platform support reset your shop/i)).toBeNull());
   });
 
-  it('warns when interrupted shop deletion has already removed some records', async () => {
-    fake.docs.set(`shops/${shop.id}/items/item-a`, { id: 'item-a', name: 'Sugar' });
-    fake.docs.set(`shops/${shop.id}/sales/sale-a`, { id: 'sale-a', totalAmount: 2 });
-    fake.failDeletePath = `shops/${shop.id}/sales/sale-a`;
+  it('warns when server shop deletion fails and keeps the local shop intact', async () => {
+    fake.failDelete = true;
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     online(true);
     await mount();
     await act(async () => {
-      expect(await current.deleteShopAccount()).toBe(false);
+      expect(await current.deleteShopAccount(shop.name, '1234')).toBe(false);
     });
-    expect(fake.docs.has(`shops/${shop.id}/items/item-a`)).toBe(false);
-    expect(fake.docs.has(`shops/${shop.id}/sales/sale-a`)).toBe(true);
-    expect(fake.docs.has(`shops/${shop.id}`)).toBe(true);
     expect(current.shop?.id).toBe(shop.id);
     expect(screen.getByText(/Some records may already have been removed/i)).toBeTruthy();
   });
 
-  it('waits for in-flight deletions to settle before reporting a partial failure', async () => {
-    const failedPath = `shops/${shop.id}/sales/sale-failed`;
-    const slowPath = `shops/${shop.id}/sales/sale-slow`;
-    fake.docs.set(failedPath, { id: 'sale-failed' });
-    fake.docs.set(slowPath, { id: 'sale-slow' });
-    fake.failDeletePath = failedPath;
+  it('waits for in-flight server deletion to settle before reporting a failure', async () => {
+    fake.failDelete = true;
     let finish!: () => void;
-    fake.deleteGates.set(
-      slowPath,
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      })
-    );
+    fake.deleteGate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     online(true);
     await mount();
     let deletion!: Promise<boolean>;
     act(() => {
-      deletion = current.deleteShopAccount();
+      deletion = current.deleteShopAccount(shop.name, '1234');
     });
-    await waitFor(() => expect(fake.deleteCalls).toContain(slowPath));
     expect(current.isLoading).toBe(true);
-    expect(fake.docs.has(slowPath)).toBe(true);
     await act(async () => {
       finish();
       expect(await deletion).toBe(false);
     });
     expect(current.isLoading).toBe(false);
-    expect(fake.docs.has(slowPath)).toBe(false);
-    expect(fake.docs.has(failedPath)).toBe(true);
   });
 
   it('unblocks the app if local cleanup fails after the cloud shop was removed', async () => {
@@ -1966,28 +2046,16 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     });
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await act(async () => {
-      expect(await current.deleteShopAccount()).toBe(false);
+      expect(await current.deleteShopAccount(shop.name, '1234')).toBe(false);
     });
     expect(current.isLoading).toBe(false);
-    expect(fake.docs.has(`shops/${shop.id}`)).toBe(false);
-    expect(screen.getByText(/Some records may already have been removed/i)).toBeTruthy();
+    expect(fake.serverShops.has(shop.id)).toBe(false);
+    expect(screen.getByText(/Local storage unavailable/i)).toBeTruthy();
     storage.mockRestore();
   });
 
-  it('keeps the deletion dialog open and shows an interrupted partial deletion', async () => {
-    fake.docs.set(`shops/${shop.id}/items/item-a`, {
-      id: 'item-a',
-      name: 'Sugar',
-      quantity: 2,
-      lowStockThreshold: 1,
-      sellingPrice: 1,
-      buyingPrice: 1,
-      createdAt: shop.createdAt,
-      updatedAt: shop.createdAt,
-      shopId: shop.id,
-    });
-    fake.docs.set(`shops/${shop.id}/sales/sale-a`, { id: 'sale-a', totalAmount: 2 });
-    fake.failDeletePath = `shops/${shop.id}/sales/sale-a`;
+  it('keeps the deletion dialog open and shows an error when server deletion fails', async () => {
+    fake.failDelete = true;
     let finish!: () => void;
     fake.deleteGate = new Promise<void>((resolve) => {
       finish = resolve;
@@ -2002,35 +2070,43 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     fireEvent.change(within(dialog).getByLabelText(/Type CountUp Test to confirm/i), {
       target: { value: 'CountUp Test' },
     });
+    fireEvent.change(within(dialog).getByLabelText(/Enter your 4-digit PIN/i), {
+      target: { value: '1234' },
+    });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete forever' }));
-    await screen.findByText(/Deleting shop and data/i);
     await act(async () => finish());
-    await waitFor(() =>
-      expect(within(dialog).getByText(/Some records may already have been removed/i)).toBeTruthy()
-    );
-    expect(screen.queryByText(/Deleting shop and data/i)).toBeNull();
-    expect(fake.docs.has(`shops/${shop.id}/items/item-a`)).toBe(false);
-    expect(fake.docs.has(`shops/${shop.id}/sales/sale-a`)).toBe(true);
+    await waitFor(() => expect(within(dialog).getByText(/Deletion did not finish/i)).toBeTruthy());
   });
 
-  it('does not enter an offline shop when saving its queue fails', async () => {
+  it('does not enter a registered shop if saving its local PBKDF2 PIN lock fails', async () => {
     localStorage.removeItem('countup_active_shop');
+    fake.serverShops.clear();
+    fake.usedPhones.clear();
     fake.auth.currentUser = null;
+    online(true);
     await mount();
-    const original = Storage.prototype.setItem;
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key, value) {
-      if (key === 'countup_pending_queue') throw new Error('storage full');
-      return original.call(this, key, value);
-    });
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
     await act(async () => {
-      expect(await current.registerNewShop('New shop', '0977000000', '1234')).toBe(false);
+      await current.sendPhoneVerificationCode('0977888999');
+      await current.verifyPhoneVerificationCode('0977888999', '123456');
     });
+
+    const original = Storage.prototype.setItem;
+    const storage = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (key, value) {
+        if (key.startsWith('countup_pin_lock_v2:')) throw new Error('storage full');
+        return original.call(this, key, value);
+      });
+    await expect(current.completeShopRegistration('New shop', '1234')).rejects.toThrow(
+      /storage full/
+    );
     expect(current.shop).toBeNull();
-    expect(current.pendingSyncCount).toBe(0);
+    storage.mockRestore();
   });
 
-  it('keeps queued PIN changes in order and does not replace them with an old server snapshot', async () => {
+  it('updates server and local salted PBKDF2 PIN hashes in order and never stores plain-text PINs', async () => {
+    online(true);
     await mount();
     await act(async () => {
       expect(await current.changePin('1234', '4321')).toBe(true);
@@ -2038,17 +2114,14 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await act(async () => {
       expect(await current.changePin('4321', '9876')).toBe(true);
     });
-    const listener = fake.listeners.find((entry) => entry.path === `shops/${shop.id}`);
     await act(async () => {
-      listener?.callback({ exists: () => true, data: () => shop });
+      fake.docs.set(`shops/${shop.id}`, { ...shop });
+      fake.emit();
     });
-    expect(current.shop?.pin).toBe('9876');
-    online(true);
-    await act(async () => {
-      await current.syncNow();
-    });
-    expect(fake.docs.get(`shops/${shop.id}`)?.pin).toBe('9876');
-    expect(current.pendingSyncCount).toBe(0);
+    expect((await verifyLocalPin(shop.id, '9876')).unlocked).toBe(true);
+    expect((await verifyLocalPin(shop.id, '4321')).unlocked).toBe(false);
+    expect(fake.serverShops.get(shop.id)?.pin).toBe('9876');
+    expect(JSON.stringify(localStorage)).not.toContain('"9876"');
   });
 
   it('signs out the standalone admin account if admin sign-in is cancelled', async () => {
@@ -2061,26 +2134,26 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await act(async () => {
       await current.loginAsAdmin('admin@example.com', 'strongpass123');
     });
-    expect(fake.auth.currentUser?.uid).toBe('admin-cancel');
+    expect(fake.auth.currentUser?.id).toBe('admin-cancel');
     await act(async () => {
       await current.cancelEmailLogin();
     });
     expect(fake.auth.currentUser).toBeNull();
   });
 
-  it('finds a legacy international-format shop when signing in with the national format', async () => {
+  it('normalizes national and international Zambian phone formats onto the same E.164 shop identity', async () => {
     online(true);
     await mount();
     await act(async () => {
       await current.logout();
     });
-    fake.docs.clear();
-    const legacyShop = { ...shop, id: 'shop_260977000000', ownerPhone: '260977000000' };
-    fake.docs.set(`shops/${legacyShop.id}`, legacyShop);
     await act(async () => {
-      expect(await current.loginWithPhoneAndPin('0977 000 000', '1234')).toBe(true);
+      const status = await current.verifyPhoneVerificationCode('0977 000 000', '123456');
+      expect(status.hasShop).toBe(true);
+      await current.unlockCloudShopWithPin('1234');
     });
-    expect(current.shop?.id).toBe(legacyShop.id);
+    expect(current.shop?.id).toBe(shop.id);
+    expect(current.shop?.ownerPhone).toBe('+260977000000');
   });
 
   it('opens the real admin screen from the sign-in form and signs out on exit', async () => {
@@ -2148,19 +2221,18 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(current.isAdmin).toBe(false);
   });
 
-  it('protects the anonymous shop identity and pending queue when entering admin sign-in', async () => {
-    localStorage.removeItem('countup_active_shop');
-    localStorage.setItem('countup_legacy_uid', 'owner-1');
+  it('protects an open shop and pending queue when entering admin sign-in', async () => {
     await mount();
     online(true);
     await expect(current.loginAsAdmin('admin@example.com', 'password')).rejects.toThrow(
-      /shop identity/
+      /Sign out of the shop/
     );
-    expect(fake.auth.currentUser?.uid).toBe('owner-1');
-    localStorage.removeItem('countup_legacy_uid');
+    expect(fake.auth.currentUser?.id).toBe('owner-1');
     online(false);
     // An offline pending queue must also block a switch, even without a shop.
     cleanup();
+    localStorage.removeItem('countup_active_shop');
+    localStorage.removeItem(activeShopCacheKey());
     fake.auth.currentUser = null;
     localStorage.setItem(
       'countup_pending_queue',
@@ -2208,7 +2280,7 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     expect(fake.docs.get(`shops/${shop.id}`)?.isDeactivated).toBe(true);
   });
 
-  it('does not carry an admin grant to a different Firebase user', async () => {
+  it('does not carry an admin grant to a different Supabase user', async () => {
     online(true);
     localStorage.removeItem('countup_active_shop');
     fake.auth.currentUser = null;
@@ -2221,13 +2293,13 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
     await waitFor(() => expect(current.isAdmin).toBe(true));
     await act(async () => {
       fake.auth.currentUser = {
-        uid: 'ordinary-user',
-        isAnonymous: false,
+        id: 'ordinary-user',
+        phone: null,
         email: 'user@example.com',
-        getIdToken: async () => '',
-        getIdTokenResult: async () => ({ claims: {} }),
+        isPlatformAdmin: false,
+        verifiedShopId: null,
       };
-      fake.authListeners.forEach((fn) => fn(fake.auth.currentUser));
+      fake.emitAuth();
     });
     expect(current.isAdmin).toBe(false);
     await expect(current.adminToggleDeactivate(shop.id)).rejects.toThrow(/Admin access/);
@@ -2236,9 +2308,458 @@ describe('CountUp integrated business and authentication flows (mock Firebase)',
   it('refuses an import from a non-owner and makes no writes', async () => {
     online(true);
     await mount();
-    fake.auth.currentUser = { uid: 'other', isAnonymous: false, email: 'other@example.com' };
+    await act(async () => {
+      fake.auth.currentUser = {
+        id: 'other',
+        phone: null,
+        email: 'other@example.com',
+        isPlatformAdmin: false,
+        verifiedShopId: null,
+      };
+      fake.emitAuth();
+    });
     const before = [...fake.docs.entries()];
     await expect(current.importLegacyBackup('{}')).rejects.toThrow(/owner/);
     expect([...fake.docs.entries()]).toEqual(before);
+  });
+
+  it('drains 520+ queued offline operations in bounded RPC batches and resumes cleanly on retry without duplicates', async () => {
+    const item = {
+      id: 'item_bulk',
+      shopId: shop.id,
+      name: 'Maize Meal 25kg',
+      buyingPrice: 200,
+      buyingPriceKnown: true,
+      sellingPrice: 250,
+      quantity: 1000,
+      lowStockThreshold: 10,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    };
+    const itemPath = `shops/${shop.id}/items/${item.id}`;
+    fake.docs.set(itemPath, item);
+
+    // Pre-populate 520 offline operations (sales + expenses) in the durable queue
+    const nowIso = new Date().toISOString();
+    const bulkQueue = Array.from({ length: 520 }, (_, i) => {
+      if (i % 2 === 0) {
+        const saleId = `bulk_sale_${i}`;
+        const mvId = `bulk_mv_${i}`;
+        const sale = {
+          id: saleId,
+          shopId: shop.id,
+          items: [
+            {
+              itemId: item.id,
+              name: item.name,
+              quantity: 1,
+              buyingPrice: 200,
+              buyingPriceKnown: true,
+              sellingPrice: 250,
+              total: 250,
+            },
+          ],
+          itemsCount: 1,
+          totalAmount: 250,
+          totalCost: 200,
+          profit: 50,
+          paymentType: 'cash',
+          receiptNumber: `R-${i}`,
+          createdAt: nowIso,
+        };
+        const mv = {
+          id: mvId,
+          shopId: shop.id,
+          itemId: item.id,
+          itemName: item.name,
+          type: 'sale',
+          delta: -1,
+          previousQuantity: 1000 - i / 2,
+          newQuantity: 1000 - i / 2 - 1,
+          reason: `Sale R-${i}`,
+          relatedSaleId: saleId,
+          createdAt: nowIso,
+        };
+        return {
+          id: `op_bulk_${i}`,
+          type: 'sale',
+          path: `shops/${shop.id}/sales/${saleId}`,
+          data: sale,
+          writes: [
+            { path: `shops/${shop.id}/sales/${saleId}`, data: sale },
+            { path: itemPath, data: { ...item, quantity: mv.newQuantity, updatedAt: nowIso } },
+            { path: `shops/${shop.id}/stock_movements/${mvId}`, data: mv },
+          ],
+          adjustments: [
+            {
+              kind: 'stock',
+              path: itemPath,
+              delta: -1,
+              updatedAt: nowIso,
+              lastSoldAt: nowIso,
+              movement: { path: `shops/${shop.id}/stock_movements/${mvId}`, data: mv },
+            },
+          ],
+          timestamp: Date.now() - (520 - i) * 100,
+          queuedOffline: true,
+        };
+      }
+      const expId = `bulk_exp_${i}`;
+      const exp = {
+        id: expId,
+        shopId: shop.id,
+        category: 'transport',
+        amount: 15,
+        note: `Trip ${i}`,
+        createdAt: nowIso,
+      };
+      return {
+        id: `op_bulk_${i}`,
+        type: 'expense',
+        path: `shops/${shop.id}/expenses/${expId}`,
+        data: exp,
+        writes: [{ path: `shops/${shop.id}/expenses/${expId}`, data: exp }],
+        timestamp: Date.now() - (520 - i) * 100,
+        queuedOffline: true,
+      };
+    });
+
+    localStorage.setItem('countup_pending_queue', JSON.stringify(bulkQueue));
+    await mount();
+    expect(current.pendingSyncCount).toBe(520);
+
+    // Simulate a transient network failure on op_bulk_225 (inside the 5th 50-op batch)
+    fake.failMarker = 'op_bulk_225';
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+    // First 225 operations (batches 1..4 = 200 + 25 in batch 5) succeeded and were acknowledged;
+    // remaining 295 operations stay queued in exact FIFO order!
+    expect(current.pendingSyncCount).toBe(520 - 225);
+
+    // Clear the fault and retry: remaining 295 operations drain cleanly with zero double-deduction!
+    fake.failMarker = null;
+    await act(async () => {
+      await current.syncNow();
+    });
+    expect(current.pendingSyncCount).toBe(0);
+    // 260 sales of 1 unit each deducted exactly 260 from 1000 -> 740 remaining
+    expect(fake.docs.get(itemPath)?.quantity).toBe(740);
+    // Batch chunking kept RPC calls way below 520 (ceil(225/50)=5 + ceil(295/50)=6 = 11 RPC round-trips!)
+    expect(fake.transactionAttempts).toBeLessThanOrEqual(
+      Math.ceil(520 / SYNC_BATCH_CHUNK_SIZE) + 2
+    );
+  });
+
+  it('halts on a poison operation without losing later entries, records a discard-poison audit on owner confirmation, and drains the remaining queue', async () => {
+    const validItemPath = `shops/${shop.id}/items/item_valid_tea`;
+    fake.docs.set(validItemPath, {
+      id: 'item_valid_tea',
+      shopId: shop.id,
+      name: 'Valid Tea',
+      buyingPrice: 5,
+      buyingPriceKnown: true,
+      sellingPrice: 10,
+      quantity: 20,
+      lowStockThreshold: 3,
+      createdAt: shop.createdAt,
+      updatedAt: shop.createdAt,
+    });
+
+    const poisonAndValidQueue = [
+      {
+        id: 'op_poison_missing_item',
+        type: 'stock_update' as const,
+        timestamp: Date.now() - 5_000,
+        path: `shops/${shop.id}/items/ghost_deleted_item`,
+        data: { quantity: 10, updatedAt: shop.createdAt },
+        writes: [
+          {
+            path: `shops/${shop.id}/items/ghost_deleted_item`,
+            data: { quantity: 10, updatedAt: shop.createdAt },
+          },
+          {
+            path: `shops/${shop.id}/stock_movements/mv_poison_1`,
+            data: {
+              id: 'mv_poison_1',
+              shopId: shop.id,
+              itemId: 'ghost_deleted_item',
+              itemName: 'Deleted Sugar',
+              type: 'restock',
+              delta: 5,
+              previousQuantity: 5,
+              newQuantity: 10,
+              reason: 'Restock',
+              createdAt: shop.createdAt,
+            },
+          },
+        ],
+        adjustments: [
+          {
+            kind: 'stock' as const,
+            path: `shops/${shop.id}/items/ghost_deleted_item`,
+            delta: 5,
+            updatedAt: shop.createdAt,
+            movement: {
+              path: `shops/${shop.id}/stock_movements/mv_poison_1`,
+              data: {
+                id: 'mv_poison_1',
+                shopId: shop.id,
+                itemId: 'ghost_deleted_item',
+                itemName: 'Deleted Sugar',
+                type: 'restock',
+                delta: 5,
+                previousQuantity: 5,
+                newQuantity: 10,
+                reason: 'Restock',
+                createdAt: shop.createdAt,
+              },
+            },
+          },
+        ],
+      },
+      {
+        id: 'op_valid_sale_after_poison',
+        type: 'sale' as const,
+        timestamp: Date.now() - 2_000,
+        path: `shops/${shop.id}/sales/sale_after_poison`,
+        data: {
+          id: 'sale_after_poison',
+          shopId: shop.id,
+          items: [
+            {
+              itemId: 'item_valid_tea',
+              name: 'Valid Tea',
+              quantity: 2,
+              buyingPrice: 5,
+              buyingPriceKnown: true,
+              sellingPrice: 10,
+              total: 20,
+            },
+          ],
+          itemsCount: 2,
+          totalAmount: 20,
+          totalCost: 10,
+          profit: 10,
+          paymentType: 'cash',
+          receiptNumber: 'CU-AFTER-POISON',
+          createdAt: shop.createdAt,
+        },
+        writes: [
+          {
+            path: `shops/${shop.id}/sales/sale_after_poison`,
+            data: {
+              id: 'sale_after_poison',
+              shopId: shop.id,
+              items: [
+                {
+                  itemId: 'item_valid_tea',
+                  name: 'Valid Tea',
+                  quantity: 2,
+                  buyingPrice: 5,
+                  buyingPriceKnown: true,
+                  sellingPrice: 10,
+                  total: 20,
+                },
+              ],
+              itemsCount: 2,
+              totalAmount: 20,
+              totalCost: 10,
+              profit: 10,
+              paymentType: 'cash',
+              receiptNumber: 'CU-AFTER-POISON',
+              createdAt: shop.createdAt,
+            },
+          },
+          {
+            path: validItemPath,
+            data: { quantity: 18, updatedAt: shop.createdAt },
+          },
+          {
+            path: `shops/${shop.id}/stock_movements/mv_valid_after_poison`,
+            data: {
+              id: 'mv_valid_after_poison',
+              shopId: shop.id,
+              itemId: 'item_valid_tea',
+              itemName: 'Valid Tea',
+              type: 'sale',
+              delta: -2,
+              previousQuantity: 20,
+              newQuantity: 18,
+              reason: 'Sale CU-AFTER-POISON',
+              relatedSaleId: 'sale_after_poison',
+              createdAt: shop.createdAt,
+            },
+          },
+        ],
+        adjustments: [
+          {
+            kind: 'stock' as const,
+            path: validItemPath,
+            delta: -2,
+            updatedAt: shop.createdAt,
+            movement: {
+              path: `shops/${shop.id}/stock_movements/mv_valid_after_poison`,
+              data: {
+                id: 'mv_valid_after_poison',
+                shopId: shop.id,
+                itemId: 'item_valid_tea',
+                itemName: 'Valid Tea',
+                type: 'sale',
+                delta: -2,
+                previousQuantity: 20,
+                newQuantity: 18,
+                reason: 'Sale CU-AFTER-POISON',
+                relatedSaleId: 'sale_after_poison',
+                createdAt: shop.createdAt,
+              },
+            },
+          },
+        ],
+      },
+    ];
+
+    localStorage.setItem('countup_pending_queue', JSON.stringify(poisonAndValidQueue));
+    await mount();
+    expect(current.pendingSyncCount).toBe(2);
+
+    online(true);
+    await act(async () => {
+      await current.syncNow();
+    });
+
+    // Queue halted on the poison entry; BOTH entries remain safe until owner reviews
+    expect(current.pendingSyncCount).toBe(2);
+    expect(current.blockedSync).toMatchObject({
+      actionId: 'op_poison_missing_item',
+      kind: 'poison',
+      actionType: 'stock_update',
+    });
+
+    // Owner reviews and confirms discarding the poison entry
+    await act(async () => {
+      await current.discardBlockedSyncAction('op_poison_missing_item');
+    });
+
+    // Remaining valid sale automatically drains and commits!
+    await waitFor(() => expect(current.pendingSyncCount).toBe(0));
+    expect(current.blockedSync).toBeNull();
+    expect(fake.docs.get(`shops/${shop.id}/sales/sale_after_poison`)).toMatchObject({
+      receiptNumber: 'CU-AFTER-POISON',
+      totalAmount: 20,
+    });
+    expect(fake.docs.get(validItemPath)?.quantity).toBe(18);
+
+    // Discard decision is permanently recorded in sync review history
+    const history = await current.loadSyncResolutionHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      actionId: 'op_poison_missing_item',
+      kind: 'discard-poison',
+      poisonActionType: 'stock_update',
+    });
+  });
+
+  it('previews and restores countup-backup-v2 into an empty shop, blocks duplicate restores, and requires explicit opt-in for non-empty shops', async () => {
+    online(true);
+    await mount();
+
+    const v2Raw = JSON.stringify({
+      format: 'countup-backup-v2',
+      version: '2.0',
+      exportedAt: shop.createdAt,
+      shop: { id: 'old-id', name: 'Kabulonga Kiosk' },
+      items: [
+        {
+          id: 'v2_rice',
+          name: 'Rice 5kg',
+          buyingPrice: 90,
+          buyingPriceKnown: true,
+          sellingPrice: 120.5,
+          quantity: 4,
+          lowStockThreshold: 2,
+          isDeleted: false,
+          createdAt: shop.createdAt,
+          updatedAt: shop.createdAt,
+        },
+      ],
+      archivedItems: [],
+      customers: [],
+      sales: [],
+      creditPayments: [],
+      expenses: [
+        {
+          id: 'v2_exp_1',
+          category: 'council_fee',
+          amount: 50,
+          note: 'Council levy',
+          createdAt: shop.createdAt,
+        },
+      ],
+      stockMovements: [],
+    });
+
+    const preview = await current.previewShopBackup(v2Raw);
+    expect(preview.shopHasExistingData).toBe(false);
+    expect(preview.alreadyImported).toBe(false);
+    expect(preview.preview).toMatchObject({
+      format: 'countup-backup-v2',
+      itemsCount: 1,
+      expensesCount: 1,
+      totalStockValueNgwee: 48200, // 4 * 12050 ngwee
+    });
+
+    let restored!: Awaited<ReturnType<typeof current.restoreShopBackup>>;
+    await act(async () => {
+      restored = await current.restoreShopBackup(v2Raw);
+    });
+    expect(restored.status).toBe('imported');
+    expect(current.items.some((i) => i.id === 'v2_rice' && i.sellingPrice === 120.5)).toBe(true);
+    expect(current.expenses.some((e) => e.id === 'v2_exp_1' && e.amount === 50)).toBe(true);
+
+    // Repeat restore of the exact same file is idempotent and duplicates nothing
+    const dup = await current.restoreShopBackup(v2Raw);
+    expect(dup.status).toBe('duplicate');
+    expect(dup.alreadyImported).toBe(true);
+    expect(current.items.filter((i) => i.id === 'v2_rice')).toHaveLength(1);
+
+    // Restoring a second distinct backup into the now-non-empty shop fails unless allowNonEmptyShop: true
+    const secondV2Raw = JSON.stringify({
+      format: 'countup-backup-v2',
+      version: '2.0',
+      exportedAt: shop.createdAt,
+      shop: { id: 'old-id-2', name: 'Second Backup' },
+      items: [
+        {
+          id: 'v2_flour',
+          name: 'Flour 2kg',
+          buyingPrice: 30,
+          buyingPriceKnown: true,
+          sellingPrice: 45,
+          quantity: 3,
+          lowStockThreshold: 1,
+          isDeleted: false,
+          createdAt: shop.createdAt,
+          updatedAt: shop.createdAt,
+        },
+      ],
+      archivedItems: [],
+      customers: [],
+      sales: [],
+      creditPayments: [],
+      expenses: [],
+      stockMovements: [],
+    });
+
+    await expect(current.restoreShopBackup(secondV2Raw)).rejects.toThrow(
+      /already contains records|non-empty/i
+    );
+
+    await act(async () => {
+      const merged = await current.restoreShopBackup(secondV2Raw, { allowNonEmptyShop: true });
+      expect(merged.status).toBe('imported');
+    });
+    expect(current.items.some((i) => i.id === 'v2_flour')).toBe(true);
   });
 });

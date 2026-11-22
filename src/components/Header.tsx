@@ -38,6 +38,10 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
     isSyncing,
     syncNow,
     logout,
+    lockScreen,
+    acknowledgeSecurityNotice,
+    acknowledgeSubscriptionNotice,
+    cancelPendingPinReset,
     items,
     customers,
     isAdmin,
@@ -49,6 +53,7 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
   const [showPinModal, setShowPinModal] = useState(false);
   const [showDataTools, setShowDataTools] = useState(false);
   const [showAccountAccess, setShowAccountAccess] = useState(false);
+  const [dismissingNotice, setDismissingNotice] = useState(false);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
 
@@ -308,6 +313,17 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
                 <button
                   onClick={() => {
                     setShowSettingsMenu(false);
+                    lockScreen();
+                  }}
+                  className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 text-slate-700 hover:bg-slate-50 transition-colors font-medium"
+                >
+                  <Lock className="w-4 h-4 text-emerald-700" />
+                  <span>Lock screen</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowSettingsMenu(false);
                     setShowDeleteModal(true);
                   }}
                   className="w-full text-left px-3.5 py-2 text-xs flex items-center space-x-2.5 text-slate-700 hover:bg-rose-50 hover:text-rose-700 transition-colors"
@@ -331,6 +347,92 @@ export const Header: React.FC<{ onOpenHelp: () => void }> = ({ onOpenHelp }) => 
           </div>
         </div>
       </div>
+
+      {/* Security Alert Banner (e.g., when platform support reset new-device PIN lockout) */}
+      {shop?.securityNotice && (
+        <div
+          role="alert"
+          className="border-b border-rose-300 bg-rose-50 px-3 py-2.5 text-rose-950 sm:px-6"
+        >
+          <div className="mx-auto flex max-w-7xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 text-xs leading-relaxed">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />
+              <span className="font-semibold">{shop.securityNotice}</span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {shop.securityNotice.toLowerCase().includes('72-hour') && (
+                <button
+                  type="button"
+                  disabled={dismissingNotice || !isOnline}
+                  onClick={async () => {
+                    setDismissingNotice(true);
+                    try {
+                      await cancelPendingPinReset();
+                    } finally {
+                      setDismissingNotice(false);
+                    }
+                  }}
+                  className="rounded-lg bg-amber-900 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-amber-950 disabled:opacity-50"
+                >
+                  Cancel Reset
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowPinModal(true)}
+                className="rounded-lg bg-rose-800 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-rose-900"
+              >
+                Change PIN
+              </button>
+              <button
+                type="button"
+                disabled={dismissingNotice || !isOnline}
+                onClick={async () => {
+                  setDismissingNotice(true);
+                  try {
+                    await acknowledgeSecurityNotice();
+                  } finally {
+                    setDismissingNotice(false);
+                  }
+                }}
+                className="rounded-lg border border-rose-300 bg-white px-2.5 py-1.5 text-xs font-bold text-rose-900 hover:bg-rose-100 disabled:opacity-50"
+              >
+                {dismissingNotice ? 'Dismissing…' : 'Dismiss alert'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subscription Status Notice (kept separate from PIN/security alerts) */}
+      {shop?.subscriptionNotice && (
+        <div
+          role="status"
+          className="border-b border-sky-200 bg-sky-50 px-3 py-2 text-sky-950 sm:px-6"
+        >
+          <div className="mx-auto flex max-w-7xl flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 text-xs leading-relaxed">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-sky-700" />
+              <span className="font-medium">{shop.subscriptionNotice}</span>
+            </div>
+            <button
+              type="button"
+              disabled={dismissingNotice || !isOnline}
+              onClick={async () => {
+                setDismissingNotice(true);
+                try {
+                  await acknowledgeSubscriptionNotice();
+                } finally {
+                  setDismissingNotice(false);
+                }
+              }}
+              className="self-start rounded-lg border border-sky-300 bg-white px-2.5 py-1 text-xs font-bold text-sky-900 hover:bg-sky-100 disabled:opacity-50 sm:self-auto"
+            >
+              {dismissingNotice ? 'Dismissing…' : 'Dismiss'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Low Stock / Credit Alert Bar (only when there are alerts) */}
       {(lowStockCount > 0 || debtCustomerCount > 0) && (

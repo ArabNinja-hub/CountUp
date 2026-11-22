@@ -12,7 +12,37 @@ const assets = PRECACHE_FILES.map((file) => ({
 const assetPaths = new Set(assets.map((file) => new URL(file.url).pathname));
 const shellUrl = new URL('index.html', scope).href;
 
-// Cache only the built app shell, never Firestore, authentication, or shop data.
+// Explicit denylist of API, Auth, Edge Function, Realtime, Storage, and Cloudflare
+// internal path prefixes (both root-scoped and scope-relative) so even if Supabase
+// is proxied under the site's own domain, the worker NEVER intercepts or caches it.
+const BYPASS_PATH_PREFIXES = [
+  '/auth/',
+  '/rest/',
+  '/functions/',
+  '/realtime/',
+  '/storage/',
+  '/graphql/',
+  '/api/',
+  '/cdn-cgi/',
+];
+
+function hasSensitiveAuthHeaders(headers) {
+  if (!headers || typeof headers.get !== 'function') return false;
+  return Boolean(
+    headers.get('authorization') || headers.get('apikey') || headers.get('x-supabase-auth')
+  );
+}
+
+function isApiOrAuthPath(pathname) {
+  const relative = pathname.startsWith(scope.pathname)
+    ? `/${pathname.slice(scope.pathname.length).replace(/^\/+/, '')}`
+    : pathname;
+  return BYPASS_PATH_PREFIXES.some(
+    (prefix) => pathname.startsWith(prefix) || relative.startsWith(prefix)
+  );
+}
+
+// Cache only the built app shell, never Supabase REST/Auth/Edge Functions or shop data.
 // The new worker waits for existing tabs to close before replacing their assets.
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -28,6 +58,7 @@ self.addEventListener('install', (event) => {
             const type = response.headers.get('content-type') || '';
             if (
               !response.ok ||
+              response.headers.has('www-authenticate') ||
               (/\.m?js$/i.test(file.path) && !/(javascript|ecmascript)/i.test(type)) ||
               (/\.css$/i.test(file.path) && !/text\/css/i.test(type)) ||
               (/\.html$/i.test(file.path) && !/text\/html/i.test(type))
@@ -72,9 +103,12 @@ self.addEventListener('fetch', (event) => {
   if (
     request.method !== 'GET' ||
     url.origin !== scope.origin ||
-    !url.pathname.startsWith(scope.pathname)
-  )
+    !url.pathname.startsWith(scope.pathname) ||
+    hasSensitiveAuthHeaders(request.headers) ||
+    isApiOrAuthPath(url.pathname)
+  ) {
     return;
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith(

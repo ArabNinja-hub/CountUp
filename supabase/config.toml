@@ -1,0 +1,66 @@
+# Supabase local & CLI project configuration for CountUp.
+# Secrets (payment numbers, admin email, PIN pepper, SMS provider keys,
+# Turnstile secret) are NEVER stored here; configure them via `supabase secrets set`
+# or dashboard environment settings.
+
+project_id = "countup-zambia"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 17
+
+[realtime]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.mfa]
+max_enrolled_factors = 10
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+[auth.sms]
+enable_signup = true
+enable_confirmations = true
+max_frequency = "5s"
+otp_exp = 300
+otp_length = 6
+
+# Cloudflare Turnstile CAPTCHA protection for sign-up & OTP requests.
+# Enable in production once SUPABASE_AUTH_CAPTCHA_SECRET is set in environment:
+# [auth.captcha]
+# enabled = true
+# provider = "turnstile"
+# secret = "env(SUPABASE_AUTH_CAPTCHA_SECRET)"
+
+# Custom Access Token Hook (ENABLED):
+# Injects server-verified app_metadata.shop_id ONLY when the user owns the shop
+# and (for PIN-guarded shops) the current GoTrue session_id has passed server
+# PIN or one-time recovery verification.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/custom_access_token_hook"
+
+# Swappable SMS Provider Hook (Africa's Talking / Twilio / Zamtel HTTP gateway):
+# Enable in production or staging when routing SMS via `send-sms-hook`:
+# [auth.hook.send_sms]
+# enabled = true
+# uri = "http://host.docker.internal:54321/functions/v1/send-sms-hook"
+# secrets = "env(SEND_SMS_HOOK_SECRET)"

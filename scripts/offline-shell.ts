@@ -9,7 +9,10 @@ export async function writeOfflineWorker(outDir: string, templatePath: string): 
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const name = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) await visit(path.join(dir, entry.name), name);
-      else if (entry.isFile() && !['sw.js', '404.html', '.nojekyll'].includes(name))
+      else if (
+        entry.isFile() &&
+        !['sw.js', '404.html', '.nojekyll', '_headers', '_redirects'].includes(name)
+      )
         files.push(name);
     }
   }

@@ -51,5 +51,14 @@ export default tseslint.config(
     files: ['*.config.{js,ts}', 'vite.config.ts', 'vitest.config.ts'],
     languageOptions: { globals: { ...globals.node } },
   },
+  {
+    files: ['supabase/functions/**/*.ts'],
+    languageOptions: {
+      globals: {
+        ...globals.worker,
+        Deno: 'readonly',
+      },
+    },
+  },
   prettier
 );

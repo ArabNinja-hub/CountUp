@@ -20,6 +20,7 @@ import { OfflineNotice } from './components/OfflineNotice';
 import { ToastProvider, useToast } from './components/Toast';
 import { LegalPages } from './components/LegalPages';
 import { HelpGuide } from './components/HelpGuide';
+import { RecoveryCodeModal } from './components/RecoveryCodeModal';
 import icon from '/brand/icon.png';
 
 const MainAppContent: React.FC = () => {
@@ -28,6 +29,9 @@ const MainAppContent: React.FC = () => {
     user,
     isAdmin,
     isOnline,
+    isScreenLocked,
+    pendingRecoveryCode,
+    clearPendingRecoveryCode,
     cancelEmailLogin,
     activeTab,
     setActiveTab,
@@ -53,7 +57,7 @@ const MainAppContent: React.FC = () => {
   const openHelp = useCallback(() => setIsHelpOpen(true), []);
   const closeHelp = useCallback(() => setIsHelpOpen(false), []);
 
-  // A closed or lost Firebase session must never reopen a previous admin view.
+  // A closed or lost cloud session must never reopen a previous admin view.
   useEffect(() => {
     if (!user) setIsAdminOpen(false);
   }, [user]);
@@ -73,6 +77,12 @@ const MainAppContent: React.FC = () => {
   const withHelp = (content: React.ReactNode) => (
     <>
       {content}
+      {pendingRecoveryCode && (
+        <RecoveryCodeModal
+          recoveryCode={pendingRecoveryCode}
+          onConfirmSaved={clearPendingRecoveryCode}
+        />
+      )}
       {isHelpOpen && <HelpGuide onClose={closeHelp} />}
     </>
   );
@@ -86,10 +96,10 @@ const MainAppContent: React.FC = () => {
     const handleOpenLegal = (e: CustomEvent) =>
       setLegalPage(e.detail as 'privacy' | 'terms' | 'security');
     const handleExportData = () => {
-      // Export all data as JSON
+      // Export all data as JSON (Shop contains no plain-text PIN)
       const exportData = {
         format: 'countup-backup-v2',
-        shop: shopData ? { ...shopData, pin: undefined } : null,
+        shop: shopData ?? null,
         subscription,
         items,
         archivedItems,
@@ -186,7 +196,7 @@ const MainAppContent: React.FC = () => {
     );
   }
 
-  if (!shop) {
+  if (!shop || isScreenLocked) {
     return withHelp(
       <AuthScreen onOpenHelp={openHelp} onAdminSignedIn={() => setIsAdminOpen(true)} />
     );
