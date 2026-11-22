@@ -38,12 +38,13 @@ export interface Shop {
   name: string;
   ownerPhone: string;
   ownerUid: string;
+  pin: string; // 4-digit numeric PIN — the only way into the shop
   planStatus: PlanStatus;
   planType: PlanBillingCycle | 'trial';
   createdAt: string; // ISO string
   trialEndsAt: string; // ISO string (30 days from creation)
   planExpiryDate: string; // ISO string for the current paid/trial end
-  /** Millisecond mirrors used for entitlement checks. */
+  /** Millisecond mirrors used by Firestore Rules for server-time entitlement checks. */
   trialEndsAtMs?: number;
   planExpiryAtMs?: number;
   salesAccessUntilMs?: number;
@@ -58,12 +59,6 @@ export interface Shop {
   momoAirtelNumber?: string;
   momoMtnNumber?: string;
   momoZamtelNumber?: string;
-  // Server-set security notice (e.g. after support resets PIN lockout)
-  securityNotice?: string | null;
-  securityNoticeAt?: string | null;
-  // Server-set subscription notice (e.g. payment approved/rejected, plan extended, suspended/restored)
-  subscriptionNotice?: string | null;
-  subscriptionNoticeAt?: string | null;
 }
 
 export interface Item {
@@ -124,8 +119,6 @@ export interface Sale {
   isDemo?: boolean;
   createdAt: string;
   isOfflineSync?: boolean;
-  /** True when an offline sale synced >72h late on an active plan and was kept. */
-  offlineWindowFlagged?: boolean;
 }
 
 export interface Customer {

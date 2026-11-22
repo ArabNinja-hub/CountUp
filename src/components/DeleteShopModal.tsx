@@ -7,34 +7,30 @@ interface DeleteShopModalProps {
 }
 
 /**
- * Permanent, owner-initiated shop deletion via server Edge Function.
+ * Permanent, owner-initiated shop deletion.
  *
- * Deletion is irreversible, so both the exact shop name AND the 4-digit PIN
- * must be entered before the button unlocks.
+ * Deletion is irreversible, so the shop name has to be typed before the button
+ * unlocks — a single mis-tap in the settings menu must not wipe a shop's books.
  */
 export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => {
-  const { shop, deleteShopAccount, items, sales, customers, expenses, isOnline, pendingSyncCount } =
-    useShop();
+  const { shop, deleteShopAccount, items, sales, customers, expenses } = useShop();
   const [confirmation, setConfirmation] = useState('');
-  const [pin, setPin] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState('');
 
   const matches = confirmation.trim().toLowerCase() === (shop?.name || '').trim().toLowerCase();
-  const pinValid = /^\d{4}$/.test(pin);
-  const canDelete = matches && pinValid && isOnline && pendingSyncCount === 0 && !isDeleting;
 
   const handleDelete = async () => {
-    if (!canDelete) return;
+    if (!matches || isDeleting) return;
     setIsDeleting(true);
     setError('');
     try {
-      const ok = await deleteShopAccount(confirmation.trim(), pin);
+      const ok = await deleteShopAccount();
       if (!ok) throw new Error('Deletion did not complete');
       onClose();
     } catch {
       setError(
-        'Deletion did not finish. Check your 4-digit PIN and internet connection, then try again.'
+        'Deletion did not finish. Some records may already have been removed. Reconnect and try again to finish deleting the shop.'
       );
     } finally {
       setIsDeleting(false);
@@ -84,21 +80,8 @@ export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => 
             <li>{expenses.length} expenses</li>
           </ul>
           <p className="text-rose-700 font-semibold text-[11px]">
-            Export a backup first if you need these records — they cannot be recovered. Free trial
-            history for this phone number is kept so trials cannot be repeated.
+            Export a backup first if you need these records — they cannot be recovered.
           </p>
-
-          {!isOnline && (
-            <p className="bg-amber-50 border border-amber-200 text-amber-900 rounded-xl p-2.5 text-[11px]">
-              Connect to the internet to delete this shop from the cloud.
-            </p>
-          )}
-          {pendingSyncCount > 0 && (
-            <p className="bg-amber-50 border border-amber-200 text-amber-900 rounded-xl p-2.5 text-[11px]">
-              Sync your {pendingSyncCount} waiting entr{pendingSyncCount === 1 ? 'y' : 'ies'} before
-              deleting this shop.
-            </p>
-          )}
 
           <div>
             <label
@@ -118,26 +101,6 @@ export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => 
             />
           </div>
 
-          <div>
-            <label
-              className="block text-[11px] font-bold text-slate-700 mb-1"
-              htmlFor="delete-pin-confirm"
-            >
-              Enter your 4-digit PIN
-            </label>
-            <input
-              id="delete-pin-confirm"
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
-              value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-              disabled={isDeleting}
-              autoComplete="off"
-              className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-sm font-mono tracking-widest text-center text-slate-900 focus:outline-none focus:ring-2 focus:ring-rose-600 focus:bg-white"
-            />
-          </div>
-
           {error && (
             <p className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-2.5 text-[11px]">
               {error}
@@ -154,7 +117,7 @@ export const DeleteShopModal: React.FC<DeleteShopModalProps> = ({ onClose }) => 
             </button>
             <button
               onClick={() => void handleDelete()}
-              disabled={!canDelete}
+              disabled={!matches || isDeleting}
               className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {isDeleting ? (

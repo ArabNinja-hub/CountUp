@@ -8,7 +8,6 @@
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
     "build": "vite build",
-    "build:cloudflare": "VITE_BASE_PATH=/ vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "typecheck": "tsc --noEmit",
@@ -17,7 +16,6 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:rls:supabase": "node scripts/test-supabase-rls.mjs",
     "test:rules": "node scripts/test-firestore-rules.mjs",
     "functions:build": "npm --prefix functions run build",
     "test:watch": "vitest",
@@ -26,7 +24,6 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.119.2",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",
@@ -39,7 +36,6 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.3.16",
     "@eslint/js": "^9.39.5",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.3",

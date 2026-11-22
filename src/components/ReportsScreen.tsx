@@ -785,11 +785,6 @@ _Recorded with Countup Zambia_`;
                         <span className="text-[10px] text-slate-400">
                           {formatWhen(sale.createdAt)}
                         </span>
-                        {sale.offlineWindowFlagged && (
-                          <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-medium">
-                            Synced late, kept
-                          </span>
-                        )}
                       </div>
                       <p className="text-[11px] text-slate-600 mt-1 truncate">
                         {sale.items.map((i) => `${i.name} ×${i.quantity}`).join(', ')}

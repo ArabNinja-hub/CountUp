@@ -5,5 +5,3 @@ export const SUBSCRIPTION_PLAN_TERMS = {
 } as const;
 
 export type SubscriptionPlanId = keyof typeof SUBSCRIPTION_PLAN_TERMS;
-export type PlanBillingCycle = SubscriptionPlanId;
-export type ManualPaymentNetwork = 'mtn' | 'airtel';

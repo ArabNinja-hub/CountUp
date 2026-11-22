@@ -27,172 +27,247 @@ interface LegalDoc {
   sections: { title: string; content: LegalItem[] }[];
 }
 
+// Typed so `content` is always an array: some sections were authored as a bare
+// string, and the renderer calls .map() on it unconditionally.
 const legalContent: Record<LegalDocType, LegalDoc> = {
   privacy: {
     title: 'Privacy Policy',
-    lastUpdated: 'November 20, 2026',
+    lastUpdated: 'October 28, 2026',
     sections: [
       {
-        title: 'Information We Collect & Store',
+        title: 'Information We Collect',
         content: [
-          'Shop & Account Information: Your shop/kiosk name and verified Zambian mobile number (+260) used for SMS one-time verification and account recovery.',
-          'Authentication Credentials (Hashed Only): Your 4-digit shop PIN and one-time recovery code are hashed with salted and peppered PBKDF2-HMAC-SHA256 (210,000 server iterations). Neither CountUp nor platform administrators can read your PIN or recovery code.',
-          'Sales, Stock, Credit & Expense Records: Product names, integer ngwee buying/selling prices, stock quantities and movements, sales receipts, payment types (cash, Mobile Money, credit), optional customer credit book entries (names, phone numbers, balances, repayments), and business expenses.',
-          'Subscription Payment Submissions: When you submit a manual Mobile Money renewal, we store the selected plan, operator (MTN or Airtel), transaction reference, payer phone number, payment date, and review outcome. CountUp never asks for or stores your Mobile Money PIN.',
-          'Abuse-Prevention & Audit Metadata: Salted SHA-256 hashes of phone numbers and IP addresses for SMS rate limiting, salted SHA-256 trial-eligibility hashes, session verification records, and administrative audit logs.',
+          'Shop Information: Your shop/kiosk name, owner name, and phone number for account creation.',
+          'Sales Data: Items sold, quantities, prices, payment methods (cash, mobile money, credit), timestamps.',
+          'Stock Data: Product names, buying/selling prices, stock quantities, low-stock thresholds.',
+          'Customer Data (Credit Book): Customer names, phone numbers, amounts owed, payment history - ONLY when you choose to use the credit feature.',
+          'Expenses: Expense categories, amounts, notes you record for business tracking.',
+          'Device Information: Anonymous device ID, app version, language preference for offline sync.',
         ],
       },
       {
         title: 'How We Use Your Data',
         content: [
-          'Operate Your Shop Book: Record sales offline and online, track stock and profit in Zambian Kwacha, manage customer credit balances, and generate reports.',
-          'Multi-Device Sync & New-Phone Sign-In: Sync queued offline entries to your shop database and let you sign in on a replacement phone after verifying both an SMS code and your 4-digit shop PIN (or recovery code).',
-          'Account Security & Anti-Takeover Alerts: Detect SIM-swap attempts, enforce brute-force lockouts, send 72-hour PIN-reset warning SMS notices, and display security alerts on your active shop device.',
-          'Subscription Verification & Legal Compliance: Verify manual subscription transfers, prevent duplicate reference reuse, and comply with applicable laws of the Republic of Zambia.',
+          'Provide the Service: Enable offline-first sales recording, stock management, credit tracking, and reports.',
+          'Sync & Backup: Entries saved offline remain on the device until they sync to Firebase. Keep your browser data until sync completes.',
+          'Subscription Management: Track your trial/plan status and show in-app renewal reminders.',
+
+          'Legal Compliance: Respond to valid legal requests from Zambian authorities.',
         ],
       },
       {
-        title: 'Infrastructure & Third-Party Processors',
+        title: 'Data Storage & Security',
         content: [
-          'Supabase (Database, Authentication, Realtime & Edge Functions): Stores your PostgreSQL shop records, enforces Row-Level Security (RLS) per verified shop session, runs server-side Edge Functions, and delivers live sync wake-ups over TLS/WSS.',
-          'Cloudflare (Hosting, CDN, WAF & Turnstile): Serves the CountUp web application through Cloudflare Pages, protects against DDoS and automated abuse, and verifies sign-in requests with Cloudflare Turnstile without tracking you across third-party ad networks.',
-          'SMS Gateway Provider (Africa’s Talking, Twilio, or configured Zambian SMS gateway): Delivers 6-digit one-time sign-in codes and urgent account-security SMS warnings to your +260 phone number.',
-          'Google Fonts: Serves the Plus Jakarta Sans and JetBrains Mono typefaces when online.',
-          'WhatsApp (Optional User Action): Only opens on your device when you tap "Send Reminder" for a credit customer; CountUp never accesses your WhatsApp contacts or messages.',
+          'Local-First: Shop entries can be saved on this device offline and synced later. Account access, imports and administration require a connection.',
+          'Cloud Sync: When online, your records sync to Google Firebase (Google Cloud infrastructure). Firebase is SOC 2 and ISO 27001 certified.',
+          'Encryption: Data in transit uses TLS 1.3. Data at rest encrypted by Firebase.',
+          'Authentication: shop sign-in uses a phone number and 4-digit PIN on the original device. There is no general email shop sign-in; linking email only supports reauthenticating the original shop identity. Administrators use a separately authorized email account. Your shop PIN is stored with the shop record.',
+          "Access Control: Every shop's records are scoped to that shop ID by Firestore security rules. Other shops cannot read your data. Authorized platform administrators can access shop records for support, billing, or legal compliance.",
         ],
       },
       {
-        title: 'Data Storage, Retention & Deletion',
+        title: 'Your Rights (Zambia Data Protection Act 2021)',
         content: [
-          'Active & Expired Shops: Your shop records are retained while your shop exists. If your trial or paid plan expires (after the 3-day grace period), new sales recording pauses, while your existing records remain read-only and exportable so you never lose your books while renewing.',
-          'Immediate Self-Service Deletion: Opening Settings → Account & Access → Delete Shop (confirmed with your shop name and 4-digit PIN) immediately and permanently deletes your shop, items, sales, credit book, expenses, stock movements, and authentication sessions from Supabase, and clears local device storage.',
-          'What Remains After Deletion: To prevent repeated free-trial abuse and preserve financial audit integrity, only a non-reversible salted/peppered SHA-256 hash of the trial phone number (`used_trial_phones`, containing zero raw phone numbers) and minimal non-ledger audit metadata are retained.',
-          'Backups: Export a JSON or CSV copy regularly from Settings → Data & Backups. Once you delete a shop, deleted shop records cannot be recovered.',
+          "Access: Request a copy of all your data anytime via the app's Export feature.",
+          'Correction: Edit any item, sale, customer, or expense directly in the app.',
+          'Deletion: Settings → Delete Shop & Data permanently removes your shop, stock, sales, credit and expense records. It is immediate and cannot be undone.',
+          'Portability: Export your sales, stock, and customer data as CSV/JSON anytime.',
         ],
       },
       {
-        title: 'Your Rights (Zambia Data Protection Act No. 3 of 2021)',
+        title: 'Data Retention',
         content: [
-          'Access & Portability: Export your full shop history as JSON or CSV anytime from Settings → Data & Backups or Reports, and restore supported backups into CountUp.',
-          'Correction: Edit products, customer details, expenses, or void eligible same-day sales directly in the app.',
-          'Erasure: Permanently delete your shop and its records at any time from Settings → Account & Access → Delete Shop.',
-          'Session Control: Revoke access on any other signed-in phone immediately via Settings → Account & Access → Sign Out All Other Devices.',
+          'Active Shops: Data retained while your subscription is active.',
+          'Expired/Cancelled: Records are kept read-only after a plan expires so you can renew and keep trading; nothing is auto-deleted. You can delete everything yourself at any time (Settings → Delete Shop & Data).',
+          'We do not promise an automatic server backup or recovery of data after deletion. Export records regularly and keep copies securely.',
         ],
       },
       {
-        title: "Children's Privacy & Contact",
+        title: 'Third-Party Services',
         content: [
-          'CountUp is intended for business use by adults (18+) and does not knowingly collect personal data from minors.',
-          'For assistance, open the in-app Help guide. CountUp complies with the Zambia Data Protection Act No. 3 of 2021.',
+          'Firebase (Google): Authentication, database and callable payment/admin functions. Privacy Policy: policies.google.com/privacy',
+          'Mobile Money: Subscription transfers are made manually outside CountUp. The app stores the transaction reference and payer phone for administrator review; it does not collect your Mobile Money PIN.',
+          'WhatsApp: Only opens when you tap "Send Reminder" - we do not access your WhatsApp data.',
+        ],
+      },
+      {
+        title: "Children's Privacy",
+        content: [
+          'Countup is for business use by adults (18+). We do not knowingly collect data from minors.',
+        ],
+      },
+      {
+        title: 'Contact',
+        content: [
+          'For help, open the in-app Help guide. No administrator email or payment number is published on this page.',
+          'For Zambian regulatory inquiries: We comply with the Data Protection Act No. 3 of 2021.',
         ],
       },
     ],
   },
   terms: {
     title: 'Terms of Service',
-    lastUpdated: 'November 20, 2026',
+    lastUpdated: 'October 28, 2026',
     sections: [
       {
         title: 'Acceptance of Terms',
         content: [
-          'By registering a shop or using CountUp, you agree to these Terms of Service.',
-          'If you do not agree, do not use the service. We may update these Terms and show the revised date at the top of this page.',
+          'By creating a shop account or using Countup, you agree to these Terms.',
+          'If you do not agree, do not use the app. Your only remedy is to stop using Countup.',
+          'We may update these terms. Continued use after changes constitutes acceptance.',
         ],
       },
       {
         title: 'Service Description',
         content: [
-          'CountUp is an offline-first mobile sales book, stock manager, and customer credit tracker built in Zambian Kwacha (ZMW) for kiosks, market stalls, and small shops.',
-          'Core features include offline sales queuing with automatic background sync, stock tracking and recount conflict handling, customer credit ledger, expense tracking, JSON/CSV backup and restore, and manual Mobile Money subscription management.',
-          'The service is provided "as is" and "as available" without warranties of uninterrupted availability.',
+          'Countup is a mobile-first sales book, stock manager, and credit tracker for Zambian kiosks, market stalls, and small shops.',
+          'Features: Offline sales recording, stock tracking with profit margins, customer credit book, expense tracking, sales reports, subscription management.',
+          'The service is provided "as is" and "as available" without warranties of any kind.',
         ],
       },
       {
-        title: 'Account Security & Your Responsibilities',
+        title: 'Your Responsibilities',
         content: [
-          'Accurate Details & Secret PIN: Register with your own active +260 phone number, keep your 4-digit shop PIN confidential, and store your one-time recovery code (`CU-XXXX-XXXX-XXXX`) safely offline.',
-          'Pending Offline Entries: Entries recorded offline stay in your device browser until synced. Do not clear browser storage or uninstall the app while the pending sync counter is above zero.',
-          'Lawful Business Use: Use CountUp only for lawful commerce. You remain solely responsible for your pricing, customer credit agreements, and ZRA or local council tax obligations.',
-          'Lost PIN & Recovery Code: If both your PIN and recovery code are lost, support-initiated PIN resets enforce a mandatory 72-hour security waiting period and SMS warning to protect against SIM-swap fraud.',
+          'Accurate Information: Provide truthful shop name, phone number. PIN must be kept secret.',
+          'Legal Compliance: Use Countup for lawful business activities. You are responsible for tax compliance (ZRA, local council).',
+          'Data Accuracy: You are responsible for the accuracy of sales, stock, and customer data you enter.',
+          'Device Security: Protect your phone. Anyone with your phone + PIN can access your shop data.',
+          'No Resale: You may not resell, sublicense, or commercialize access to Countup.',
         ],
       },
       {
-        title: 'Subscriptions, Grace Period & Payments',
+        title: 'Subscription & Payments',
         content: [
-          'Free Trial: Eligible first-time phone numbers receive a 30-day free trial. Deleting and re-registering with a previously used phone number does not grant a second free trial.',
-          'Paid Plans (Zambian Kwacha): 1 Month (K99), 3 Months (K269), or 6 Months (K499). Plans do not auto-renew.',
-          'Manual Mobile Money Verification: Renewals are paid manually to the Airtel Money or MTN Mobile Money details shown on the Plan screen, followed by submitting the operator transaction reference in CountUp. Submitting a reference sets status to pending until an administrator independently verifies the transfer and approves it.',
-          '3-Day Grace Period & Offline Window: Every trial and paid plan includes 3 extra days of sales access after expiry so you can renew without interruption. Offline sales recorded within the bounded 72-hour sync window sync normally; sales synced more than 72 hours late on an active or grace plan are kept and marked as synced late, while expired shops reject backdated sales.',
-          'Refunds: Fees for activated subscription periods are non-refundable. Your existing data remains viewable and exportable even when a plan is expired.',
+          'Free Trial: New shops get a 30-day free trial with full features.',
+          'Paid Plans: After trial, choose Monthly (K99), Quarterly (K269), or Biannual (K499). Prices in Zambian Kwacha (ZMW).',
+          'Payments: Subscription transfers are made manually through the MTN or Airtel details in the Plan screen. Submitting a reference does not activate a plan; an administrator must verify and approve it. CountUp does not collect Mobile Money PINs or provide automatic payment verification.',
+          'Auto-Renewal: Plans do NOT auto-renew. You must manually renew before expiry.',
+          'Grace Period: 3 days after expiry to renew without data loss. After grace, sales recording pauses (data remains viewable).',
+          'Refunds: No refunds for partial periods. You can export all data anytime.',
         ],
       },
       {
-        title: 'Ownership, Suspension & Termination',
+        title: 'Intellectual Property',
         content: [
-          'Your Data: You own all business records (products, sales, customer credit, and expenses) you enter into CountUp.',
-          'Self-Service Deletion: You may permanently delete your shop at any time in Settings → Account & Access → Delete Shop.',
-          'Suspension for Abuse: We may suspend sales access for fraudulent payment references, platform abuse, or unlawful activity. Suspended shops retain read/export access unless deleted for legal compliance.',
+          'Your Data: You own all sales, stock, customer, and expense data you enter.',
+          'Our IP: Countup brand, code, UI, and algorithms remain our property.',
+          'Feedback: Any suggestions you send become ours to use without compensation.',
         ],
       },
       {
-        title: 'Limitation of Liability & Governing Law',
+        title: 'Disclaimers & Limitation of Liability',
         content: [
-          'CountUp calculates totals and profit from the prices you enter; always verify critical figures independently and export regular backups.',
-          'To the maximum extent permitted by law, CountUp’s aggregate liability shall not exceed the subscription fees you paid in the preceding 12 months (or K100 during a free trial).',
-          'These Terms are governed by the laws of the Republic of Zambia, with good-faith negotiation followed by arbitration or the courts of Lusaka, Zambia.',
+          'No Financial Advice: Countup shows calculated profit based on your entered prices. Verify independently.',
+          'No Guarantee of Uptime: We strive for 99.9% uptime but cannot guarantee continuous availability.',
+          'Liability Cap: Our total liability shall not exceed the amount you paid in the last 12 months (or K100 if on trial).',
+          'No Liability For: Lost profits, data loss due to device failure, third-party payment failures, government actions.',
+        ],
+      },
+      {
+        title: 'Termination',
+        content: [
+          'By You: Settings → Delete Shop & Data removes your shop immediately and permanently.',
+          'By Us: We may suspend/terminate for: non-payment after grace period, illegal activity, abuse of platform, extended inactivity (180+ days).',
+          'Effect: On termination, sales recording stops. Data export remains available for 90 days.',
+        ],
+      },
+      {
+        title: 'Governing Law & Disputes',
+        content: [
+          'Governing Law: Laws of the Republic of Zambia.',
+          'Disputes: First attempt good-faith negotiation. Then binding arbitration in Lusaka under the Arbitration Act No. 19 of 2000.',
+          'Venue: Lusaka, Zambia courts for any non-arbitrable matters.',
+        ],
+      },
+      {
+        title: 'Contact',
+        content: [
+          'For assistance, use the in-app Help guide. Subscription payments are handled only through the in-app plan screen.',
         ],
       },
     ],
   },
   security: {
     title: 'Security & Data Protection',
-    lastUpdated: 'November 20, 2026',
+    lastUpdated: 'October 28, 2026',
     sections: [
       {
-        title: 'Defense-in-Depth Architecture',
+        title: 'Security Measures',
         content: [
           {
             icon: Lock,
-            text: 'Transport & Storage Encryption: All traffic between your phone, Cloudflare, and Supabase uses HTTPS (TLS 1.2/1.3) and WSS, with encryption at rest on Supabase PostgreSQL storage.',
+            text: 'Encryption: Data is encrypted in transit (TLS 1.3) and at rest by Google Cloud. This is transport and storage encryption, not end-to-end encryption of your device.',
           },
           {
             icon: Shield,
-            text: 'Two-Step SIM-Swap Protection: Signing in on a new phone requires BOTH a 6-digit SMS code AND your 4-digit shop PIN before the server binds your session (`shop_verified_sessions`) and issues a `shop_id` database token.',
+            text: 'Authentication: phone and PIN access uses a Firebase session tied to the original device. Email linking supports reauthentication of that same shop identity, but CountUp does not provide general email shop sign-in or a new-device restore. Admin access requires a separate authorization grant.',
           },
           {
             icon: User,
-            text: 'PostgreSQL Row-Level Security (RLS): Every shop table enforces strict tenant isolation in PostgreSQL using verified JWT claims (`request_shop_id()`), preventing one shop from ever reading or modifying another shop’s rows.',
+            text: "Data Isolation: Each shop's data is scoped to a unique shop ID. Shops cannot access each other's data.",
           },
           {
             icon: CheckCircle,
-            text: 'Integer Financial Integrity: All monetary values are stored and reconciled on the server as exact integer ngwee (`bigint`), eliminating floating-point rounding drift.',
+            text: 'Offline-First Architecture: Offline entries stay on the device and are queued to sync when a connection is available.',
           },
           {
             icon: AlertCircle,
-            text: 'Salted & Peppered PBKDF2 Hashing: Shop PINs and recovery codes are hashed with PBKDF2-HMAC-SHA256 (210,000 server iterations + secret pepper; 120,000 local iterations for fast offline screen unlock). Mobile Money PINs are never entered in CountUp.',
+            text: "PIN Handling: Your 4-digit PIN is stored with your shop record and readable by your account and authorized platform administrators. Mobile Money PINs are never entered in Countup — they go straight into your operator's own prompt.",
           },
           {
             icon: Globe,
-            text: 'Cloudflare Edge Hardening: Strict Content-Security-Policy (CSP), Turnstile bot verification, CGNAT-aware SMS rate limits, and isolated static-shell Service Worker caching that never caches authenticated API responses.',
+            text: 'Firebase Security Rules: Firestore rules enforce shop-level data isolation at the database level.',
           },
         ],
       },
       {
-        title: 'Server-Enforced Controls',
+        title: 'Firebase Security Rules (Enforced Server-Side)',
         content: [
-          'Session Binding: Revoking sessions ("Sign Out All Other Devices") or changing/recovering a PIN invalidates other devices’ verified shop sessions.',
-          'Escalating Brute-Force Lockouts: Repeated wrong PIN or recovery-code guesses on a new device trigger escalating server lockouts without locking the shopkeeper out of their already-unlocked counter phone.',
-          '72-Hour Fallback Reset Protection: Any support-initiated PIN reset sends an immediate SMS warning and in-app banner with a one-tap Cancel Reset button for 72 hours.',
-          'Mandatory Admin MFA (`aal2`): Platform administration requires both a pre-authorized verified email and active TOTP two-factor authentication (`aal2`) enforced in both Edge Functions and PostgreSQL RLS.',
+          'shops/{shopId}: Read/Write only if request.auth.uid == shop.ownerUid',
+          'shops/{shopId}/items/{itemId}: Read/Write only if request.auth.uid == shop.ownerUid',
+          'shops/{shopId}/sales/{saleId}: Read/Write only if request.auth.uid == shop.ownerUid',
+          'shops/{shopId}/customers/{customerId}: Read/Write only if request.auth.uid == shop.ownerUid',
+          'shops/{shopId}/credit_payments/{paymentId}: Read/Write only if request.auth.uid == shop.ownerUid',
+          'shops/{shopId}/expenses/{expenseId}: Read/Write only if request.auth.uid == shop.ownerUid',
+          'Platform owner: Can read shop records for support, billing, and plan administration, and can extend or suspend a shop',
+          'Shop deletion: Only the shop owner (or the platform owner) can permanently delete a shop',
         ],
       },
       {
-        title: 'Shopkeeper Security Checklist',
+        title: 'What We Protect Against',
         content: [
-          'Choose a unique 4-digit PIN (avoid 1234, 0000, or your birth year) and never share it—CountUp support will never ask for your PIN.',
-          'Write down your one-time recovery code (`CU-XXXX-XXXX-XXXX`) and store it safely away from your phone.',
-          'Keep a screen lock enabled on your phone and tap the Lock icon in CountUp when stepping away from the counter.',
-          'Export a JSON backup regularly from Settings → Data & Backups and keep a copy in a safe place.',
+          'Unauthorized Access: Each shop requires its phone number and PIN, and Firestore rules reject reads or writes from any other session.',
+          'Data Tampering: Firestore validates every write against the security rules, and removed stock items are soft-deleted so they cannot silently reappear.',
+          'Man-in-the-Middle: All traffic to Firebase uses TLS. Always open Countup from its official address (arabninja-hub.github.io/CountUp).',
+          'Cross-Site Scripting: React escapes all rendered values; the app never injects raw HTML.',
+          'Data Loss: Local-first storage plus cloud sync. Export a JSON backup monthly from Settings → Export My Data.',
+        ],
+      },
+      {
+        title: 'Your Security Checklist',
+        content: [
+          'Use a unique 4-digit PIN (not 1234, 0000, birth year).',
+          'Do not share your PIN. Countup staff will NEVER ask for it.',
+          'Enable phone screen lock (fingerprint/face/PIN).',
+          'Log out if sharing your phone: Menu → Log Out.',
+          'Pay subscriptions only using the MTN/Airtel instructions shown in the Plan screen, and keep your transaction receipt and reference.',
+          'Export your data monthly as backup: Reports → Export.',
+        ],
+      },
+      {
+        title: 'Incident Response',
+        content: [
+          'If you suspect unauthorized access: change your shop PIN, secure your device, and use the in-app Help guide for next steps.',
+          'We notify affected users within 72 hours of any confirmed data breach per Zambia Data Protection Act.',
+          'Access to the platform-owner admin console is limited to the owner account, and Google Cloud keeps API-level audit logs.',
+        ],
+      },
+      {
+        title: 'Compliance',
+        content: [
+          'Zambia Data Protection Act No. 3 of 2021',
+          'Firebase: SOC 2 Type II, ISO 27001, ISO 27017, ISO 27018',
+          'Subscription payments are handled manually; no payment service provider integration is connected.',
         ],
       },
     ],
@@ -266,7 +341,7 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose, initialDoc = 'pr
       <main className="flex-1 overflow-y-auto px-4 py-4 max-w-3xl mx-auto w-full">
         <div className="space-y-4">
           {doc.sections.map((section, idx) => {
-            const isExpanded = expandedSections[section.title] !== false;
+            const isExpanded = expandedSections[section.title] !== false; // Default open
             return (
               <section
                 key={idx}
@@ -309,7 +384,7 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose, initialDoc = 'pr
         </div>
         <div className="mt-6 pt-4 border-t border-slate-200 text-center">
           <p className="text-[10px] text-slate-400">
-            CountUp Zambia · Your data, your business, your control
+            Countup Zambia · Your data, your business, your control
           </p>
         </div>
       </main>
@@ -317,6 +392,7 @@ export const LegalPages: React.FC<LegalPageProps> = ({ onClose, initialDoc = 'pr
   );
 };
 
+// Standalone components for each legal page (for direct linking if needed)
 export const PrivacyPolicy: React.FC<LegalPageProps> = ({ onClose }) => (
   <LegalPages onClose={onClose} />
 );

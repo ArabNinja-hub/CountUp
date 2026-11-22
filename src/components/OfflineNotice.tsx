@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useShop } from '../context/ShopContext';
-import { AlertTriangle, WifiOff, RefreshCw, X } from 'lucide-react';
+import { WifiOff, RefreshCw, X } from 'lucide-react';
 import { SyncReviewDialog } from './SyncReviewDialog';
 
 export const OfflineNotice: React.FC = () => {
@@ -17,8 +17,6 @@ export const OfflineNotice: React.FC = () => {
 
   if (pendingSyncCount === 0 && (isOnline || !lastOfflineNotice)) return null;
 
-  const isPoisonBlocked = isOnline && blockedSync?.kind === 'poison' && pendingSyncCount > 0;
-
   return (
     <div className="w-full max-w-5xl mx-auto px-3 sm:px-6 pt-3" role="status">
       <div className="bg-slate-900 text-white rounded-2xl p-3 border border-slate-800 flex items-center justify-between">
@@ -26,10 +24,6 @@ export const OfflineNotice: React.FC = () => {
           {!isOnline ? (
             <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
               <WifiOff className="w-4 h-4" />
-            </div>
-          ) : isPoisonBlocked ? (
-            <div className="w-7 h-7 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
-              <AlertTriangle className="w-4 h-4" />
             </div>
           ) : (
             <div className="w-7 h-7 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
@@ -41,9 +35,7 @@ export const OfflineNotice: React.FC = () => {
             <p className="font-bold text-slate-100">
               {!isOnline
                 ? `Offline${pendingSyncCount ? ` · ${pendingSyncCount} waiting to sync` : ''}`
-                : isPoisonBlocked
-                  ? `Sync paused · 1 entry needs review (${pendingSyncCount} waiting)`
-                  : `${pendingSyncCount} ${pendingSyncCount === 1 ? 'entry' : 'entries'} waiting to sync`}
+                : `${pendingSyncCount} ${pendingSyncCount === 1 ? 'entry' : 'entries'} waiting to sync`}
             </p>
             <p className="text-[11px] text-slate-400 break-words">
               {!isOnline
@@ -52,9 +44,7 @@ export const OfflineNotice: React.FC = () => {
                   : 'New entries stay on this device until they sync.'
                 : isSyncing
                   ? 'Sending your saved entries now.'
-                  : isPoisonBlocked
-                    ? `Rejected entry: ${blockedSync.summary}. Review, retry, or discard it so remaining entries can sync.`
-                    : lastOfflineNotice || 'Keep this browser’s data until your entries sync.'}
+                  : lastOfflineNotice || 'Keep this browser’s data until your entries sync.'}
             </p>
           </div>
         </div>

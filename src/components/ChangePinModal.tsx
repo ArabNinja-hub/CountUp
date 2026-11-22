@@ -8,7 +8,7 @@ interface ChangePinModalProps {
 
 /** Lets a shop owner replace their 4-digit login PIN. */
 export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
-  const { changePin, isOnline } = useShop();
+  const { changePin } = useShop();
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -17,10 +17,6 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
 
   const handleSave = async () => {
     setError('');
-    if (!isOnline) {
-      setError('Connect to the internet so your new PIN is saved safely to the cloud.');
-      return;
-    }
     if (!/^\d{4}$/.test(newPin)) {
       setError('Your new PIN must be exactly 4 numbers.');
       return;
@@ -38,7 +34,7 @@ export const ChangePinModal: React.FC<ChangePinModalProps> = ({ onClose }) => {
     try {
       const ok = await changePin(currentPin, newPin);
       if (!ok) {
-        setError('That is not your current PIN, or the server could not be reached.');
+        setError('That is not your current PIN. Please try again.');
         return;
       }
       onClose();

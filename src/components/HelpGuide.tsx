@@ -23,9 +23,8 @@ const topics = [
   {
     title: 'Create or open a shop',
     lines: [
-      'Choose New shop, verify your +260 phone number with the 6-digit SMS code, enter your shop name and a 4-digit PIN, and write down your one-time recovery code (CU-XXXX-XXXX-XXXX).',
-      'On a new or replacement phone, choose Log in, verify the 6-digit SMS code sent to your number, and enter your 4-digit shop PIN to unlock and sync your shop.',
-      'If you forget your PIN, use your saved one-time recovery code on the PIN screen. If both your PIN and recovery code are lost, support can start a 72-hour safety PIN reset.',
+      'Choose New shop. Enter its name, your phone number and a 4-number PIN, then tap Create shop.',
+      'To return, choose Log in and use the phone number and PIN in the original browser. CountUp has no general email shop sign-in or new-device restore.',
     ],
   },
   {
@@ -64,15 +63,16 @@ const topics = [
       'If a payment or sale undo conflicts, tap Review and check the records on every device. Correct or cancel an entry only if it was a mistake. The original and your decision are kept in Data & backups → Sync review history.',
       'Real overpayments and refunds cannot yet be recorded. Leave the entry waiting and seek support; do not reduce a real payment just to clear sync. For a stock conflict, count the goods again and adjust stock.',
       'Use only one CountUp tab on this device. Another tab may wait until you close the first.',
-      'Do not clear browser data before queued offline entries finish syncing. If your cloud session expires while entries are waiting, re-verify your phone via SMS in Settings → Account & Access without losing queued entries.',
-      'Settings → Data & Backups can export your shop as JSON or CSV, preview a backup file safely, and restore a CountUp v2 or legacy v1 JSON backup.',
+      'Do not clear browser data before entries sync. To open the shop on another device, first sync and link email in Settings → Account & cloud access.',
+      'If a linked shop loses its cloud session, reconnect its original email in Account & cloud access without discarding waiting entries.',
+      'Settings → Data & backups can export data and import a legacy backup. CountUp JSON exports cannot yet be restored in the app.',
     ],
   },
   {
     title: 'Admin access',
     lines: [
-      'Admin access must be granted to your authorized email account and requires 2-factor authentication (TOTP authenticator code) on every sign-in.',
-      'On the sign-in page, choose Platform admin sign-in, enter the authorized email and password, and enter your 6-digit authenticator code.',
+      'Admin access must be granted to your account. On the sign-in page, choose Admin sign in and use that account’s email and password.',
+      'If you use a shop PIN, log in to your shop and choose Settings → Platform Admin. To add email to that same account, use Settings → Account & cloud access.',
     ],
   },
 ];

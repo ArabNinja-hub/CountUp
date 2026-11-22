@@ -13,21 +13,15 @@ export const SyncReviewDialog: React.FC<{ actionId: string; onClose: () => void 
   actionId,
   onClose,
 }) => {
-  const { blockedSync, discardBlockedSyncAction, loadSyncReview, resolveSyncReview, syncNow } =
-    useShop();
+  const { loadSyncReview, resolveSyncReview, syncNow } = useShop();
   const { notify } = useToast();
-  const poisonEntry =
-    blockedSync && blockedSync.actionId === actionId && blockedSync.kind === 'poison'
-      ? blockedSync
-      : null;
   const [review, setReview] = useState<SyncConflictReview | null>(null);
-  const [loading, setLoading] = useState(!poisonEntry);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [choice, setChoice] = useState<'correct' | 'cancel' | 'keep' | ''>('');
   const [amount, setAmount] = useState('');
   const [checked, setChecked] = useState(false);
   const [decision, setDecision] = useState<SyncReviewDecision | null>(null);
-  const [confirmDiscardPoison, setConfirmDiscardPoison] = useState(false);
   const [error, setError] = useState('');
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -36,10 +30,6 @@ export const SyncReviewDialog: React.FC<{ actionId: string; onClose: () => void 
   const loadRef = useRef(loadSyncReview);
   loadRef.current = loadSyncReview;
   const reload = useCallback(async () => {
-    if (poisonEntry) {
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     setError('');
     setReview(null);
@@ -53,38 +43,18 @@ export const SyncReviewDialog: React.FC<{ actionId: string; onClose: () => void 
     } finally {
       setLoading(false);
     }
-  }, [actionId, poisonEntry]);
+  }, [actionId]);
   useEffect(() => {
     void reload();
     closeRef.current?.focus();
   }, [reload]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy && !decision && !confirmDiscardPoison) onClose();
+      if (event.key === 'Escape' && !busy && !decision) onClose();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [busy, confirmDiscardPoison, decision, onClose]);
-
-  const handleConfirmDiscardPoison = async () => {
-    if (!poisonEntry || busy) return;
-    setBusy(true);
-    setError('');
-    try {
-      await discardBlockedSyncAction(poisonEntry.actionId);
-      notify('Rejected entry discarded', {
-        kind: 'success',
-        detail:
-          'Recorded in sync review history. Remaining waiting entries will continue syncing in order.',
-      });
-      onClose();
-    } catch (err) {
-      setConfirmDiscardPoison(false);
-      setError(err instanceof Error ? err.message : 'Could not discard this entry.');
-    } finally {
-      setBusy(false);
-    }
-  };
+  }, [busy, decision, onClose]);
 
   const prepare = () => {
     if (!review || !checked) return;
@@ -166,72 +136,7 @@ export const SyncReviewDialog: React.FC<{ actionId: string; onClose: () => void 
               {error}
             </p>
           )}
-          {poisonEntry && (
-            <div className="space-y-4">
-              <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3 text-xs space-y-1.5">
-                <p>
-                  <strong>Entry:</strong> {poisonEntry.summary}
-                </p>
-                <p>
-                  <strong>Type:</strong> {poisonEntry.actionType}
-                </p>
-                <p>
-                  <strong>Saved:</strong> {formatWhen(poisonEntry.queuedAt)}
-                </p>
-                <p>
-                  <strong>Server message:</strong> {poisonEntry.reason}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-950 space-y-2">
-                <p className="font-bold flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4" /> Sync paused to protect later entries
-                </p>
-                <p>
-                  The server rejected this entry and paused the sync queue so later entries stay in
-                  order and nothing is dropped silently.
-                </p>
-                <p>
-                  You can retry sync first. If this entry can never succeed (for example, a
-                  referenced record no longer exists or its values are invalid), check your physical
-                  shop records and discard this blocked entry so later entries can finish syncing.
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  onClose();
-                  void syncNow();
-                }}
-                disabled={busy}
-                className="min-h-[44px] w-full rounded-xl bg-emerald-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                <RefreshCw className="w-3.5 h-3.5" /> Retry sync now
-              </button>
-              <div className="space-y-2 border-t border-slate-100 pt-3">
-                <label className="flex gap-2 text-xs text-slate-800">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => setChecked(event.target.checked)}
-                  />
-                  <span>
-                    I checked my shop records and want to discard this unsyncable entry (an audit
-                    record will be saved in Sync review history).
-                  </span>
-                </label>
-                <button
-                  onClick={() => setConfirmDiscardPoison(true)}
-                  disabled={!checked || busy}
-                  className="min-h-[44px] w-full rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold disabled:opacity-50"
-                >
-                  Discard blocked entry…
-                </button>
-              </div>
-              <p className="text-[11px] text-slate-500 text-center">
-                Close this screen to leave everything waiting unchanged.
-              </p>
-            </div>
-          )}
-          {!loading && !review && !poisonEntry && (
+          {!loading && !review && (
             <button
               onClick={() => void reload()}
               className="min-h-[44px] w-full rounded-xl border border-slate-300 text-xs font-bold"
@@ -423,22 +328,6 @@ export const SyncReviewDialog: React.FC<{ actionId: string; onClose: () => void 
           busy={busy}
           onConfirm={() => void confirm()}
           onCancel={() => setDecision(null)}
-        />
-      )}
-      {confirmDiscardPoison && poisonEntry && (
-        <ConfirmDialog
-          title="Discard unsyncable entry?"
-          description={
-            <p>
-              Discard <strong>{poisonEntry.summary}</strong> from the sync queue? Its local changes
-              will not be applied to the cloud, an audit record will be saved in Sync review
-              history, and all remaining waiting entries will continue syncing in order.
-            </p>
-          }
-          confirmLabel="Discard entry and resume sync"
-          busy={busy}
-          onConfirm={() => void handleConfirmDiscardPoison()}
-          onCancel={() => setConfirmDiscardPoison(false)}
         />
       )}
     </>,

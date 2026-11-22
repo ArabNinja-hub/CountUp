@@ -15,7 +15,10 @@ import {
   ManualPaymentNetwork,
 } from '../types';
 import { translations, Translations } from '../i18n/translations';
-import { getSubscriptionInfo } from '../config/plans';
+import { getSubscriptionInfo, GRACE_PERIOD_DAYS, TRIAL_DURATION_DAYS } from '../config/plans';
+import { auth, db, testConnection } from '../firebase/config';
+import { functions } from '../firebase/functions';
+import { httpsCallable } from 'firebase/functions';
 import {
   extendShopSubscription,
   reviewManualSubscriptionPayment,
@@ -34,125 +37,42 @@ import {
   isTransientSyncError,
 } from '../utils/sync';
 import {
-  CreditBalanceConflict,
-  describeQueuedActionSummary,
   reviewableAction,
+  voidActionSaleId,
   SyncConflictReview,
   SyncReviewDecision,
   SyncResolutionAudit,
 } from '../services/syncReview';
 import { addKwacha, localDateKey, multiplyKwacha, toNgwee } from '../utils/money';
+import { normalizeZambianPhone } from '../utils/format';
+import { prepareLegacyBackupImport, LegacyBackupImport } from '../services/backupImport';
 import {
-  computeBackupSha256Hex,
-  LegacyBackupImport,
-  PreparedShopBackup,
-  prepareLegacyBackupImport,
-  prepareShopBackupImport,
-  ShopBackupPreview,
-} from '../services/backupImport';
+  signInAnonymously,
+  onAuthStateChanged,
+  User,
+  EmailAuthProvider,
+  linkWithCredential,
+  signInWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+} from 'firebase/auth';
 import {
-  acknowledgeShopSecurityNoticeOnServer,
-  acknowledgeShopSubscriptionNoticeOnServer,
-  adminInitiateShopPinReset,
-  adminResetShopPinLockout,
-  AdminSignInOutcome,
-  AuthUserIdentity,
-  cancelPendingPinResetOnServer,
-  changeShopPinOnServer,
-  checkShopUnlockStatus,
-  completeApprovedShopPinReset,
-  completePlatformAdminMfa,
-  deleteShopOnServer,
-  fetchActivePlatformAlerts,
-  fetchAllShopsForAdmin,
-  fetchVerifiedShopFromServer,
-  recoverShopPinWithCode,
-  registerShopWithServer,
-  requestPhoneOtp,
-  resolvePlatformAlertOnServer,
-  revokeOtherShopSessionsOnServer,
-  sendAdminPasswordReset,
-  ShopUnlockStatus,
-  signInPlatformAdmin,
-  signOutSupabase,
-  subscribeToAuthIdentity,
-  unlockShopSessionWithPin,
-  verifyPhoneOtp,
-} from '../auth/authService';
-import { reportSyncBatchFailure, reportUnexpectedClientError } from '../services/errorReporting';
-import {
-  clearVersionedShopCache,
-  createShopReadSyncCoordinator,
-  discardPoisonSyncActionOnServer,
-  executeSyncBatchChunk,
-  fetchSubscriptionPaymentsFromServer,
-  getShopReadSyncOverrideForTests,
-  importShopBackupOnServer,
-  isPermanentPoisonSyncError,
-  isTransientSupabaseSyncError,
-  LedgerReconciliationReport,
-  loadShopSyncResolutionHistoryFromServer,
-  loadShopSyncReviewFromServer,
-  PlatformAlertRow,
-  previewShopBackupOnServer,
-  pullShopCursorSync,
-  purgeLegacyKwachaCacheKeys,
-  readAuthoritativeResolutionBase,
-  readShopDomainCache,
-  readVersionedActiveShop,
-  reconcileShopLedger,
-  reconcileSubscriptions,
-  resolveShopSyncReviewOnServer,
-  ShopDomainCacheSnapshot,
-  SubscriptionReconciliationReport,
-  SYNC_BATCH_CHUNK_SIZE,
-  writeVersionedActiveShop,
-  writeVersionedDomainCollection,
-} from '../data';
-import { isSupabaseConfigured } from '../supabase/client';
-import {
-  clearLocalPinRecord,
-  LocalPinVerificationResult,
-  persistScreenLockedState,
-  readScreenLockedState,
-  saveLocalPinRecord,
-  verifyLocalPin,
-} from '../utils/pinLock';
-
-export type BlockedSyncState =
-  | { actionId: string; kind: 'payment' | 'void' }
-  | {
-      actionId: string;
-      kind: 'poison';
-      actionType: string;
-      summary: string;
-      reason: string;
-      queuedAt: string;
-    };
-
-export interface BackupPreviewOutcome {
-  prepared: PreparedShopBackup;
-  preview: ShopBackupPreview;
-  fileSha256: string;
-  shopHasExistingData: boolean;
-  alreadyImported: boolean;
-}
-
-export interface BackupRestoreOutcome {
-  status: 'imported' | 'duplicate';
-  idempotent: boolean;
-  alreadyImported: boolean;
-  preview: ShopBackupPreview;
-  imported: PreparedShopBackup;
-}
-
-export interface AppUser {
-  uid: string;
-  phone?: string | null;
-  email?: string | null;
-  isPlatformAdmin?: boolean;
-  verifiedShopId?: string | null;
-}
+  doc,
+  setDoc,
+  writeBatch,
+  getDoc,
+  getDocFromServer,
+  deleteDoc,
+  collection,
+  onSnapshot,
+  query,
+  where,
+  getDocs,
+  getDocsFromServer,
+  runTransaction,
+  DocumentData,
+  Transaction,
+} from 'firebase/firestore';
 
 /**
  * Payload of a queued write. The concrete shape depends on `type` (a Sale, an
@@ -163,38 +83,18 @@ type QueuePayload = object;
 
 interface ShopContextType {
   // Auth & Shop
-  user: AppUser | null;
+  user: User | null;
   shop: Shop | null;
   isLoading: boolean;
   isAdmin: boolean;
-  isScreenLocked: boolean;
-  lockScreen: () => void;
-  unlockLocalScreen: (pin: string) => Promise<LocalPinVerificationResult>;
-  sendPhoneVerificationCode: (
-    phone: string,
-    captchaToken?: string
-  ) => Promise<{ phoneE164: string }>;
-  verifyPhoneVerificationCode: (phone: string, otpCode: string) => Promise<ShopUnlockStatus>;
-  completeShopRegistration: (
-    name: string,
-    pin: string
-  ) => Promise<{ recoveryCode: string; trialGranted: boolean }>;
-  unlockCloudShopWithPin: (pin: string) => Promise<boolean>;
-  recoverCloudShopPin: (recoveryCode: string, newPin: string) => Promise<{ recoveryCode: string }>;
-  completeApprovedCloudPinReset: (newPin: string) => Promise<{ recoveryCode: string }>;
-  signOutOtherDevices: () => Promise<{ revokedCount: number }>;
-  cancelPendingPinReset: () => Promise<boolean>;
-  pendingRecoveryCode: string | null;
-  clearPendingRecoveryCode: () => void;
+  loginWithPhoneAndPin: (phone: string, pin: string) => Promise<boolean>;
+  registerNewShop: (name: string, phone: string, pin: string) => Promise<boolean>;
+  linkEmailAccount: (email: string, password: string) => Promise<void>;
   needsShopAccountRecovery: boolean;
-  restoreShopSessionWithOtp: (otpCode: string, captchaToken?: string) => Promise<void>;
-  loginAsAdmin: (email: string, password: string) => Promise<AdminSignInOutcome | void>;
-  completeAdminMfa: (factorId: string, totpCode: string) => Promise<void>;
+  restoreShopAccount: (email: string, password: string) => Promise<void>;
+  loginAsAdmin: (email: string, password: string) => Promise<void>;
   cancelEmailLogin: () => Promise<void>;
   resetEmailPassword: (email: string) => Promise<void>;
-  acknowledgeSecurityNotice: () => Promise<void>;
-  acknowledgeSubscriptionNotice: () => Promise<void>;
-  platformAlerts: PlatformAlertRow[];
   subscriptionPayments: SubscriptionPayment[];
   submitSubscriptionPayment: (input: {
     planId: PlanBillingCycle;
@@ -202,18 +102,16 @@ interface ShopContextType {
     transactionReference: string;
     payerPhone: string;
     paymentDate: string;
-    operationId?: string;
   }) => Promise<void>;
   reviewSubscriptionPayment: (input: {
     paymentId: string;
     decision: 'approve' | 'reject';
     reason?: string;
-    operationId?: string;
   }) => Promise<void>;
   logout: () => Promise<void>;
-  /** Permanently deletes this shop and every record that belongs to it after server verification. */
-  deleteShopAccount: (confirmationName: string, pin: string) => Promise<boolean>;
-  /** Verifies the current PIN on the server and updates both server and local salted PBKDF2 hashes. */
+  /** Permanently deletes this shop and every record that belongs to it. */
+  deleteShopAccount: () => Promise<boolean>;
+  /** Verifies the current PIN and replaces it with a new 4-digit PIN. */
   changePin: (currentPin: string, newPin: string) => Promise<boolean>;
 
   // Language & Tab
@@ -233,11 +131,6 @@ interface ShopContextType {
   customers: Customer[];
   creditPayments: CreditPayment[];
   expenses: Expense[];
-  previewShopBackup: (raw: string) => Promise<BackupPreviewOutcome>;
-  restoreShopBackup: (
-    raw: string,
-    options?: { allowNonEmptyShop?: boolean; operationId?: string }
-  ) => Promise<BackupRestoreOutcome>;
   importLegacyBackup: (raw: string) => Promise<LegacyBackupImport>;
 
   // Actions
@@ -280,32 +173,20 @@ interface ShopContextType {
   pendingSyncCount: number;
   isSyncing: boolean;
   syncNow: () => Promise<void>;
-  blockedSync: BlockedSyncState | null;
+  blockedSync: { actionId: string; kind: 'payment' | 'void' } | null;
   loadSyncReview: (actionId: string) => Promise<SyncConflictReview>;
   resolveSyncReview: (
     review: SyncConflictReview,
     decision: SyncReviewDecision
   ) => Promise<'resolved' | 'already-processed'>;
-  discardBlockedSyncAction: (actionId: string) => Promise<void>;
   loadSyncResolutionHistory: () => Promise<SyncResolutionAudit[]>;
   lastOfflineNotice: string | null;
   clearOfflineNotice: () => void;
 
   // Platform Admin
   allShops: Shop[];
-  adminExtendShop: (shopId: string, days: number, operationId?: string) => Promise<void>;
-  adminToggleDeactivate: (shopId: string, operationId?: string) => Promise<void>;
-  adminResetPinLockout: (shopId: string, identityCheckNote: string) => Promise<void>;
-  adminInitiatePinReset: (
-    shopId: string,
-    identityCheckNote: string
-  ) => Promise<{ availableAt: string; expiresAt: string }>;
-  adminReconcileLedgers: (shopId?: string | null) => Promise<LedgerReconciliationReport>;
-  adminReconcileSubscriptions: (
-    shopId?: string | null
-  ) => Promise<SubscriptionReconciliationReport>;
-  adminResolvePlatformAlert: (alertId: string) => Promise<void>;
-  adminRefreshPlatformAlerts: () => Promise<void>;
+  adminExtendShop: (shopId: string, days: number) => Promise<void>;
+  adminToggleDeactivate: (shopId: string) => Promise<void>;
 }
 
 const ShopContext = createContext<ShopContextType | undefined>(undefined);
@@ -316,11 +197,53 @@ function isTodayIso(iso: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toDateString() === new Date().toDateString();
 }
 
-function sanitizeCachedShop(raw: Shop | null): Shop | null {
-  if (!raw) return null;
-  const copy = { ...(raw as Shop & { pin?: unknown }) };
-  delete copy.pin;
-  return copy;
+/** Legacy shops may have been created with the international form in their ID. */
+function shopIdsForPhone(phone: string): string[] {
+  const national = normalizeZambianPhone(phone);
+  const candidates = [national];
+  if (/^0\d{9}$/.test(national)) candidates.push(`260${national.slice(1)}`);
+  return [...new Set(candidates)].map((candidate) => `shop_${candidate}`);
+}
+
+/** Only the full, first queued creation can reserve an owner or defer listeners. */
+function hasQueuedOfflineShopCreate(shop: Shop, queue: PendingSyncAction[]): boolean {
+  const first = queue[0];
+  if (!first) return false;
+  return (first.writes ?? [{ path: first.path, data: first.data }]).some((write) => {
+    const data = write.data as Partial<Shop> | null | undefined;
+    return (
+      write.path === `shops/${shop.id}` &&
+      data?.id === shop.id &&
+      data.createdAt === shop.createdAt &&
+      (data.ownerUid === shop.id || data.ownerUid === shop.ownerUid)
+    );
+  });
+}
+
+class CreditBalanceConflict extends Error {
+  constructor() {
+    super(
+      'A repayment or void conflicts with a newer customer balance. Review the entry before retrying.'
+    );
+  }
+}
+
+/** Read the affected records after a reviewed operation, including absent void movements. */
+async function readResolutionBase(
+  transaction: Transaction,
+  action: PendingSyncAction
+): Promise<SyncProjectionDocument[]> {
+  const paths = new Set<string>([action.path]);
+  for (const adjustment of action.adjustments ?? []) {
+    paths.add(adjustment.path);
+    if (adjustment.kind === 'stock') paths.add(adjustment.movement.path);
+  }
+  const list = [...paths];
+  const snapshots = await Promise.all(list.map((path) => transaction.get(doc(db, path))));
+  return snapshots.map((snapshot, index) => ({
+    path: list[index],
+    data: snapshot.exists() ? snapshot.data() : null,
+  }));
 }
 
 function readInitialCache() {
@@ -328,57 +251,52 @@ function readInitialCache() {
     const value = localStorage.getItem(key);
     return value ? (JSON.parse(value) as T) : fallback;
   };
-  // Purge legacy unversioned Kwacha cache keys so Kwacha floats and integer ngwee never mix.
-  purgeLegacyKwachaCacheKeys();
-
   const queue = read<PendingSyncAction[]>('countup_pending_queue', []);
-  const shop = sanitizeCachedShop(readVersionedActiveShop());
+  let shop = read<Shop | null>('countup_active_shop', null);
+  for (const action of queue) {
+    for (const write of action.writes ?? [{ path: action.path, data: action.data }]) {
+      const [collectionName, id, ...rest] = write.path.split('/');
+      if (collectionName !== 'shops' || !id || rest.length) continue;
+      const data = write.data as Partial<Shop>;
+      if (!shop && data.id === id && data.name && data.ownerUid && data.pin) shop = data as Shop;
+      else if (shop?.id === id && typeof data.pin === 'string') shop = { ...shop, pin: data.pin };
+    }
+  }
   const root = shop ? `shops/${shop.id}` : '';
-  const domainCache = shop
-    ? readShopDomainCache(shop.id)
-    : {
-        items: [],
-        archivedItems: [],
-        sales: [],
-        customers: [],
-        creditPayments: [],
-        expenses: [],
-        stockMovements: [],
-        stockConflicts: [],
-        subscriptionPayments: [],
-        cursors: {},
-      };
-
   const replay = <T extends { id: string }>(cached: T[], collectionName: string) =>
     root ? replayQueuedWrites(cached, queue, `${root}/${collectionName}`) : cached;
-  const allItems = replay([...domainCache.items, ...domainCache.archivedItems], 'items');
+  const allItems = replay(
+    [...read<Item[]>('countup_items', []), ...read<Item[]>('countup_archived_items', [])],
+    'items'
+  );
   return {
     shop,
     queue,
-    screenLocked: Boolean(shop && readScreenLockedState()),
     items: allItems.filter((item) => !item.isDeleted),
     archivedItems: allItems.filter((item) => item.isDeleted),
-    movements: replay(domainCache.stockMovements, 'stock_movements'),
-    conflicts: replay(domainCache.stockConflicts, 'stock_conflicts'),
-    sales: replay(domainCache.sales, 'sales').filter((sale) => !sale.isDeleted),
-    customers: replay(domainCache.customers, 'customers'),
-    payments: replay(domainCache.creditPayments, 'credit_payments'),
-    expenses: replay(domainCache.expenses, 'expenses').filter((expense) => !expense.isDeleted),
+    movements: replay(read<StockMovement[]>('countup_stock_movements', []), 'stock_movements'),
+    conflicts: replay(read<StockConflict[]>('countup_stock_conflicts', []), 'stock_conflicts'),
+    sales: replay(read<(Sale & { isDeleted?: boolean })[]>('countup_sales', []), 'sales').filter(
+      (sale) => !sale.isDeleted
+    ),
+    customers: replay(read<Customer[]>('countup_customers', []), 'customers'),
+    payments: replay(read<CreditPayment[]>('countup_payments', []), 'credit_payments'),
+    expenses: replay(
+      read<(Expense & { isDeleted?: boolean })[]>('countup_expenses', []),
+      'expenses'
+    ).filter((expense) => !expense.isDeleted),
   };
 }
 
 export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { notify } = useToast();
   const [initial] = useState(readInitialCache);
-  const [user, setUser] = useState<AppUser | null>(null);
-  const currentUserRef = React.useRef<AppUser | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [shop, setShop] = useState<Shop | null>(initial.shop);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isScreenLocked, setIsScreenLocked] = useState<boolean>(initial.screenLocked);
-  const [pendingRecoveryCode, setPendingRecoveryCode] = useState<string | null>(null);
   const authReadyRef = React.useRef(false);
 
-  // Associate the grant with a UID, so a change of account can never
+  // Associate the grant with a UID, so a change of Firebase account can never
   // inherit the previous account's admin state for even one render.
   const [adminUid, setAdminUid] = useState<string | null>(null);
   const [language, setLanguageState] = useState<Language>(() => {
@@ -402,20 +320,31 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [pendingQueue, setPendingQueue] = useState<PendingSyncAction[]>(initial.queue);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const isAdmin = Boolean(user && isOnline && adminUid === user.uid);
+  const queuedShopCreate = Boolean(shop && hasQueuedOfflineShopCreate(shop, pendingQueue));
+  const reservedOwnerUid = queuedShopCreate ? pendingQueue[0].reservedOwnerUid : undefined;
   const hasShopSession = Boolean(
-    shop && user && (user.uid === shop.ownerUid || user.uid === shop.id)
+    shop &&
+    user &&
+    (reservedOwnerUid
+      ? user.uid === reservedOwnerUid
+      : user.uid === shop.ownerUid || user.uid === shop.id)
   );
-  const needsShopAccountRecovery = Boolean(shop && !hasShopSession);
+  const needsShopAccountRecovery = Boolean(
+    shop && !hasShopSession && !(queuedShopCreate && shop.ownerUid === shop.id && !reservedOwnerUid)
+  );
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [blockedSync, setBlockedSync] = useState<BlockedSyncState | null>(null);
+  const [blockedSync, setBlockedSync] = useState<{
+    actionId: string;
+    kind: 'payment' | 'void';
+  } | null>(null);
   const [lastOfflineNotice, setLastOfflineNotice] = useState<string | null>(null);
 
-  // Server-submitted subscription payments, scoped to the signed-in owner or platform administrator.
+  // Server-submitted subscription payments, scoped by Firestore rules to the
+  // signed-in owner or platform administrator.
   const [subscriptionPayments, setSubscriptionPayments] = useState<SubscriptionPayment[]>([]);
 
-  // Platform admin shops list & system alerts
+  // Platform admin shops list
   const [allShops, setAllShops] = useState<Shop[]>([]);
-  const [platformAlerts, setPlatformAlerts] = useState<PlatformAlertRow[]>([]);
 
   // Keep the latest state reachable from long-lived listeners without making them
   // re-subscribe on every change (a re-subscribe per sale drops real-time updates).
@@ -449,9 +378,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     movements?: StockMovement[];
     conflicts?: StockConflict[];
   }>({ shopId: '' });
-  const readSyncCoordinatorRef = React.useRef<ReturnType<
-    typeof createShopReadSyncCoordinator
-  > | null>(null);
 
   // Cache helper
   const setLanguage = (lang: Language) => {
@@ -476,6 +402,9 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // Initial connection test
+    void testConnection();
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -485,84 +414,71 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t.offlineSaved]);
 
-  // Save current shop state to versioned ngwee-only local storage for instant offline recovery
+  // Save current shop state to local storage for instant offline recovery
   useEffect(() => {
-    writeVersionedActiveShop(shopRef.current);
+    if (shopRef.current) {
+      localStorage.setItem('countup_active_shop', JSON.stringify(shopRef.current));
+    } else {
+      localStorage.removeItem('countup_active_shop');
+    }
   }, [shop]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'items', [
-      ...itemsRef.current,
-      ...archivedItemsRef.current,
-    ]);
-  }, [items, archivedItems]);
+    localStorage.setItem('countup_items', JSON.stringify(itemsRef.current));
+  }, [items]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'stock_movements', movementsRef.current);
+    localStorage.setItem('countup_archived_items', JSON.stringify(archivedItemsRef.current));
+  }, [archivedItems]);
+
+  useEffect(() => {
+    localStorage.setItem('countup_stock_movements', JSON.stringify(movementsRef.current));
   }, [stockMovements]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'stock_conflicts', conflictsRef.current);
+    localStorage.setItem('countup_stock_conflicts', JSON.stringify(conflictsRef.current));
   }, [stockConflicts]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'sales', salesRef.current);
+    localStorage.setItem('countup_sales', JSON.stringify(salesRef.current));
   }, [sales]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'customers', customersRef.current);
+    localStorage.setItem('countup_customers', JSON.stringify(customersRef.current));
   }, [customers]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'credit_payments', paymentsRef.current);
+    localStorage.setItem('countup_payments', JSON.stringify(paymentsRef.current));
   }, [creditPayments]);
 
   useEffect(() => {
-    const activeShopId = shopRef.current?.id;
-    if (!activeShopId) return;
-    writeVersionedDomainCollection(activeShopId, 'expenses', expensesRef.current);
+    localStorage.setItem('countup_expenses', JSON.stringify(expensesRef.current));
   }, [expenses]);
 
   // Queue changes are persisted synchronously before state changes; a later
   // effect must not overwrite that durable queue with an older render.
 
-  // Admin authority comes from a server-issued Supabase JWT app_metadata claim only.
-  // Email values and client-writable documents are never trusted.
+  // Admin authority comes from a server-issued Firebase custom claim only.
+  // Email values and client-writable Firestore grant documents are never trusted.
   useEffect(() => {
     let mounted = true;
-    const unsubscribe = subscribeToAuthIdentity((identity) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       if (!mounted) return;
       authReadyRef.current = true;
-      if (!identity) {
-        currentUserRef.current = null;
-        setUser(null);
-        setAdminUid(null);
-        setIsLoading(false);
-        return;
-      }
-      const nextUser: AppUser = {
-        uid: identity.id,
-        phone: identity.phone,
-        email: identity.email,
-        isPlatformAdmin: identity.isPlatformAdmin,
-        verifiedShopId: identity.verifiedShopId,
-      };
-      currentUserRef.current = nextUser;
-      setUser(nextUser);
-      setAdminUid(identity.isPlatformAdmin ? identity.id : null);
+      setUser(currentUser);
+      setAdminUid(null);
       setIsLoading(false);
+      if (!currentUser || typeof currentUser.getIdTokenResult !== 'function') return;
+      const uid = currentUser.uid;
+      void currentUser
+        .getIdTokenResult()
+        .then((token) => {
+          if (mounted && auth.currentUser?.uid === uid && token.claims.platformAdmin === true)
+            setAdminUid(uid);
+        })
+        .catch(() => {
+          if (mounted && auth.currentUser?.uid === uid) setAdminUid(null);
+        });
     });
     return () => {
       mounted = false;
@@ -570,22 +486,13 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  // Refresh the verified shop profile (including any security_notice set by support)
-  // whenever the verified Supabase session connects online.
+  // An anonymous Firebase identity is the only cloud key for a legacy shop.
+  // Remember it so switching accounts cannot silently abandon that identity.
   useEffect(() => {
-    if (!isOnline || !shop?.id || !user || user.verifiedShopId !== shop.id) return;
-    let active = true;
-    void fetchVerifiedShopFromServer(shop.id)
-      .then((serverShop) => {
-        if (active && serverShop && shopRef.current?.id === serverShop.id) {
-          setShop(serverShop);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [isOnline, shop?.id, user]);
+    if (shop && user?.isAnonymous && (shop.ownerUid === user.uid || shop.id === user.uid)) {
+      localStorage.setItem('countup_legacy_uid', user.uid);
+    }
+  }, [shop, user]);
 
   // ---------------------------------------------------------------
   // REAL-TIME SYNC
@@ -597,152 +504,181 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // snapshot so a pending write never disappears from the screen mid-sync.
   // ---------------------------------------------------------------
   useEffect(() => {
-    if (!shop?.id || !user) {
+    // Subcollection rules require an existing parent shop. Starting listeners
+    // before its offline create is acknowledged can produce a permanent
+    // permission-denied error, leaving this tab with stale stock and balances.
+    if (!shop?.id || !user || queuedShopCreate) {
       remoteRef.current = { shopId: '' };
       return;
     }
 
     const shopId = shop.id;
     remoteRef.current = { shopId };
-    const root = `shops/${shopId}`;
-
-    const applyShopSnapshot = (incoming: Shop | null) => {
-      if (!incoming || shopRef.current?.id !== shopId) return;
-      const data = sanitizeCachedShop(incoming);
-      if (data) {
-        setShop((prev) => ({
-          ...data,
-          securityNotice: data.securityNotice ?? prev?.securityNotice ?? null,
-          securityNoticeAt: data.securityNoticeAt ?? prev?.securityNoticeAt ?? null,
-          subscriptionNotice:
-            data.subscriptionNotice !== undefined
-              ? data.subscriptionNotice
-              : (prev?.subscriptionNotice ?? null),
-          subscriptionNoticeAt:
-            data.subscriptionNoticeAt !== undefined
-              ? data.subscriptionNoticeAt
-              : (prev?.subscriptionNoticeAt ?? null),
-        }));
-      }
+    const warn = (label: string) => (err: unknown) => {
+      console.warn(`Real-time ${label} listener:`, err);
     };
 
-    const applyDomainSnapshot = (domain: ShopDomainCacheSnapshot) => {
-      if (shopRef.current?.id !== shopId) return;
-      const remoteItems = [...domain.items, ...domain.archivedItems];
-      const remoteSales = domain.sales.filter((s) => !s.isDeleted);
-      const remoteExpenses = domain.expenses.filter((e) => !e.isDeleted);
+    const unsubShop = onSnapshot(
+      doc(db, 'shops', shopId),
+      (docSnap) => {
+        if (!docSnap.exists()) return;
+        const data = docSnap.data() as Shop;
+        // A listener may emit an older PIN while a change is still queued.
+        const pendingPin = queueRef.current
+          .flatMap((action) => action.writes ?? [{ path: action.path, data: action.data }])
+          .filter((write) => write.path === `shops/${shopId}`)
+          .map((write) => (write.data as { pin?: unknown }).pin)
+          .filter((pin): pin is string => typeof pin === 'string')
+          .at(-1);
+        setShop((prev) => {
+          // Firestore can emit a locally pending creation before the server
+          // accepts it. Keep the provisional shop until its queued create is
+          // acknowledged; a rejected create must not appear cloud-owned.
+          if (
+            prev &&
+            prev.ownerUid === shopId &&
+            hasQueuedOfflineShopCreate(prev, queueRef.current)
+          )
+            return prev;
+          return { ...data, pin: pendingPin ?? data.pin ?? prev?.pin ?? '' };
+        });
+      },
+      warn('shop')
+    );
 
-      remoteRef.current.items = remoteItems;
-      remoteRef.current.sales = remoteSales;
-      remoteRef.current.customers = domain.customers;
-      remoteRef.current.payments = domain.creditPayments;
-      remoteRef.current.expenses = remoteExpenses;
-      remoteRef.current.movements = domain.stockMovements;
-      remoteRef.current.conflicts = domain.stockConflicts;
-
-      const mergedItems = reconcile(
-        remoteItems,
-        [...itemsRef.current, ...archivedItemsRef.current],
-        queueRef.current,
-        `${root}/items`
-      );
-      setItems(mergedItems.filter((item) => !item.isDeleted));
-      setArchivedItems(mergedItems.filter((item) => Boolean(item.isDeleted)));
-
-      const mergedMovements = reconcile(
-        domain.stockMovements,
-        movementsRef.current,
-        queueRef.current,
-        `${root}/stock_movements`
-      );
-      mergedMovements.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      setStockMovements(mergedMovements);
-
-      setStockConflicts(
-        reconcile(
-          domain.stockConflicts,
-          conflictsRef.current,
+    const unsubItems = onSnapshot(
+      collection(db, 'shops', shopId, 'items'),
+      (snap) => {
+        const remote: Item[] = [];
+        snap.forEach((d) => remote.push(d.data() as Item));
+        remoteRef.current.items = remote;
+        const merged = reconcile(
+          remote,
+          [...itemsRef.current, ...archivedItemsRef.current],
           queueRef.current,
-          `${root}/stock_conflicts`
-        )
-      );
+          `shops/${shopId}/items`
+        );
+        setItems(merged.filter((item) => !item.isDeleted));
+        setArchivedItems(merged.filter((item) => item.isDeleted));
+      },
+      warn('items')
+    );
 
-      const mergedSales = reconcile(
-        remoteSales,
-        salesRef.current,
-        queueRef.current,
-        `${root}/sales`
-      );
-      mergedSales.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setSales(mergedSales);
-
-      setCustomers(
-        reconcile(domain.customers, customersRef.current, queueRef.current, `${root}/customers`)
-      );
-
-      setCreditPayments(
-        reconcile(
-          domain.creditPayments,
-          paymentsRef.current,
+    const unsubMovements = onSnapshot(
+      collection(db, 'shops', shopId, 'stock_movements'),
+      (snap) => {
+        const remote: StockMovement[] = [];
+        snap.forEach((d) => remote.push(d.data() as StockMovement));
+        remoteRef.current.movements = remote;
+        const merged = reconcile(
+          remote,
+          movementsRef.current,
           queueRef.current,
-          `${root}/credit_payments`
-        )
-      );
+          `shops/${shopId}/stock_movements`
+        );
+        merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        setStockMovements(merged);
+      },
+      warn('stock movements')
+    );
 
-      setExpenses(
-        reconcile(remoteExpenses, expensesRef.current, queueRef.current, `${root}/expenses`)
-      );
+    const unsubConflicts = onSnapshot(
+      collection(db, 'shops', shopId, 'stock_conflicts'),
+      (snap) => {
+        const remote: StockConflict[] = [];
+        snap.forEach((d) => remote.push(d.data() as StockConflict));
+        remoteRef.current.conflicts = remote;
+        setStockConflicts(
+          reconcile(
+            remote,
+            conflictsRef.current,
+            queueRef.current,
+            `shops/${shopId}/stock_conflicts`
+          )
+        );
+      },
+      warn('stock conflicts')
+    );
 
-      if (domain.subscriptionPayments.length > 0) {
-        setSubscriptionPayments(domain.subscriptionPayments);
-      }
+    const unsubSales = onSnapshot(
+      collection(db, 'shops', shopId, 'sales'),
+      (snap) => {
+        const remote: Sale[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Sale & { isDeleted?: boolean };
+          if (!data.isDeleted) remote.push(data);
+        });
+        remoteRef.current.sales = remote;
+        const merged = reconcile(
+          remote,
+          salesRef.current,
+          queueRef.current,
+          `shops/${shopId}/sales`
+        );
+        merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setSales(merged);
+      },
+      warn('sales')
+    );
+
+    const unsubCustomers = onSnapshot(
+      collection(db, 'shops', shopId, 'customers'),
+      (snap) => {
+        const remote: Customer[] = [];
+        snap.forEach((d) => remote.push(d.data() as Customer));
+        remoteRef.current.customers = remote;
+        setCustomers(
+          reconcile(remote, customersRef.current, queueRef.current, `shops/${shopId}/customers`)
+        );
+      },
+      warn('customers')
+    );
+
+    const unsubPayments = onSnapshot(
+      collection(db, 'shops', shopId, 'credit_payments'),
+      (snap) => {
+        const remote: CreditPayment[] = [];
+        snap.forEach((d) => remote.push(d.data() as CreditPayment));
+        remoteRef.current.payments = remote;
+        setCreditPayments(
+          reconcile(
+            remote,
+            paymentsRef.current,
+            queueRef.current,
+            `shops/${shopId}/credit_payments`
+          )
+        );
+      },
+      warn('credit payments')
+    );
+
+    const unsubExpenses = onSnapshot(
+      collection(db, 'shops', shopId, 'expenses'),
+      (snap) => {
+        const remote: Expense[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Expense & { isDeleted?: boolean };
+          if (!data.isDeleted) remote.push(data);
+        });
+        remoteRef.current.expenses = remote;
+        setExpenses(
+          reconcile(remote, expensesRef.current, queueRef.current, `shops/${shopId}/expenses`)
+        );
+      },
+      warn('expenses')
+    );
+
+    return () => {
+      unsubShop();
+      unsubItems();
+      unsubMovements();
+      unsubConflicts();
+      unsubSales();
+      unsubCustomers();
+      unsubPayments();
+      unsubExpenses();
     };
-
-    const testOverride = getShopReadSyncOverrideForTests();
-    if (testOverride) {
-      const handle = testOverride.subscribeShop(shopId, {
-        onShopSnapshot: applyShopSnapshot,
-        onDomainSnapshot: applyDomainSnapshot,
-      });
-      readSyncCoordinatorRef.current = {
-        triggerNow: () => handle.triggerNow(),
-        dispose: () => handle.dispose(),
-      };
-      return () => {
-        readSyncCoordinatorRef.current = null;
-        handle.dispose();
-      };
-    }
-
-    // Supabase read path: initial load + `(cursor - 120s)` overlap-window
-    // cursor sync deduplicated by `(id, updated_at)`, with Realtime acting strictly
-    // as a debounced wake-up trigger (never as the source of truth).
-    if (isSupabaseConfigured() && user.verifiedShopId === shopId) {
-      const coordinator = createShopReadSyncCoordinator({
-        shopId,
-        runCursorPull: async () => {
-          if (shopRef.current?.id !== shopId) return;
-          const pulled = await pullShopCursorSync({ shopId });
-          if (shopRef.current?.id !== shopId) return;
-          applyShopSnapshot(pulled.shop);
-          applyDomainSnapshot(pulled.domain);
-        },
-        onError: (err) => {
-          console.warn('Supabase cursor sync:', err);
-        },
-      });
-      readSyncCoordinatorRef.current = coordinator;
-
-      return () => {
-        if (readSyncCoordinatorRef.current === coordinator) {
-          readSyncCoordinatorRef.current = null;
-        }
-        coordinator.dispose();
-      };
-    }
-
-    return undefined;
-  }, [shop?.id, user]);
+  }, [shop?.id, user, queuedShopCreate]);
 
   // A snapshot can arrive before its queued operation is acknowledged. Reapply
   // the latest server snapshots when the queue changes so a reconciled stock
@@ -785,53 +721,23 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
   }, [pendingQueue, shop?.id]);
 
-  // Live shop directory & system alerts for the platform owner (reads Supabase shops
-  // and active platform_alerts when MFA aal2 admin session is active).
+  // Live shop directory for the platform owner (was a one-off fetch, so plan
+  // extensions made on one screen never showed up on another without a reload).
   useEffect(() => {
     if (!isAdmin || !user) {
       setAllShops([]);
-      setPlatformAlerts([]);
       return;
     }
-    let cancelled = false;
-    let overrideList: Shop[] = [];
-    let supabaseList: Shop[] = [];
-    const publishMerged = () => {
-      if (cancelled) return;
-      const merged = new Map<string, Shop>();
-      for (const entry of overrideList) {
-        const clean = sanitizeCachedShop(entry);
-        if (clean) merged.set(clean.id, clean);
-      }
-      for (const entry of supabaseList) {
-        merged.set(entry.id, entry);
-      }
-      setAllShops([...merged.values()]);
-    };
-
-    void fetchAllShopsForAdmin()
-      .then((rows) => {
-        supabaseList = rows;
-        publishMerged();
-      })
-      .catch((err) => console.warn('Supabase admin shops fetch:', err));
-
-    void fetchActivePlatformAlerts()
-      .then((alerts) => {
-        if (!cancelled) setPlatformAlerts(alerts);
-      })
-      .catch((err) => console.warn('Supabase platform alerts fetch:', err));
-
-    const testOverride = getShopReadSyncOverrideForTests();
-    const unsubOverride = testOverride?.subscribeAdminShops?.((shopsList) => {
-      overrideList = shopsList;
-      publishMerged();
-    });
-
-    return () => {
-      cancelled = true;
-      unsubOverride?.();
-    };
+    const unsub = onSnapshot(
+      query(collection(db, 'shops')),
+      (snap) => {
+        const shopsList: Shop[] = [];
+        snap.forEach((d) => shopsList.push(d.data() as Shop));
+        setAllShops(shopsList);
+      },
+      (err) => console.warn('Admin shops listener:', err)
+    );
+    return () => unsub();
   }, [isAdmin, user]);
 
   useEffect(() => {
@@ -839,28 +745,23 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSubscriptionPayments([]);
       return;
     }
-    const testOverride = getShopReadSyncOverrideForTests();
-    if (testOverride?.subscribeSubscriptionPayments) {
-      return testOverride.subscribeSubscriptionPayments(
-        { userId: user.uid, isAdmin },
-        (records) => {
-          setSubscriptionPayments(records);
-        }
-      );
-    }
-
-    let cancelled = false;
-    void fetchSubscriptionPaymentsFromServer({ userId: user.uid, isAdmin })
-      .then((records) => {
-        if (!cancelled) setSubscriptionPayments(records);
-      })
-      .catch((error) => {
-        console.warn('Subscription payment history fetch:', error);
-        if (!cancelled) setSubscriptionPayments([]);
-      });
-    return () => {
-      cancelled = true;
-    };
+    const paymentCollection = collection(db, 'subscriptionPayments');
+    const paymentsQuery = isAdmin
+      ? query(paymentCollection)
+      : query(paymentCollection, where('ownerUid', '==', user.uid));
+    return onSnapshot(
+      paymentsQuery,
+      (snapshot) => {
+        const records: SubscriptionPayment[] = [];
+        snapshot.forEach((entry) => records.push(entry.data() as SubscriptionPayment));
+        records.sort((a, b) => b.submittedAtMs - a.submittedAtMs);
+        setSubscriptionPayments(records);
+      },
+      (error) => {
+        console.warn('Subscription payment history listener:', error);
+        setSubscriptionPayments([]);
+      }
+    );
   }, [isAdmin, user]);
 
   // Resolve an acknowledgement durably. When the head was reviewed, its old
@@ -916,19 +817,19 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'stock_movements',
         projected.documents
       );
-      // Write versioned ngwee caches before acknowledging the head. A crash before
-      // the queue write leaves its server marker in place, so the rebase can safely
-      // be repeated on next Sync Now.
+      // Write caches before acknowledging the head. A crash before the queue
+      // write leaves its marker in place, so the rebase can safely be repeated.
       if (changed('items')) {
-        writeVersionedDomainCollection(activeShop.id, 'items', [...nextItems, ...nextArchived]);
+        localStorage.setItem('countup_items', JSON.stringify(nextItems));
+        localStorage.setItem('countup_archived_items', JSON.stringify(nextArchived));
       }
-      if (changed('sales')) writeVersionedDomainCollection(activeShop.id, 'sales', nextSales);
+      if (changed('sales')) localStorage.setItem('countup_sales', JSON.stringify(nextSales));
       if (changed('customers'))
-        writeVersionedDomainCollection(activeShop.id, 'customers', nextCustomers);
+        localStorage.setItem('countup_customers', JSON.stringify(nextCustomers));
       if (changed('credit_payments'))
-        writeVersionedDomainCollection(activeShop.id, 'credit_payments', nextPayments);
+        localStorage.setItem('countup_payments', JSON.stringify(nextPayments));
       if (changed('stock_movements'))
-        writeVersionedDomainCollection(activeShop.id, 'stock_movements', nextMovements);
+        localStorage.setItem('countup_stock_movements', JSON.stringify(nextMovements));
       localStorage.setItem('countup_pending_queue', JSON.stringify(projected.queue));
 
       // Make the last server snapshot agree with this transaction. Otherwise a
@@ -986,9 +887,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       syncingRef.current = true;
       setIsSyncing(true);
       let synced = 0;
-      let lateKeptCount = 0;
       let failure: unknown = null;
-      let conflict: BlockedSyncState | null = null;
+      let conflict: { actionId: string; kind: 'payment' | 'void' } | null = null;
       try {
         const activeShop = shopRef.current;
         if (!activeShop)
@@ -1009,120 +909,313 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!queueBelongsToShop)
           throw new Error('Pending entries belong to a different shop. Keep this browser’s data.');
 
-        const currentUser = currentUserRef.current;
+        const queuedInitialCreate = hasQueuedOfflineShopCreate(activeShop, queueRef.current);
+        const first = queueRef.current[0];
+        const reservedUid = queuedInitialCreate ? first.reservedOwnerUid : undefined;
+        const isUnclaimedShop =
+          queuedInitialCreate && activeShop.ownerUid === activeShop.id && !reservedUid;
+        const currentUser =
+          auth.currentUser ?? (isUnclaimedShop ? await ensureFirebaseAuth(true) : null);
         if (!currentUser) {
           throw new Error(
-            'Sign in to the original shop account in Account & cloud access. Keep this browser’s data.'
+            isUnclaimedShop
+              ? 'Could not create a cloud session. Check your connection and tap Sync Now. Keep this browser’s data.'
+              : 'Sign in to the original shop account in Account & cloud access. Keep this browser’s data.'
           );
         }
-        if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id) {
+        if (
+          (reservedUid && currentUser.uid !== reservedUid) ||
+          (!reservedUid &&
+            !isUnclaimedShop &&
+            currentUser.uid !== activeShop.ownerUid &&
+            currentUser.uid !== activeShop.id)
+        ) {
           throw new Error(
             'A different account is signed in. Sign in to the original shop account; keep this browser’s data.'
           );
         }
+        if (queuedInitialCreate && !reservedUid) {
+          const next = queueRef.current.map((entry) =>
+            entry.id === first.id ? { ...entry, reservedOwnerUid: currentUser.uid } : entry
+          );
+          localStorage.setItem('countup_pending_queue', JSON.stringify(next));
+          queueRef.current = next;
+          setPendingQueue(next);
+        }
         while (queueRef.current.length > 0) {
-          if (currentUserRef.current?.uid !== currentUser.uid) {
-            throw new Error(
-              'The account changed during sync. Sign in to the original shop account.'
-            );
-          }
-          const chunk = queueRef.current.slice(0, SYNC_BATCH_CHUNK_SIZE);
-          const actionById = new Map(chunk.map((entry) => [entry.id, entry]));
-
-          const classifyBlockedHead = (
-            action: PendingSyncAction,
-            err: unknown
-          ): BlockedSyncState | null => {
-            if (err instanceof CreditBalanceConflict) {
-              const reviewable = reviewableAction(action, activeShop.id);
-              if (reviewable) return { actionId: action.id, kind: reviewable.kind };
-              return {
-                actionId: action.id,
-                kind: 'poison',
-                actionType: action.type,
-                summary: describeQueuedActionSummary(action),
-                reason: err.message,
-                queuedAt: new Date(action.timestamp).toISOString(),
-              };
-            }
-            if (isPermanentPoisonSyncError(err)) {
-              return {
-                actionId: action.id,
-                kind: 'poison',
-                actionType: action.type,
-                summary: describeQueuedActionSummary(action),
-                reason:
-                  err instanceof Error ? err.message : 'This entry was rejected by the server.',
-                queuedAt: new Date(action.timestamp).toISOString(),
-              };
-            }
-            return null;
-          };
-
-          let outcomes: Awaited<ReturnType<typeof executeSyncBatchChunk>>;
+          const action = queueRef.current[0];
           try {
-            outcomes = await executeSyncBatchChunk(activeShop.id, chunk);
-          } catch (batchErr) {
-            const head = chunk[0];
-            console.warn('Sync batch failed; entries remain queued:', head?.id, batchErr);
-            if (head) conflict = classifyBlockedHead(head, batchErr);
-            failure = batchErr;
+            if (auth.currentUser?.uid !== currentUser.uid)
+              throw new Error(
+                'The account changed during sync. Sign in to the original shop account.'
+              );
+            if (!action.id || action.id.includes('/'))
+              throw new Error('A waiting entry has an invalid ID. Keep this browser’s data.');
+            const writes = action.writes ?? [{ path: action.path, data: action.data }];
+            const writePaths = writes.map((write) => write.path);
+            const adjustmentPaths = (action.adjustments ?? []).map((entry) => entry.path);
+            if (
+              !writes.length ||
+              writes[0].path !== action.path ||
+              new Set(writePaths).size !== writes.length ||
+              new Set(adjustmentPaths).size !== adjustmentPaths.length ||
+              (action.adjustments ?? []).some(
+                (entry) =>
+                  !writePaths.includes(entry.path) ||
+                  (entry.kind === 'stock' && !writePaths.includes(entry.movement.path))
+              )
+            )
+              throw new Error(
+                'A waiting entry is incomplete or inconsistent. Keep this browser’s data.'
+              );
+            if (queuedInitialCreate && action.id === first.id) {
+              if (writes.length !== 1 || writes[0].path !== root)
+                throw new Error(
+                  'The queued shop creation cannot be verified. Keep this browser’s data.'
+                );
+              const creation = cleanForFirestore(writes[0].data) as DocumentData;
+              // A missing shop cannot be read by a non-owner under the existing
+              // rules. Try a server read first; permission-denied still lets the
+              // server's create rule decide if the subsequent write is allowed.
+              let existing: Awaited<ReturnType<typeof getDocFromServer>> | null = null;
+              try {
+                existing = await getDocFromServer(doc(db, root));
+              } catch (error) {
+                if ((error as { code?: string })?.code !== 'permission-denied') throw error;
+              }
+              if (existing?.exists()) {
+                const data = existing.data() as DocumentData;
+                if (
+                  data.id !== activeShop.id ||
+                  data.createdAt !== creation.createdAt ||
+                  data.ownerUid !== currentUser.uid
+                )
+                  throw new Error(
+                    'A different shop already uses this number. Keep this browser’s data.'
+                  );
+                // The same creation was already accepted. Do not replay stale PIN or plan fields.
+              } else {
+                const batch = writeBatch(db);
+                batch.set(
+                  doc(db, root),
+                  { ...creation, ownerUid: currentUser.uid },
+                  { merge: true }
+                );
+                await batch.commit();
+              }
+              if (
+                shopRef.current?.id === activeShop.id &&
+                shopRef.current.ownerUid === activeShop.id
+              ) {
+                const boundShop = { ...shopRef.current, ownerUid: currentUser.uid };
+                localStorage.setItem('countup_active_shop', JSON.stringify(boundShop));
+                shopRef.current = boundShop;
+                setShop(boundShop);
+              }
+              acknowledgeAction(action);
+            } else {
+              const possibleVoid = writes.some(
+                (write) =>
+                  write.path.startsWith(`${root}/sales/`) &&
+                  (write.data as { isDeleted?: boolean }).isDeleted === true
+              );
+              const voidId = voidActionSaleId(action, activeShop.id);
+              if (possibleVoid && !voidId)
+                throw new Error(
+                  'This queued sale undo cannot be verified. Keep this browser’s data.'
+                );
+              const result = await runTransaction(db, async (transaction) => {
+                const marker = doc(db, `${root}/sync_operations/${action.id}`);
+                const markerSnapshot = await transaction.get(marker);
+                if (markerSnapshot.exists()) {
+                  const markerData = markerSnapshot.data();
+                  return markerData.resolution || markerData.outcome === 'already-voided'
+                    ? await readResolutionBase(transaction, action)
+                    : undefined;
+                }
+                const adjustments = action.adjustments ?? [];
+                const [saleSnapshot, snapshots] = await Promise.all([
+                  voidId
+                    ? transaction.get(doc(db, `${root}/sales/${voidId}`))
+                    : Promise.resolve(null),
+                  Promise.all(adjustments.map((entry) => transaction.get(doc(db, entry.path)))),
+                ]);
+                if (voidId) {
+                  if (!saleSnapshot?.exists())
+                    throw new Error('The sale needed by this undo no longer exists.');
+                  const sale = saleSnapshot.data() as Sale & { isDeleted?: boolean };
+                  if (sale.isDeleted) {
+                    // Another device already undid this exact sale: its stock and
+                    // credit have already been restored, regardless of queue ID.
+                    // Read before writing so later queued previews can be rebased.
+                    const base = await readResolutionBase(transaction, action);
+                    transaction.set(marker, {
+                      appliedAt: new Date().toISOString(),
+                      outcome: 'already-voided',
+                      saleId: voidId,
+                    });
+                    return base;
+                  }
+                  const credit = adjustments.find((entry) => entry.kind === 'credit');
+                  if (
+                    (sale.paymentType === 'credit' &&
+                      (!credit ||
+                        credit.kind !== 'credit' ||
+                        credit.path !== `${root}/customers/${sale.customerId}` ||
+                        credit.deltaNgwee !== -toNgwee(sale.totalAmount))) ||
+                    (sale.paymentType !== 'credit' && credit)
+                  )
+                    throw new Error(
+                      'The sale or its customer changed; this undo needs manual review.'
+                    );
+                  for (const entry of adjustments) {
+                    if (entry.kind !== 'stock') continue;
+                    const line = sale.items?.find(
+                      (item) => item.itemId === entry.movement.data.itemId
+                    );
+                    if (!line || line.quantity !== entry.delta)
+                      throw new Error('The sale items changed; this undo needs manual review.');
+                  }
+                }
+                if (snapshots.some((snapshot) => !snapshot.exists()))
+                  throw new Error(
+                    'A stock item or customer needed by this entry no longer exists.'
+                  );
+                const calculated = adjustments.map((adjustment, index) => {
+                  const current = snapshots[index].data();
+                  if (adjustment.kind === 'credit') {
+                    const previous = toNgwee(Number(current.totalOwed));
+                    if (previous < 0 || !Number.isSafeInteger(adjustment.deltaNgwee))
+                      throw new Error('Invalid customer balance or queued credit adjustment.');
+                    const next = previous + adjustment.deltaNgwee;
+                    if (!Number.isSafeInteger(next))
+                      throw new Error('The customer balance is too large.');
+                    if (next < 0) throw new CreditBalanceConflict();
+                    return {
+                      adjustment,
+                      next: next / 100,
+                      previous: 0,
+                      shortfall: 0,
+                      staleCount: false,
+                    };
+                  }
+                  const previous = Number(current.quantity);
+                  if (
+                    !Number.isSafeInteger(previous) ||
+                    previous < 0 ||
+                    !Number.isSafeInteger(adjustment.delta) ||
+                    (adjustment.setTo !== undefined &&
+                      (!Number.isSafeInteger(adjustment.setTo) || adjustment.setTo < 0))
+                  )
+                    throw new Error('Invalid stock quantity or queued stock adjustment.');
+                  // A physical count based on stale stock cannot safely replace a
+                  // newer value. Keep the request and ask for a fresh recount.
+                  const staleCount =
+                    adjustment.setTo !== undefined &&
+                    adjustment.movement.data.previousQuantity !== previous;
+                  const requested = staleCount
+                    ? previous
+                    : (adjustment.setTo ?? previous + adjustment.delta);
+                  if (!Number.isSafeInteger(requested))
+                    throw new Error('The stock quantity is too large.');
+                  return {
+                    adjustment,
+                    previous,
+                    next: Math.max(0, requested),
+                    shortfall: Math.max(0, -requested),
+                    staleCount,
+                  };
+                });
+                const dynamicPaths = new Set(
+                  adjustments.flatMap((adjustment) =>
+                    adjustment.kind === 'stock'
+                      ? [adjustment.path, adjustment.movement.path]
+                      : [adjustment.path]
+                  )
+                );
+                for (const write of writes) {
+                  if (!dynamicPaths.has(write.path))
+                    transaction.set(
+                      doc(db, write.path),
+                      cleanForFirestore(write.data) as DocumentData,
+                      {
+                        merge: true,
+                      }
+                    );
+                }
+                for (const [index, entry] of calculated.entries()) {
+                  const adjustment = entry.adjustment;
+                  if (adjustment.kind === 'credit') {
+                    transaction.set(
+                      doc(db, adjustment.path),
+                      { totalOwed: entry.next, updatedAt: adjustment.updatedAt },
+                      { merge: true }
+                    );
+                  } else {
+                    transaction.set(
+                      doc(db, adjustment.path),
+                      cleanForFirestore({
+                        ...adjustment.metadata,
+                        quantity: entry.next,
+                        updatedAt: adjustment.updatedAt,
+                        ...(adjustment.lastSoldAt ? { lastSoldAt: adjustment.lastSoldAt } : {}),
+                      }),
+                      { merge: true }
+                    );
+                    transaction.set(
+                      doc(db, adjustment.movement.path),
+                      cleanForFirestore({
+                        ...adjustment.movement.data,
+                        ...(entry.staleCount
+                          ? {
+                              delta: 0,
+                              requestedQuantity: adjustment.setTo,
+                              recountNeeded: true,
+                              reason: `${adjustment.movement.data.reason} (not applied; recount needed)`,
+                            }
+                          : {}),
+                        previousQuantity: entry.previous,
+                        newQuantity: entry.next,
+                      })
+                    );
+                    if (entry.shortfall > 0 || entry.staleCount) {
+                      const conflictId = `${action.id}_${index}`;
+                      transaction.set(doc(db, `${root}/stock_conflicts/${conflictId}`), {
+                        id: conflictId,
+                        itemId: adjustment.movement.data.itemId,
+                        itemName: adjustment.movement.data.itemName,
+                        ...(entry.staleCount
+                          ? {
+                              kind: 'recount',
+                              observed: adjustment.movement.data.previousQuantity,
+                            }
+                          : { kind: 'shortfall' }),
+                        requested: entry.staleCount ? adjustment.setTo : Math.abs(adjustment.delta),
+                        available: entry.previous,
+                        shortfall: entry.shortfall,
+                        relatedSaleId: adjustment.movement.data.relatedSaleId || '',
+                        createdAt: adjustment.updatedAt,
+                        resolved: false,
+                      });
+                    }
+                  }
+                }
+                transaction.set(marker, { appliedAt: new Date().toISOString() });
+                return undefined;
+              });
+              acknowledgeAction(action, result);
+            }
+            setBlockedSync(null);
+            synced++;
+          } catch (error) {
+            console.warn('Sync failed; this and later entries remain queued:', action.id, error);
+            if (error instanceof CreditBalanceConflict) {
+              const reviewable = reviewableAction(action, activeShop.id);
+              if (reviewable) conflict = { actionId: action.id, kind: reviewable.kind };
+            }
+            failure = error;
             break;
           }
-
-          let stoppedOnError = false;
-          for (const outcome of outcomes) {
-            const action = actionById.get(outcome.operation_id) ?? queueRef.current[0];
-            if (!action) break;
-
-            if (!outcome.ok) {
-              const err = outcome.error ?? new Error('Sync failed.');
-              console.warn('Sync failed; this and later entries remain queued:', action.id, err);
-              conflict = classifyBlockedHead(action, err);
-              if (conflict?.kind === 'poison') {
-                void reportSyncBatchFailure({
-                  shopId: activeShop.id,
-                  actionId: action.id,
-                  actionType: action.type,
-                  reason: conflict.reason,
-                });
-              }
-              failure = err;
-              stoppedOnError = true;
-              break;
-            }
-
-            try {
-              if (currentUserRef.current?.uid !== currentUser.uid) {
-                throw new Error(
-                  'The account changed during sync. Sign in to the original shop account.'
-                );
-              }
-              const rpcRes = outcome.result ?? {};
-              if (rpcRes.offline_window_flagged === true || rpcRes.outcome === 'flagged') {
-                lateKeptCount++;
-              }
-              const needsRebase =
-                rpcRes.outcome === 'already-voided' || rpcRes.has_resolution === true;
-              const base = needsRebase
-                ? await readAuthoritativeResolutionBase(activeShop.id, action)
-                : undefined;
-              acknowledgeAction(action, base);
-              setBlockedSync(null);
-              synced++;
-            } catch (rebaseErr) {
-              console.warn(
-                'Post-commit rebase failed; marker makes next retry safe:',
-                action.id,
-                rebaseErr
-              );
-              failure = rebaseErr;
-              stoppedOnError = true;
-              break;
-            }
-          }
-
-          if (stoppedOnError) break;
         }
       } catch (error) {
         failure = error;
@@ -1130,22 +1223,10 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         syncingRef.current = false;
         setIsSyncing(false);
       }
-      if (synced > 0) {
-        void readSyncCoordinatorRef.current?.triggerNow();
-      }
-      if (lateKeptCount > 0) {
-        notify('Synced late, kept', {
-          kind: 'info',
-          detail:
-            lateKeptCount === 1
-              ? '1 offline sale synced after 72 hours and was kept in your sales book.'
-              : `${lateKeptCount} offline sales synced after 72 hours and were kept in your sales book.`,
-        });
-      }
       if (failure) {
         setBlockedSync(conflict);
         const count = queueRef.current.length;
-        const transient = isTransientSyncError(failure) || isTransientSupabaseSyncError(failure);
+        const transient = isTransientSyncError(failure);
         const reason = failure instanceof Error ? failure.message : '';
         const detail = transient
           ? 'Connection to the server failed. Entries stay on this device; CountUp will retry automatically.'
@@ -1183,7 +1264,7 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getReviewableHead = (actionId: string) => {
     const activeShop = shopRef.current;
-    const currentUser = currentUserRef.current;
+    const currentUser = auth.currentUser;
     if (!navigator.onLine || !activeShop || !currentUser)
       throw new Error('Connect and sign in to the original shop account to review this entry.');
     if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
@@ -1199,16 +1280,61 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadSyncReview = async (actionId: string): Promise<SyncConflictReview> => {
     const { activeShop, currentUser, description } = getReviewableHead(actionId);
-    const review = await loadShopSyncReviewFromServer({
-      shopId: activeShop.id,
-      actionId,
-      description,
-    });
-    if (currentUserRef.current?.uid !== currentUser.uid || queueRef.current[0]?.id !== actionId)
+    const markerPath = `shops/${activeShop.id}/sync_operations/${actionId}`;
+    const targetPath =
+      description.kind === 'payment' ? description.paymentPath : description.salePath;
+    const [marker, customer, target] = await Promise.all([
+      getDocFromServer(doc(db, markerPath)),
+      getDocFromServer(doc(db, description.customerPath)),
+      getDocFromServer(doc(db, targetPath)),
+    ]);
+    if (auth.currentUser?.uid !== currentUser.uid || queueRef.current[0]?.id !== actionId)
       throw new Error(
         'The account or waiting entry changed. Close this review and check sync again.'
       );
-    return review;
+    const customerData = customer.exists() ? customer.data() : null;
+    const serverBalance = customerData ? Number(customerData.totalOwed) : 0;
+    if (customerData && toNgwee(serverBalance) < 0)
+      throw new Error('The server has an invalid customer balance. Keep this browser’s data.');
+    const customerName =
+      typeof customerData?.name === 'string'
+        ? customerData.name
+        : description.kind === 'payment'
+          ? description.payment.customerName
+          : 'Customer';
+    const targetData = target.exists() ? target.data() : null;
+    const sale =
+      description.kind === 'void' ? (targetData as (Sale & { isDeleted?: boolean }) | null) : null;
+    const alreadyProcessed = marker.exists() || Boolean(sale?.isDeleted);
+    if (!alreadyProcessed) {
+      if (!customerData)
+        throw new Error('The customer no longer exists on the server. Keep this browser’s data.');
+      if (description.kind === 'payment' && targetData)
+        throw new Error(
+          'A payment with this ID already exists without a sync marker. Keep this browser’s data.'
+        );
+      if (
+        description.kind === 'void' &&
+        (!sale ||
+          sale.paymentType !== 'credit' ||
+          `shops/${activeShop.id}/customers/${sale.customerId}` !== description.customerPath ||
+          toNgwee(sale.totalAmount) !== description.amountNgwee)
+      )
+        throw new Error(
+          'The sale or its customer changed on the server. Keep this browser’s data.'
+        );
+    }
+    return {
+      actionId,
+      kind: description.kind,
+      customerName,
+      originalAmount: description.amountNgwee / 100,
+      serverBalance,
+      queuedAt: new Date(description.action.timestamp).toISOString(),
+      ...(sale ? { receipt: sale.receiptNumber || sale.id } : {}),
+      alreadyProcessed,
+      canRetry: !alreadyProcessed && toNgwee(serverBalance) >= description.amountNgwee,
+    };
   };
 
   const resolveSyncReview = async (
@@ -1237,30 +1363,116 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'Enter the correct payment, greater than zero and no more than the current balance.'
         );
     }
+    const root = `shops/${activeShop.id}`;
+    const markerPath = `${root}/sync_operations/${review.actionId}`;
     let committed = false;
     let outcome: 'resolved' | 'already-processed' = 'resolved';
     syncingRef.current = true;
     setIsSyncing(true);
     try {
-      outcome = await resolveShopSyncReviewOnServer({
-        shopId: activeShop.id,
-        userUid: currentUser.uid,
-        review,
-        decision,
-        description,
-        expectedBalanceNgwee: expectedBalance,
-        correctedNgwee,
+      outcome = await runTransaction(db, async (transaction) => {
+        const markerRef = doc(db, markerPath);
+        const marker = await transaction.get(markerRef);
+        if (marker.exists()) return 'already-processed' as const;
+        const targetPath =
+          description.kind === 'payment' ? description.paymentPath : description.salePath;
+        const [customerSnapshot, targetSnapshot] = await Promise.all([
+          transaction.get(doc(db, description.customerPath)),
+          transaction.get(doc(db, targetPath)),
+        ]);
+        if (!customerSnapshot.exists())
+          throw new Error('The customer no longer exists on the server.');
+        const customer = customerSnapshot.data();
+        const currentBalance = toNgwee(Number(customer.totalOwed));
+        if (currentBalance < 0) throw new Error('The server has an invalid customer balance.');
+        const target = targetSnapshot.exists() ? targetSnapshot.data() : null;
+        if (description.kind === 'void' && target?.isDeleted) {
+          transaction.set(markerRef, {
+            appliedAt: new Date().toISOString(),
+            outcome: 'already-voided',
+            saleId: description.saleId,
+          });
+          return 'already-processed' as const;
+        }
+        if (currentBalance !== expectedBalance || currentBalance >= description.amountNgwee)
+          throw new Error('The server balance changed. Close this review and check it again.');
+        if (description.kind === 'payment' && target)
+          throw new Error('A payment with this ID already exists. Keep this browser’s data.');
+        if (
+          description.kind === 'void' &&
+          (!target ||
+            target.paymentType !== 'credit' ||
+            `${root}/customers/${target.customerId}` !== description.customerPath ||
+            toNgwee(Number(target.totalAmount)) !== description.amountNgwee)
+        )
+          throw new Error(
+            'The sale or its customer changed. Close this review and check it again.'
+          );
+        const resolvedAt = new Date().toISOString();
+        const audit: SyncResolutionAudit = {
+          kind: decision.kind,
+          actionId: review.actionId,
+          resolvedAt,
+          resolvedBy: currentUser.uid,
+          customerName: typeof customer.name === 'string' ? customer.name : review.customerName,
+          customerId: description.customerPath.split('/').at(-1)!,
+          originalAmount: description.amountNgwee / 100,
+          serverBalanceBefore: currentBalance / 100,
+          queuedAt: new Date(description.action.timestamp).toISOString(),
+          ...(description.kind === 'payment'
+            ? { originalPayment: description.payment }
+            : {
+                saleId: description.saleId,
+                receipt:
+                  typeof target?.receiptNumber === 'string'
+                    ? target.receiptNumber
+                    : description.saleId,
+                stockRestorations: description.stockAdjustments.map((entry) => ({
+                  itemId: entry.movement.data.itemId,
+                  itemName: entry.movement.data.itemName,
+                  quantity: entry.delta,
+                })),
+              }),
+          ...(decision.kind === 'correct-payment' ? { correctedAmount: correctedNgwee / 100 } : {}),
+        };
+        if (description.kind === 'payment' && decision.kind === 'correct-payment') {
+          transaction.set(doc(db, description.paymentPath), {
+            ...cleanForFirestore(description.payment),
+            amount: correctedNgwee / 100,
+            syncCorrection: {
+              actionId: review.actionId,
+              originalAmount: description.payment.amount,
+              resolvedAt,
+            },
+          });
+          transaction.set(
+            doc(db, description.customerPath),
+            { totalOwed: (currentBalance - correctedNgwee) / 100, updatedAt: resolvedAt },
+            { merge: true }
+          );
+        }
+        // A cancelled payment or undo changes no financial record. The marker
+        // preserves the original entry and confirmation for the shop owner.
+        transaction.set(markerRef, {
+          appliedAt: resolvedAt,
+          hasResolution: true,
+          resolution: audit,
+        });
+        return 'resolved' as const;
       });
       committed = true;
-      if (currentUserRef.current?.uid !== currentUser.uid)
+      if (auth.currentUser?.uid !== currentUser.uid)
         throw new Error('The account changed after the review was saved.');
       // Fetch fresh authoritative data before rebasing later optimistic entries.
       // If this read or local persistence fails, the marker makes retry safe.
-      const base = await readAuthoritativeResolutionBase(activeShop.id, description.action);
+      const base = await runTransaction(db, async (transaction) => {
+        const marker = await transaction.get(doc(db, markerPath));
+        if (!marker.exists()) throw new Error('The saved review could not be verified.');
+        return readResolutionBase(transaction, description.action);
+      });
       acknowledgeAction(description.action, base);
       setBlockedSync(null);
       setLastOfflineNotice(null);
-      void readSyncCoordinatorRef.current?.triggerNow();
     } catch (error) {
       if (committed) {
         const message =
@@ -1280,58 +1492,26 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return outcome;
   };
 
-  const discardBlockedSyncAction = async (actionId: string): Promise<void> => {
-    if (syncingRef.current) throw new Error('Sync is already running. Please try again.');
-    const activeShop = shopRef.current;
-    const currentUser = currentUserRef.current;
-    if (!navigator.onLine || !activeShop || !currentUser)
-      throw new Error('Connect and sign in to the original shop account to discard this entry.');
-    if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
-      throw new Error('Only the original shop account can discard this entry.');
-    const action = queueRef.current[0];
-    if (!action || action.id !== actionId)
-      throw new Error('The waiting entry has changed. Close this dialog and check sync again.');
-
-    const reason =
-      blockedSync?.actionId === actionId && blockedSync.kind === 'poison'
-        ? blockedSync.reason
-        : 'Discarded by shop owner after sync failure';
-
-    syncingRef.current = true;
-    setIsSyncing(true);
-    try {
-      await discardPoisonSyncActionOnServer({
-        shopId: activeShop.id,
-        userUid: currentUser.uid,
-        action,
-        reason,
-      });
-      if (currentUserRef.current?.uid !== currentUser.uid)
-        throw new Error('The account changed after the discard audit was saved.');
-      const base = await readAuthoritativeResolutionBase(activeShop.id, action);
-      acknowledgeAction(action, base);
-      setBlockedSync(null);
-      setLastOfflineNotice(null);
-      void readSyncCoordinatorRef.current?.triggerNow();
-    } finally {
-      syncingRef.current = false;
-      setIsSyncing(false);
-    }
-    // Continue draining remaining valid queued entries immediately.
-    setTimeout(() => void syncNow(), 0);
-  };
-
   const loadSyncResolutionHistory = async (): Promise<SyncResolutionAudit[]> => {
     const activeShop = shopRef.current;
-    const currentUser = currentUserRef.current;
+    const currentUser = auth.currentUser;
     if (!navigator.onLine || !activeShop || !currentUser)
       throw new Error('Connect and sign in to the original shop account to view sync history.');
     if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
       throw new Error('Only the original shop account can view sync history.');
-    const history = await loadShopSyncResolutionHistoryFromServer(activeShop.id);
-    if (currentUserRef.current?.uid !== currentUser.uid || shopRef.current?.id !== activeShop.id)
+    const snapshot = await getDocsFromServer(
+      query(
+        collection(db, 'shops', activeShop.id, 'sync_operations'),
+        where('hasResolution', '==', true)
+      )
+    );
+    if (auth.currentUser?.uid !== currentUser.uid || shopRef.current?.id !== activeShop.id)
       throw new Error('The account changed while loading sync history.');
-    return history;
+    return snapshot.docs
+      .map((entry) => entry.data())
+      .filter((entry) => entry.hasResolution === true && entry.resolution)
+      .map((entry) => entry.resolution as SyncResolutionAudit)
+      .sort((a, b) => b.resolvedAt.localeCompare(a.resolvedAt));
   };
 
   const queueWrites = useCallback(
@@ -1349,7 +1529,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         writes: writes.map((write) => ({ ...write, data: cleanForFirestore(write.data) })),
         ...(adjustments?.length ? { adjustments: cleanForFirestore(adjustments) } : {}),
         timestamp: Date.now(),
-        queuedOffline: !navigator.onLine,
       };
       const next = [...queueRef.current, action];
       // Persist before reporting success. A full/disabled localStorage must not
@@ -1364,361 +1543,269 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [syncNow]
   );
 
+  const queueAction = useCallback(
+    (type: PendingSyncAction['type'], path: string, data: QueuePayload) =>
+      queueWrites(type, [{ path, data }]),
+    [queueWrites]
+  );
+
   const persistOperation = async (
     type: PendingSyncAction['type'],
     writes: { path: string; data: QueuePayload }[],
     adjustments?: SyncAdjustment[]
   ) => {
     queueWrites(type, writes, adjustments);
-    if (navigator.onLine && currentUserRef.current) void syncNow();
+    if (navigator.onLine && auth.currentUser) void syncNow();
   };
 
-  // ---------------------------------------------------------------
-  // PHASE 2 AUTHENTICATION, PIN LOCK, RECOVERY & IDENTITY
-  // ---------------------------------------------------------------
-  const lockScreen = () => {
-    if (!shopRef.current) return;
-    persistScreenLockedState(true);
-    setIsScreenLocked(true);
+  // Safe helper to obtain a Firebase auth user if Anonymous is enabled or user logged in
+  const ensureFirebaseAuth = async (retryTransient = false): Promise<User | null> => {
+    if (auth.currentUser) return auth.currentUser;
+    // Do not wait for a network-dependent auth request when creating a shop offline.
+    if (!navigator.onLine) return null;
+    try {
+      const cred = await signInAnonymously(auth);
+      return cred.user;
+    } catch (err) {
+      if (retryTransient && isTransientSyncError(err)) throw err;
+      // Anonymous authentication can be enabled in Firebase console under Auth > Sign-in method
+      console.warn(
+        'Anonymous auth note (can be enabled in Firebase console):',
+        err instanceof Error ? err.message : err
+      );
+      return null;
+    }
   };
 
-  const unlockLocalScreen = async (pin: string): Promise<LocalPinVerificationResult> => {
-    const activeShop = shopRef.current;
-    if (!activeShop) {
-      return { unlocked: false, lockedOut: false, remainingLockoutMs: 0, failedAttempts: 0 };
-    }
-    const result = await verifyLocalPin(activeShop.id, pin);
-    if (result.unlocked) {
-      persistScreenLockedState(false);
-      setIsScreenLocked(false);
-    }
-    return result;
-  };
-
-  const sendPhoneVerificationCode = async (
-    phone: string,
-    captchaToken?: string
-  ): Promise<{ phoneE164: string }> => {
-    if (!navigator.onLine) {
-      throw new Error('Connect to the internet to receive your SMS verification code.');
-    }
-    return requestPhoneOtp(phone, captchaToken);
-  };
-
-  const verifyPhoneVerificationCode = async (
-    phone: string,
-    otpCode: string
-  ): Promise<{
-    hasShop: boolean;
-    sessionVerified: boolean;
-    isLockedOut: boolean;
-    lockedUntil: string | null;
-  }> => {
-    if (!navigator.onLine) {
-      throw new Error('Connect to the internet to verify your SMS code.');
-    }
-    const identity = await verifyPhoneOtp(phone, otpCode);
-    const nextUser: AppUser = {
-      uid: identity.id,
-      phone: identity.phone,
-      email: identity.email,
-      isPlatformAdmin: identity.isPlatformAdmin,
-      verifiedShopId: identity.verifiedShopId,
-    };
-    currentUserRef.current = nextUser;
-    setUser(nextUser);
-    setAdminUid(identity.isPlatformAdmin ? identity.id : null);
-    return checkShopUnlockStatus();
-  };
-
-  const activateOpenedShop = async (openedShop: Shop, pin: string) => {
-    await saveLocalPinRecord(openedShop.id, pin);
-    persistScreenLockedState(false);
-    setIsScreenLocked(false);
-    setShop(openedShop);
-    setItems([]);
-    setArchivedItems([]);
-    setStockMovements([]);
-    setStockConflicts([]);
-    setSales([]);
-    setCustomers([]);
-    setCreditPayments([]);
-    setExpenses([]);
-  };
-
-  const completeShopRegistration = async (
-    name: string,
-    pin: string
-  ): Promise<{ recoveryCode: string; trialGranted: boolean }> => {
-    if (queueRef.current.length || syncingRef.current) {
-      throw new Error('Sync pending entries before creating another shop.');
-    }
-    if (!navigator.onLine || !currentUserRef.current) {
-      throw new Error('Verify your phone number online with the SMS code before creating a shop.');
-    }
+  // Login with phone and 4-digit PIN
+  const loginWithPhoneAndPin = async (phone: string, pin: string): Promise<boolean> => {
     setIsLoading(true);
     try {
-      const {
-        shop: createdShop,
-        recoveryCode,
-        trialGranted,
-      } = await registerShopWithServer({
-        name,
-        pin,
-      });
-      await activateOpenedShop(createdShop, pin);
-      setPendingRecoveryCode(recoveryCode);
-      if (currentUserRef.current) {
-        const updatedUser: AppUser = {
-          ...currentUserRef.current,
-          verifiedShopId: createdShop.id,
-        };
-        currentUserRef.current = updatedUser;
-        setUser(updatedUser);
+      const cleanPhone = normalizeZambianPhone(phone);
+
+      // Ensure an authenticated Firebase session exists if enabled
+      const currentUser = await ensureFirebaseAuth();
+
+      // Check both the canonical ID and IDs created by older international-format registrations.
+      if (navigator.onLine && currentUser) {
+        for (const shopId of shopIdsForPhone(cleanPhone)) {
+          try {
+            const shopSnap = await getDoc(doc(db, 'shops', shopId));
+            if (shopSnap.exists()) {
+              const shopData = shopSnap.data() as Shop;
+              if (shopData.pin === pin) {
+                setShop(shopData);
+                setIsLoading(false);
+                return true;
+              }
+            }
+          } catch (e) {
+            console.warn('Remote check note:', e);
+          }
+        }
       }
-      return { recoveryCode, trialGranted };
-    } finally {
+
+      // Check local cache if offline or first time
+      const cached = localStorage.getItem('countup_active_shop');
+      if (cached) {
+        const localShop = JSON.parse(cached) as Shop;
+        if (normalizeZambianPhone(localShop.ownerPhone) === cleanPhone && localShop.pin === pin) {
+          setShop(localShop);
+          setIsLoading(false);
+          return true;
+        }
+      }
+
       setIsLoading(false);
+      return false;
+    } catch (error) {
+      console.error('Login error:', error);
+      setIsLoading(false);
+      return false;
     }
   };
 
-  const unlockCloudShopWithPin = async (pin: string): Promise<boolean> => {
+  // Register a new shop (starts 30-day free trial automatically)
+  const registerNewShop = async (name: string, phone: string, pin: string): Promise<boolean> => {
     if (queueRef.current.length || syncingRef.current) {
-      throw new Error('Sync pending entries before opening another shop.');
-    }
-    if (!navigator.onLine || !currentUserRef.current) {
-      throw new Error('Verify your phone number online first.');
+      notify('Sync pending entries before creating another shop', { kind: 'error' });
+      return false;
     }
     setIsLoading(true);
     try {
-      const { shop: unlockedShop } = await unlockShopSessionWithPin(pin);
-      await activateOpenedShop(unlockedShop, pin);
-      if (currentUserRef.current) {
-        const updatedUser: AppUser = {
-          ...currentUserRef.current,
-          verifiedShopId: unlockedShop.id,
-        };
-        currentUserRef.current = updatedUser;
-        setUser(updatedUser);
+      const cleanPhone = normalizeZambianPhone(phone);
+      const shopId = `shop_${cleanPhone}`;
+
+      const currentUser = await ensureFirebaseAuth();
+
+      // Check both current and legacy ID formats without changing existing shops.
+      if (navigator.onLine && currentUser) {
+        for (const candidateId of shopIdsForPhone(cleanPhone)) {
+          try {
+            const existing = await getDoc(doc(db, 'shops', candidateId));
+            if (existing.exists()) {
+              setIsLoading(false);
+              return false;
+            }
+          } catch (e) {
+            console.warn('Shop availability check note:', e);
+          }
+        }
       }
+
+      const now = new Date();
+      const trialEnds = new Date(now.getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
+
+      const newShop: Shop = {
+        id: shopId,
+        name: name.trim(),
+        ownerPhone: cleanPhone,
+        ownerUid: currentUser?.uid || shopId,
+        pin: pin.trim(),
+        planStatus: 'trial',
+        planType: 'trial',
+        createdAt: now.toISOString(),
+        trialEndsAt: trialEnds.toISOString(),
+        trialEndsAtMs: trialEnds.getTime(),
+        planExpiryDate: trialEnds.toISOString(),
+        planExpiryAtMs: trialEnds.getTime(),
+        salesAccessUntilMs: trialEnds.getTime() + GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000,
+        isDeactivated: false,
+        currency: 'ZMW',
+      };
+
+      // Persist to Firestore or queue for the next connection before entering the shop.
+      // If localStorage is full, the UI must not claim that an offline shop was saved.
+      if (navigator.onLine && currentUser) {
+        try {
+          await setDoc(doc(db, 'shops', shopId), newShop);
+        } catch (e) {
+          const code = (e as { code?: string })?.code;
+          if (code === 'permission-denied') {
+            // The number is already registered to another account. Do not enter
+            // a shop that cannot be saved to the cloud.
+            setIsLoading(false);
+            return false;
+          }
+          console.warn('Shop creation sync note, queued for retry:', e);
+          queueAction('item', `shops/${shopId}`, newShop);
+        }
+      } else {
+        queueAction('item', `shops/${shopId}`, newShop);
+      }
+
+      // A new shop starts with an empty stock book — the owner enters their own items.
+      setShop(newShop);
+      setItems([]);
+      setArchivedItems([]);
+      setStockMovements([]);
+      setStockConflicts([]);
+      setSales([]);
+      setCustomers([]);
+      setCreditPayments([]);
+      setExpenses([]);
+      setIsLoading(false);
       return true;
-    } finally {
+    } catch (error) {
+      console.error('Registration error:', error);
       setIsLoading(false);
+      return false;
     }
   };
 
-  const recoverCloudShopPin = async (
-    recoveryCode: string,
-    newPin: string
-  ): Promise<{ recoveryCode: string }> => {
-    if (queueRef.current.length || syncingRef.current) {
-      throw new Error('Sync pending entries before recovering another shop.');
-    }
-    if (!navigator.onLine || !currentUserRef.current) {
-      throw new Error('Verify your phone number online first.');
-    }
-    setIsLoading(true);
-    try {
-      const { shop: recoveredShop, recoveryCode: nextRecoveryCode } = await recoverShopPinWithCode({
-        recoveryCode,
-        newPin,
-      });
-      await activateOpenedShop(recoveredShop, newPin);
-      setPendingRecoveryCode(nextRecoveryCode);
-      if (currentUserRef.current) {
-        const updatedUser: AppUser = {
-          ...currentUserRef.current,
-          verifiedShopId: recoveredShop.id,
-        };
-        currentUserRef.current = updatedUser;
-        setUser(updatedUser);
-      }
-      return { recoveryCode: nextRecoveryCode };
-    } finally {
-      setIsLoading(false);
-    }
+  const linkEmailAccount = async (email: string, password: string) => {
+    const current = auth.currentUser;
+    if (!navigator.onLine || !current || !shop)
+      throw new Error('Connect to the internet and sign in to your shop first.');
+    if (queueRef.current.length || syncingRef.current)
+      throw new Error('Sync all pending entries before enabling account access.');
+    if (current.uid !== shop.ownerUid && current.uid !== shop.id)
+      throw new Error('Only the shop owner can enable account access.');
+    if (!current.isAnonymous) throw new Error('This Firebase account is already linked.');
+    if (!email.trim() || password.length < 8)
+      throw new Error('Enter an email and a password of at least 8 characters.');
+    // Linking preserves the Firebase UID: existing Firestore ownership and admin
+    // grants do not change, and no PIN or password is copied into the database.
+    const result = await linkWithCredential(
+      current,
+      EmailAuthProvider.credential(email.trim(), password)
+    );
+    setUser(result.user);
+    localStorage.removeItem('countup_legacy_uid');
   };
 
-  const completeApprovedCloudPinReset = async (
-    newPin: string
-  ): Promise<{ recoveryCode: string }> => {
-    if (queueRef.current.length || syncingRef.current) {
-      throw new Error('Sync pending entries before completing PIN reset.');
-    }
-    if (!navigator.onLine || !currentUserRef.current) {
-      throw new Error('Verify your phone number online first.');
-    }
-    setIsLoading(true);
-    try {
-      const { shop: resetShop, recoveryCode: nextRecoveryCode } =
-        await completeApprovedShopPinReset({ newPin });
-      await activateOpenedShop(resetShop, newPin);
-      setPendingRecoveryCode(nextRecoveryCode);
-      if (currentUserRef.current) {
-        const updatedUser: AppUser = {
-          ...currentUserRef.current,
-          verifiedShopId: resetShop.id,
-        };
-        currentUserRef.current = updatedUser;
-        setUser(updatedUser);
-      }
-      return { recoveryCode: nextRecoveryCode };
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const signOutOtherDevices = async (): Promise<{ revokedCount: number }> => {
-    if (!navigator.onLine || !shopRef.current || !currentUserRef.current) {
-      throw new Error('Connect to the internet to sign out other devices.');
-    }
-    return revokeOtherShopSessionsOnServer();
-  };
-
-  const cancelPendingPinReset = async (): Promise<boolean> => {
-    if (!navigator.onLine || !shopRef.current || !currentUserRef.current) {
-      throw new Error('Connect to the internet to cancel a pending PIN reset.');
-    }
-    const cancelled = await cancelPendingPinResetOnServer();
-    if (cancelled) {
-      setShop((prev) => (prev ? { ...prev, securityNotice: null, securityNoticeAt: null } : null));
-    }
-    return cancelled;
-  };
-
-  // Reauthenticate an already-open shop via SMS OTP without dropping its pending queue.
-  // Only its original ownerUid may resume sync; a different account is signed back out.
-  const restoreShopSessionWithOtp = async (otpCode: string) => {
-    const activeShop = shopRef.current;
-    if (!navigator.onLine || !activeShop) {
+  // Reauthenticate an already-open shop without dropping its pending queue.
+  // Only its original UID may resume sync; a different account is signed back out.
+  const restoreShopAccount = async (email: string, password: string) => {
+    if (!navigator.onLine || !shop)
       throw new Error('Connect to the internet and open the original shop first.');
-    }
-    const isOriginalOwner = (uid: string) => uid === activeShop.ownerUid || uid === activeShop.id;
-    if (currentUserRef.current) {
-      if (isOriginalOwner(currentUserRef.current.uid)) return;
+    if (!email.trim() || !password) throw new Error('Enter your linked email and password.');
+    const reservedUid = hasQueuedOfflineShopCreate(shop, queueRef.current)
+      ? queueRef.current[0].reservedOwnerUid
+      : undefined;
+    const isOriginalOwner = (uid: string) =>
+      reservedUid ? uid === reservedUid : uid === shop.ownerUid || uid === shop.id;
+    const current = auth.currentUser;
+    if (current) {
+      if (isOriginalOwner(current.uid)) return;
       throw new Error(
         'Another account is active on this device. Keep this browser’s data and contact support before changing accounts.'
       );
     }
-    const identity = await verifyPhoneOtp(activeShop.ownerPhone, otpCode);
-    if (!isOriginalOwner(identity.id)) {
-      await signOutSupabase().catch(() => undefined);
-      currentUserRef.current = null;
-      setUser(null);
+    const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+    if (!isOriginalOwner(result.user.uid)) {
+      if (auth.currentUser?.uid === result.user.uid) await signOut(auth);
       throw new Error(
-        'This phone account does not match the original shop. Your pending entries remain safe on this device.'
+        'This email is not linked to the original shop. Your pending entries remain on this device.'
       );
     }
-    const restoredUser: AppUser = {
-      uid: identity.id,
-      phone: identity.phone,
-      email: identity.email,
-      isPlatformAdmin: identity.isPlatformAdmin,
-      verifiedShopId: identity.verifiedShopId,
-    };
-    currentUserRef.current = restoredUser;
-    setUser(restoredUser);
-    setAdminUid(identity.isPlatformAdmin ? identity.id : null);
+    if (auth.currentUser?.uid !== result.user.uid)
+      throw new Error('The account changed during sign-in. Please try again.');
+    setUser(result.user);
+    localStorage.removeItem('countup_legacy_uid');
   };
 
   const checkAccountSwitch = () => {
     if (!navigator.onLine)
       throw new Error('Connect to the internet to verify administrator access.');
-    if (shopRef.current)
-      throw new Error('Sign out of the shop before switching to platform administration.');
+    if (shop) throw new Error('Sign out of the shop before switching to platform administration.');
     if (queueRef.current.length || syncingRef.current)
       throw new Error('Sync pending shop entries before switching accounts.');
-  };
-
-  const applyAuthenticatedAdmin = (identity: AuthUserIdentity) => {
-    const adminUser: AppUser = {
-      uid: identity.id,
-      phone: identity.phone,
-      email: identity.email,
-      isPlatformAdmin: true,
-      verifiedShopId: identity.verifiedShopId,
-    };
-    currentUserRef.current = adminUser;
-    setUser(adminUser);
-    setAdminUid(identity.id);
-  };
-
-  const loginAsAdmin = async (
-    email: string,
-    password: string
-  ): Promise<AdminSignInOutcome | void> => {
-    checkAccountSwitch();
-    const outcome = (await signInPlatformAdmin(email.trim(), password)) as
-      AdminSignInOutcome | AuthUserIdentity;
-    if ('status' in outcome) {
-      if (outcome.status === 'authenticated') {
-        applyAuthenticatedAdmin(outcome.identity);
-        return;
-      }
-      return outcome;
+    if (
+      auth.currentUser?.isAnonymous &&
+      localStorage.getItem('countup_legacy_uid') === auth.currentUser.uid
+    ) {
+      throw new Error(
+        'This device still has a shop identity. Reopen that shop before switching accounts.'
+      );
     }
-    // Backwards-compatible fallback when test doubles return AuthUserIdentity directly
-    applyAuthenticatedAdmin(outcome);
   };
 
-  const completeAdminMfa = async (factorId: string, totpCode: string): Promise<void> => {
+  const loginAsAdmin = async (email: string, password: string): Promise<void> => {
     checkAccountSwitch();
-    const identity = await completePlatformAdminMfa(factorId, totpCode);
-    applyAuthenticatedAdmin(identity);
+    const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+    try {
+      const verify = httpsCallable<undefined, { isAdmin: boolean }>(
+        functions,
+        'verifyPlatformAdmin'
+      );
+      const response = await verify(undefined);
+      if (!response.data.isAdmin) throw new Error('Administrator access could not be verified.');
+      await result.user.getIdToken(true);
+      const token = await result.user.getIdTokenResult();
+      if (token.claims.platformAdmin !== true)
+        throw new Error('Administrator access could not be verified. Sign in again.');
+      setUser(result.user);
+      setAdminUid(result.user.uid);
+    } catch (error) {
+      if (auth.currentUser?.uid === result.user.uid) await signOut(auth);
+      setAdminUid(null);
+      throw error;
+    }
   };
 
   const cancelEmailLogin = async () => {
-    if (!shopRef.current && currentUserRef.current) {
-      await signOutSupabase().catch(() => undefined);
-      currentUserRef.current = null;
-      setUser(null);
-      setAdminUid(null);
-    }
-  };
-
-  const acknowledgeSecurityNotice = async () => {
-    if (!navigator.onLine || !shopRef.current || !currentUserRef.current) {
-      throw new Error('Connect to the internet to dismiss this security alert.');
-    }
-    await acknowledgeShopSecurityNoticeOnServer();
-    setShop((prev) => (prev ? { ...prev, securityNotice: null, securityNoticeAt: null } : null));
-  };
-
-  const acknowledgeSubscriptionNotice = async () => {
-    if (!navigator.onLine || !currentUserRef.current) {
-      throw new Error('Connect to the internet to dismiss this subscription notice.');
-    }
-    await acknowledgeShopSubscriptionNoticeOnServer();
-    setShop((prev) =>
-      prev ? { ...prev, subscriptionNotice: null, subscriptionNoticeAt: null } : null
-    );
-  };
-
-  const refreshAdminAndPaymentsAfterMutation = async () => {
-    const activeUser = currentUserRef.current;
-    const testOverride = getShopReadSyncOverrideForTests();
-    if (!testOverride?.subscribeSubscriptionPayments && activeUser) {
-      const records = await fetchSubscriptionPaymentsFromServer({
-        userId: activeUser.uid,
-        isAdmin,
-      }).catch(() => null);
-      if (records) setSubscriptionPayments(records);
-    }
-    if (isAdmin) {
-      const [rows, alerts] = await Promise.all([
-        fetchAllShopsForAdmin().catch(() => null),
-        fetchActivePlatformAlerts().catch(() => null),
-      ]);
-      if (rows && rows.length > 0) {
-        setAllShops((prev) => {
-          const merged = new Map(prev.map((entry) => [entry.id, entry]));
-          for (const row of rows) merged.set(row.id, row);
-          return [...merged.values()];
-        });
-      }
-      if (alerts) setPlatformAlerts(alerts);
-    }
-    void readSyncCoordinatorRef.current?.triggerNow();
+    if (!shop && auth.currentUser && !auth.currentUser.isAnonymous) await signOut(auth);
   };
 
   const submitSubscriptionPayment = async (input: {
@@ -1727,35 +1814,31 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     transactionReference: string;
     payerPhone: string;
     paymentDate: string;
-    operationId?: string;
   }) => {
     if (!navigator.onLine || !user || !shop)
       throw new Error(
         'Connect to the internet and sign in to your shop before submitting payment.'
       );
-    if (queueRef.current.length || syncingRef.current)
+    if (queueRef.current.length || syncingRef.current || queuedShopCreate)
       throw new Error('Sync the shop and pending entries before submitting a payment.');
     if (user.uid !== shop.ownerUid && user.uid !== shop.id)
       throw new Error('Only the shop owner can submit a subscription payment.');
     await submitManualSubscriptionPayment({ ...input, shopId: shop.id });
-    await refreshAdminAndPaymentsAfterMutation();
   };
 
   const reviewSubscriptionPayment = async (input: {
     paymentId: string;
     decision: 'approve' | 'reject';
     reason?: string;
-    operationId?: string;
   }) => {
     if (!isAdmin || !user) throw new Error('Administrator access is required.');
     await reviewManualSubscriptionPayment(input);
-    await refreshAdminAndPaymentsAfterMutation();
   };
 
   const resetEmailPassword = async (email: string) => {
     if (!navigator.onLine) throw new Error('Password recovery needs an internet connection.');
     if (!email.trim()) throw new Error('Enter your email address first.');
-    await sendAdminPasswordReset(email.trim());
+    await sendPasswordResetEmail(auth, email.trim());
   };
 
   const logout = async () => {
@@ -1766,18 +1849,8 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       return;
     }
-    const activeShopId = shopRef.current?.id;
-    if (currentUserRef.current) {
-      await signOutSupabase().catch(() => undefined);
-      currentUserRef.current = null;
-      setUser(null);
-      setAdminUid(null);
-    }
-    if (activeShopId) clearLocalPinRecord(activeShopId);
-    persistScreenLockedState(false);
-    setIsScreenLocked(false);
-    setPendingRecoveryCode(null);
-    clearVersionedShopCache(activeShopId);
+    if (auth.currentUser && !auth.currentUser.isAnonymous) await signOut(auth);
+    localStorage.removeItem('countup_active_shop');
     setShop(null);
     setItems([]);
     setArchivedItems([]);
@@ -1789,61 +1862,70 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setExpenses([]);
   };
 
-  // Change the shop PIN on the server (with PBKDF2 + pepper) and update the
-  // local salted PBKDF2 screen-lock hash. Plain-text PINs are never persisted.
+  // Change the shop PIN (verifies the current one first)
   const changePin = async (currentPin: string, newPin: string): Promise<boolean> => {
-    const activeShop = shopRef.current;
-    if (!activeShop) return false;
-    if (!/^\d{4}$/.test(currentPin.trim()) || !/^\d{4}$/.test(newPin)) return false;
-    if (!navigator.onLine || !currentUserRef.current) {
-      notify('Connect to the internet to change your shop PIN', { kind: 'error' });
-      return false;
-    }
+    if (!shop || !shop.pin) return false;
+    if (!/^\d{4}$/.test(newPin)) return false;
+    if (shop.pin !== currentPin.trim()) return false;
 
-    try {
-      await changeShopPinOnServer({
-        currentPin: currentPin.trim(),
-        newPin,
-      });
-      await saveLocalPinRecord(activeShop.id, newPin);
-      return true;
-    } catch {
-      return false;
-    }
+    // Keep PIN changes in FIFO order with earlier offline changes, and persist
+    // the queue before reporting success or updating the local shop.
+    await persistOperation('item', [{ path: `shops/${shop.id}`, data: { pin: newPin } }]);
+    setShop({ ...shop, pin: newPin });
+    return true;
   };
 
-  // Permanently delete the shop and all of its records via the server Edge Function,
-  // which verifies shop name + PIN and retains the phone trial/suspension record.
-  const deleteShopAccount = async (confirmationName: string, pin: string): Promise<boolean> => {
+  // Permanently delete the shop document and all of its records.
+  // Backs the deletion right promised in the Privacy Policy.
+  const deleteShopAccount = async (): Promise<boolean> => {
     if (
-      !shopRef.current ||
+      !shop ||
       !navigator.onLine ||
-      !currentUserRef.current ||
+      !auth.currentUser ||
       queueRef.current.length ||
       syncingRef.current
     )
       return false;
-    const activeShop = shopRef.current;
+    const activeShop = shop;
     setIsLoading(true);
 
     try {
-      await deleteShopOnServer({
-        confirmationName,
-        pin,
-      });
-
-      await signOutSupabase().catch(() => undefined);
-      currentUserRef.current = null;
-      setUser(null);
-      setAdminUid(null);
-      clearLocalPinRecord(activeShop.id);
-      persistScreenLockedState(false);
-      setIsScreenLocked(false);
-      setPendingRecoveryCode(null);
+      const subcollections = [
+        'items',
+        'sales',
+        'customers',
+        'credit_payments',
+        'expenses',
+        'stock_movements',
+        'stock_conflicts',
+        'sync_operations',
+      ];
+      for (const name of subcollections) {
+        const snap = await getDocs(collection(db, 'shops', activeShop.id, name));
+        // Wait for every request in this group, even if one fails. Otherwise
+        // a rejected Promise.all can leave other deletions running while the
+        // user is told they may retry or continue working.
+        const results = await Promise.allSettled(snap.docs.map((d) => deleteDoc(d.ref)));
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
+      }
+      await deleteDoc(doc(db, 'shops', activeShop.id));
 
       // Clear local records only after the remote deletion completes.
-      clearVersionedShopCache(activeShop.id);
-      localStorage.removeItem('countup_pending_queue');
+      for (const key of [
+        'countup_active_shop',
+        'countup_items',
+        'countup_archived_items',
+        'countup_stock_movements',
+        'countup_stock_conflicts',
+        'countup_sales',
+        'countup_customers',
+        'countup_payments',
+        'countup_expenses',
+        'countup_pending_queue',
+      ]) {
+        localStorage.removeItem(key);
+      }
       setShop(null);
       setItems([]);
       setArchivedItems([]);
@@ -1857,13 +1939,11 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setPendingQueue([]);
       return true;
     } catch (e) {
+      // Earlier deletions cannot be rolled back, so never claim nothing changed.
       console.error('Shop deletion failed:', e);
       notify('Shop deletion did not finish', {
         kind: 'error',
-        detail:
-          e instanceof Error && e.message
-            ? e.message
-            : 'Could not delete the shop. Check your PIN, connection, and try again.',
+        detail: 'Some records may already have been removed. Reconnect and try again.',
       });
       return false;
     } finally {
@@ -2522,248 +2602,89 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setExpenses(expensesRef.current);
   };
 
-  const ensureOwnerCanImportBackup = () => {
-    const currentUser = currentUserRef.current;
-    const activeShop = shopRef.current;
-    if (!activeShop || !currentUser || !navigator.onLine)
+  /** Import is an online, all-or-nothing transaction. No existing document is overwritten. */
+  const importLegacyBackup = async (raw: string): Promise<LegacyBackupImport> => {
+    if (!shop || !auth.currentUser || !navigator.onLine)
       throw new Error('Connect to the internet and sign in as the shop owner to import.');
-    if (currentUser.uid !== activeShop.ownerUid && currentUser.uid !== activeShop.id)
+    if (auth.currentUser.uid !== shop.ownerUid && auth.currentUser.uid !== shop.id)
       throw new Error('Only the shop owner can import a backup.');
     if (queueRef.current.length || syncingRef.current)
       throw new Error('Sync all pending CountUp entries before importing a backup.');
-    return { activeShop, currentUser };
-  };
-
-  const previewShopBackup = async (raw: string): Promise<BackupPreviewOutcome> => {
-    const { activeShop } = ensureOwnerCanImportBackup();
-    const prepared = prepareShopBackupImport(raw, activeShop.id);
-    const fileSha256 = await computeBackupSha256Hex(raw);
-    const operationId = `backup_preview_${fileSha256.slice(0, 40)}`;
-    const serverPreview = await previewShopBackupOnServer({
-      shopId: activeShop.id,
-      operationId,
-      fileSha256,
-      backupJson: prepared.parsedJson,
-      prepared,
-      rawByteLength: new TextEncoder().encode(raw).byteLength,
-    });
-    return {
-      prepared,
-      preview: serverPreview.preview ?? prepared.preview,
-      fileSha256,
-      shopHasExistingData: serverPreview.shopHasExistingData,
-      alreadyImported: serverPreview.alreadyImported,
-    };
-  };
-
-  const restoreShopBackup = async (
-    raw: string,
-    options?: { allowNonEmptyShop?: boolean; operationId?: string }
-  ): Promise<BackupRestoreOutcome> => {
-    const { activeShop } = ensureOwnerCanImportBackup();
-    const prepared = prepareShopBackupImport(raw, activeShop.id);
-    const fileSha256 = await computeBackupSha256Hex(raw);
-    const operationId = options?.operationId ?? `backup_${fileSha256.slice(0, 48)}`;
-    const serverResult = await importShopBackupOnServer({
-      shopId: activeShop.id,
-      operationId,
-      fileSha256,
-      backupJson: prepared.parsedJson,
-      prepared,
-      rawByteLength: new TextEncoder().encode(raw).byteLength,
-      allowNonEmptyShop: Boolean(options?.allowNonEmptyShop),
-    });
-
-    if (serverResult.status === 'imported') {
-      const merge = <T extends { id: string }>(old: T[], added: T[]) => [
-        ...added,
-        ...old.filter((entry) => !added.some((next) => next.id === entry.id)),
-      ];
-      itemsRef.current = merge(
-        itemsRef.current,
-        prepared.items.filter((item) => !item.isDeleted)
-      );
-      setItems(itemsRef.current);
-      archivedItemsRef.current = merge(
-        archivedItemsRef.current,
-        prepared.items.filter((item) => item.isDeleted)
-      );
-      setArchivedItems(archivedItemsRef.current);
-      customersRef.current = merge(customersRef.current, prepared.customers);
-      setCustomers(customersRef.current);
-      salesRef.current = merge(
-        salesRef.current,
-        prepared.sales.filter((sale) => !(sale as Sale & { isDeleted?: boolean }).isDeleted)
-      );
-      setSales(salesRef.current);
-      paymentsRef.current = merge(paymentsRef.current, prepared.creditPayments);
-      setCreditPayments(paymentsRef.current);
-      movementsRef.current = merge(movementsRef.current, prepared.stockMovements);
-      setStockMovements(movementsRef.current);
-      expensesRef.current = merge(
-        expensesRef.current,
-        prepared.expenses.filter(
-          (expense) => !(expense as Expense & { isDeleted?: boolean }).isDeleted
-        )
-      );
-      setExpenses(expensesRef.current);
-      void readSyncCoordinatorRef.current?.triggerNow();
-    }
-
-    return {
-      status: serverResult.status === 'duplicate' ? 'duplicate' : 'imported',
-      idempotent: serverResult.idempotent,
-      alreadyImported: serverResult.alreadyImported,
-      preview: serverResult.preview ?? prepared.preview,
-      imported: prepared,
-    };
-  };
-
-  /** Legacy v1 helper routed through the atomic server `import_shop_backup` RPC. */
-  const importLegacyBackup = async (raw: string): Promise<LegacyBackupImport> => {
-    ensureOwnerCanImportBackup();
-    const legacy = prepareLegacyBackupImport(raw, shopRef.current!.id);
-    const totalWrites =
-      legacy.items.length +
-      legacy.customers.length +
-      legacy.sales.length +
-      legacy.creditPayments.length +
-      legacy.stockMovements.length;
-    if (!totalWrites) return legacy;
-    const outcome = await restoreShopBackup(raw, { allowNonEmptyShop: true });
-    if (outcome.alreadyImported) {
+    const prepared = prepareLegacyBackupImport(raw, shop.id);
+    const writes: { path: string; data: object }[] = [
+      ...prepared.items.map((item) => ({ path: `shops/${shop.id}/items/${item.id}`, data: item })),
+      ...prepared.customers.map((customer) => ({
+        path: `shops/${shop.id}/customers/${customer.id}`,
+        data: customer,
+      })),
+      ...prepared.sales.map((sale) => ({ path: `shops/${shop.id}/sales/${sale.id}`, data: sale })),
+      ...prepared.creditPayments.map((payment) => ({
+        path: `shops/${shop.id}/credit_payments/${payment.id}`,
+        data: payment,
+      })),
+      ...prepared.stockMovements.map((movement) => ({
+        path: `shops/${shop.id}/stock_movements/${movement.id}`,
+        data: movement,
+      })),
+    ];
+    if (writes.length > 400)
       throw new Error(
-        'This backup file was already imported into this shop. Nothing was duplicated.'
+        'This backup contains more than 400 records. Import is limited to 400 records so it can be atomic; contact support before importing a larger backup.'
       );
-    }
-    return legacy;
+    if (!writes.length) return prepared;
+    await runTransaction(db, async (transaction) => {
+      const refs = writes.map((write) => doc(db, write.path));
+      const existing = await Promise.all(refs.map((ref) => transaction.get(ref)));
+      if (existing.some((snapshot) => snapshot.exists()))
+        throw new Error('Some of these records are already in this shop. Nothing was imported.');
+      writes.forEach((write, index) =>
+        transaction.set(refs[index], cleanForFirestore(write.data) as DocumentData)
+      );
+    });
+    const merge = <T extends { id: string }>(old: T[], added: T[]) => [
+      ...added,
+      ...old.filter((entry) => !added.some((next) => next.id === entry.id)),
+    ];
+    itemsRef.current = merge(
+      itemsRef.current,
+      prepared.items.filter((item) => !item.isDeleted)
+    );
+    setItems(itemsRef.current);
+    archivedItemsRef.current = merge(
+      archivedItemsRef.current,
+      prepared.items.filter((item) => item.isDeleted)
+    );
+    setArchivedItems(archivedItemsRef.current);
+    customersRef.current = merge(customersRef.current, prepared.customers);
+    setCustomers(customersRef.current);
+    salesRef.current = merge(salesRef.current, prepared.sales);
+    setSales(salesRef.current);
+    paymentsRef.current = merge(paymentsRef.current, prepared.creditPayments);
+    setCreditPayments(paymentsRef.current);
+    movementsRef.current = merge(movementsRef.current, prepared.stockMovements);
+    setStockMovements(movementsRef.current);
+    return prepared;
   };
 
   // Admin changes are server callable operations. No admin action is trusted
   // based on local UI state or queued for later offline replay.
   const adminTarget = (shopId: string) => {
     if (!navigator.onLine) throw new Error('Connect to the internet to manage shops.');
-    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid)
+    if (!isAdmin || !user || auth.currentUser?.uid !== user.uid)
       throw new Error('Admin access is required. Sign in again.');
     const target = allShops.find((s) => s.id === shopId) || (shop?.id === shopId ? shop : null);
     if (!target) throw new Error('Shop not found. Refresh the list and try again.');
     return target;
   };
-  const adminExtendShop = async (shopId: string, days: number, operationId?: string) => {
+  const adminExtendShop = async (shopId: string, days: number) => {
     adminTarget(shopId);
     if (!Number.isInteger(days) || days <= 0) throw new Error('Enter a valid number of days.');
-    await extendShopSubscription({ shopId, days, operationId });
-    await refreshAdminAndPaymentsAfterMutation();
+    await extendShopSubscription({ shopId, days });
   };
 
-  const adminToggleDeactivate = async (shopId: string, operationId?: string) => {
+  const adminToggleDeactivate = async (shopId: string) => {
     const targetShop = adminTarget(shopId);
-    await setShopSuspended({
-      shopId,
-      suspended: !targetShop.isDeactivated,
-      operationId,
-    });
-    await refreshAdminAndPaymentsAfterMutation();
-  };
-
-  const adminResetPinLockout = async (shopId: string, identityCheckNote: string) => {
-    adminTarget(shopId);
-    await adminResetShopPinLockout({ shopId, identityCheckNote });
-    const rows = await fetchAllShopsForAdmin().catch(() => null);
-    if (rows) {
-      setAllShops((prev) => {
-        const merged = new Map(prev.map((entry) => [entry.id, entry]));
-        for (const row of rows) merged.set(row.id, row);
-        return [...merged.values()];
-      });
-    }
-  };
-
-  const adminInitiatePinReset = async (shopId: string, identityCheckNote: string) => {
-    adminTarget(shopId);
-    const res = await adminInitiateShopPinReset({ shopId, identityCheckNote });
-    const rows = await fetchAllShopsForAdmin().catch(() => null);
-    if (rows) {
-      setAllShops((prev) => {
-        const merged = new Map(prev.map((entry) => [entry.id, entry]));
-        for (const row of rows) merged.set(row.id, row);
-        return [...merged.values()];
-      });
-    }
-    return res;
-  };
-
-  // Best-effort runtime error telemetry for verified shop sessions (redacts PINs/tokens).
-  useEffect(() => {
-    if (!hasShopSession || !shop?.id) return;
-    const activeShopId = shop.id;
-    const onWindowError = (event: ErrorEvent) => {
-      void reportUnexpectedClientError({
-        shopId: activeShopId,
-        source: 'window.error',
-        error: event.error ?? event.message,
-      });
-    };
-    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      void reportUnexpectedClientError({
-        shopId: activeShopId,
-        source: 'unhandledrejection',
-        error: event.reason,
-      });
-    };
-    window.addEventListener('error', onWindowError);
-    window.addEventListener('unhandledrejection', onUnhandledRejection);
-    return () => {
-      window.removeEventListener('error', onWindowError);
-      window.removeEventListener('unhandledrejection', onUnhandledRejection);
-    };
-  }, [hasShopSession, shop?.id]);
-
-  const adminRefreshPlatformAlerts = async (): Promise<void> => {
-    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) return;
-    const alerts = await fetchActivePlatformAlerts();
-    setPlatformAlerts(alerts);
-  };
-
-  const adminResolvePlatformAlert = async (alertId: string): Promise<void> => {
-    if (!navigator.onLine) throw new Error('Connect to the internet to resolve alerts.');
-    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
-      throw new Error('Admin MFA (aal2) access is required. Sign in again.');
-    }
-    await resolvePlatformAlertOnServer(alertId);
-    setPlatformAlerts((prev) => prev.filter((item) => item.id !== alertId));
-  };
-
-  const adminReconcileLedgers = async (
-    shopId: string | null = null
-  ): Promise<LedgerReconciliationReport> => {
-    if (!navigator.onLine) throw new Error('Connect to the internet to reconcile shop ledgers.');
-    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
-      throw new Error('Admin MFA (aal2) access is required. Sign in again.');
-    }
-    const report = await reconcileShopLedger(shopId);
-    if (shopId === null) {
-      void fetchActivePlatformAlerts()
-        .then((alerts) => setPlatformAlerts(alerts))
-        .catch(() => {});
-    }
-    return report;
-  };
-
-  const adminReconcileSubscriptions = async (
-    shopId: string | null = null
-  ): Promise<SubscriptionReconciliationReport> => {
-    if (!navigator.onLine) throw new Error('Connect to the internet to reconcile subscriptions.');
-    if (!isAdmin || !user || currentUserRef.current?.uid !== user.uid) {
-      throw new Error('Admin MFA (aal2) access is required. Sign in again.');
-    }
-    const report = await reconcileSubscriptions(shopId);
-    if (shopId === null) {
-      void fetchActivePlatformAlerts()
-        .then((alerts) => setPlatformAlerts(alerts))
-        .catch(() => {});
-    }
-    return report;
+    await setShopSuspended({ shopId, suspended: !targetShop.isDeactivated });
   };
 
   return (
@@ -2773,28 +2694,14 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         shop,
         isLoading,
         isAdmin,
-        isScreenLocked,
-        lockScreen,
-        unlockLocalScreen,
-        sendPhoneVerificationCode,
-        verifyPhoneVerificationCode,
-        completeShopRegistration,
-        unlockCloudShopWithPin,
-        recoverCloudShopPin,
-        completeApprovedCloudPinReset,
-        signOutOtherDevices,
-        cancelPendingPinReset,
-        pendingRecoveryCode,
-        clearPendingRecoveryCode: () => setPendingRecoveryCode(null),
+        loginWithPhoneAndPin,
+        registerNewShop,
+        linkEmailAccount,
         needsShopAccountRecovery,
-        restoreShopSessionWithOtp,
+        restoreShopAccount,
         loginAsAdmin,
-        completeAdminMfa,
         cancelEmailLogin,
         resetEmailPassword,
-        acknowledgeSecurityNotice,
-        acknowledgeSubscriptionNotice,
-        platformAlerts,
         subscriptionPayments,
         submitSubscriptionPayment,
         reviewSubscriptionPayment,
@@ -2811,8 +2718,6 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         stockMovements,
         stockConflicts,
         resolveStockConflict,
-        previewShopBackup,
-        restoreShopBackup,
         importLegacyBackup,
         sales,
         customers,
@@ -2841,19 +2746,12 @@ export const ShopProvider: React.FC<{ children: React.ReactNode }> = ({ children
         blockedSync,
         loadSyncReview,
         resolveSyncReview,
-        discardBlockedSyncAction,
         loadSyncResolutionHistory,
         lastOfflineNotice,
         clearOfflineNotice: () => setLastOfflineNotice(null),
         allShops,
         adminExtendShop,
         adminToggleDeactivate,
-        adminResetPinLockout,
-        adminInitiatePinReset,
-        adminReconcileLedgers,
-        adminReconcileSubscriptions,
-        adminResolvePlatformAlert,
-        adminRefreshPlatformAlerts,
       }}
     >
       {children}

@@ -1,120 +1,62 @@
-# CountUp User Guide
+# CountUp instruction manual
 
-Open **Help** on the sign-in screen or tap the **?** button at the top of your shop anytime for the built-in offline guide.
+Open **Help** on the sign-in page or the **?** button at the top of your shop for the in-app guide.
 
----
+## 1. Create or open a shop
 
-## 1. Create Your Shop & Save Your Recovery Code
+1. Choose **New shop**. Enter the shop name, your phone number and a four-number PIN.
+2. Tap **Create shop**. A new shop starts with an empty stock book and a 30-day trial.
+3. To return on the same device, choose **Log in** and enter the same phone number and PIN.
 
-1. Open CountUp, choose **New shop**, enter your Zambian mobile number (`096/076`, `097/077`, or `095/075`), complete the security check, and tap **Send 6-Digit SMS Code**.
-2. Enter the 6-digit SMS code sent to your phone, type your **Shop Name**, choose a secret **4-digit PIN** (avoid easy numbers like `1234` or `0000`), and tap **Create Shop**.
-3. **Important — Save Your One-Time Recovery Code**:
-   - CountUp immediately shows a **One-Time Recovery Code** formatted like `CU-XXXX-XXXX-XXXX`.
-   - Write this code down on paper and keep it somewhere safe away from your phone, tick the confirmation box, and tap **I Have Saved My Recovery Code**.
-   - Eligible new phone numbers start with a **30-day Free Trial**.
+Keep your PIN private. A phone-and-PIN shop is tied to the browser's Firebase identity; the PIN alone cannot open it on a new device. CountUp does not offer general email sign-in from the shop login screen. **Settings → Account & cloud access** can link or reconnect the original identity on a device that already has the shop data; it is not a new-device restore. Sync entries and keep this browser's data. The JSON backup can be downloaded, but a CountUp JSON restore is not currently available in the app.
 
-### Install CountUp on Your Android Phone
+## 2. Add and update products
 
-1. Open CountUp in **Google Chrome** on Android and let the page finish loading.
-2. Tap the **⋮** menu in Chrome and choose **Install app** (or **Add to Home screen**).
-3. CountUp installs on your home screen like a native app and can reopen even when mobile data or power is out.
+1. Open **Stock** and tap **Add New Item** (or **Add product** on Home).
+2. Enter the item name, selling price and current quantity. Enter the buying price if you know it; it is needed for profit calculations.
+3. Tap **Add New Item**. The optional low-stock warning starts at zero (off). To set a threshold or add a pack size, open **More options** before saving.
+4. In Stock, use **+5** or **+10** to restock, or **Adjust** for another quantity. Use **Edit** to change details and **Archive** to remove a product from the active list. Archived items can be restored from the **Archived** tab.
 
----
+## 3. Record a sale
 
-## 2. Daily Unlock & Signing In on a New Phone
+1. Open **Sell** and tap the products the customer is buying. Tap again or use the quantity controls to add more.
+2. On a phone, tap **Review sale**; on a larger screen, the sale appears beside the product list. Use **Add items** to return to the list on a phone.
+3. Choose **Cash**, **Mobile Money**, or **On Credit**. For Mobile Money, choose the network. For credit, select or add a customer.
+4. Add a reference or note under **More details** if needed, then tap **Save Sale**.
 
-### Unlocking on Your Current Shop Phone (Works Offline)
-- When you lock the screen using the **Lock** button in the top bar—or reopen CountUp on the same phone—simply enter your **4-digit PIN**. Same-device unlock works **100% offline** without needing SMS or mobile data.
+CountUp records the payment method; it does not transfer money or check a Mobile Money wallet. Stock is reduced when the sale is recorded. To undo an eligible sale made today, open **Reports → Sales ledger → Undo sale**. A partly repaid credit sale cannot be undone.
 
-### Signing In on a New or Replacement Phone
-If you buy a new phone, lose your old phone, or open CountUp in a new browser:
+## 4. Manage credit
 
-1. Open CountUp on the new phone while connected to the internet and tap **Log In**.
-2. Enter your registered `+260` / `09...` shop phone number and tap **Send 6-Digit SMS Code**.
-3. Enter the **6-digit SMS code**.
-4. Enter your **4-digit shop PIN** when prompted.
-   - *Why both SMS and PIN?* Even if someone steals or swaps your SIM card, they cannot open your shop or read your records without your 4-digit PIN.
-5. Once verified, CountUp downloads and syncs your shop profile, stock, sales, customer credit book, and expenses automatically.
-   - *Note*: Any offline entries that had **not yet synced** from your old phone remain only in that old phone's browser until it reconnects and finishes syncing.
+1. Open **Credit** to see who owes you. Select a customer to view their details and history.
+2. When the customer pays, tap **Record payment**, enter the amount and choose cash or Mobile Money. Save the payment; partial payments are allowed.
+3. To send a reminder, open the customer's details and choose **Send Reminder**. A saved phone number and WhatsApp are needed.
 
-### Signing Out Other Phones
-- If you ever signed in on a borrowed device or replaced a lost phone, open **Settings → Account & Access → Sign Out All Other Devices** to immediately revoke every other phone's session while keeping your current phone signed in.
+## 5. Check reports and record expenses
 
----
+Open **Reports** and choose **Today**, **This Week** or **This Month**. Tap **Record Expense** to add an expense. Use **Share** or **CSV** for a summary, and open **More insights** for the health and trend charts.
 
-## 3. Recovery Code & PIN Reset (Forgot PIN)
+Sales include credit given. Money received includes cash, Mobile Money and repayments, but not unpaid credit sales. Profit is an estimate and excludes products without a known buying price.
 
-### Option A — You Have Your One-Time Recovery Code (Instant)
-1. Sign in with your phone number and 6-digit SMS code on the sign-in screen.
-2. On the 4-digit PIN prompt, choose **Use Recovery Code** (this also appears automatically if 5 wrong PIN guesses trigger a temporary lockout).
-3. Enter your saved code (`CU-XXXX-XXXX-XXXX`) and choose a **new 4-digit PIN**.
-4. **Write down your brand-new Recovery Code**: Every time a recovery code is used, the old code is retired and CountUp gives you a fresh one-time code. Your other signed-in shop phone will also show a security notice confirming the recovery code was used.
+## 6. Offline, sync and backups
 
-### Option B — You Know Your Current PIN and Want to Change It
-1. Open **Settings → Account & Access → Change Shop PIN**.
-2. Enter your **current 4-digit PIN** and your **new 4-digit PIN** twice, then confirm. Changing your PIN signs out any other devices for safety.
+- Open the production app online once and let it finish loading. It can then reopen offline in the same browser, unless its cached files have been cleared or evicted. The app files are not a backup of your shop data.
+- Ordinary shop entries can be saved on the current device while offline. Reconnect and check the sync notice; CountUp retries temporary connection failures. Keep the original browser data until the waiting count is zero.
+- If a payment or sale undo conflicts with a newer customer balance, later entries wait too. Tap **Review** to compare the saved entry and current server balance. Check the receipts and payments on every device before choosing. Correct an amount only if it was entered wrongly, or cancel a payment only if it was never made or is a duplicate. For a conflicting undo, you may choose to keep the sale and cancel the undo; check physical stock afterwards. Each choice requires confirmation, and the remaining entries resume in order.
+- CountUp cannot yet record a genuine overpayment or refund. If the full payment was really received, or the sale still needs to be undone and refunded, leave the entry waiting; reconcile outside the app or seek support. Do not reduce a real payment just to clear the queue. **Settings → Data & backups → Sync review history** shows the original entry and confirmed decision for reviewed conflicts.
+- When another device's stock changes conflict with a sale, or an offline physical count was based on an older stock level, Stock shows **Stock recount needed**. A stale count is not applied. Count the goods again, use **Adjust stock → Set to physical count**, then mark the notice recounted.
+- Use only one CountUp tab on a device. Supported browsers make a second tab wait until the first closes; older browsers show a warning instead.
+- Do not clear browser data or switch accounts while entries are waiting to sync. CountUp does not restore shop records to a new device, even if an email is linked. Keep the original browser data until a supported restore flow is available. Logging out clears the local shop cache, so phone-and-PIN sign-in needs a connection afterwards.
+- If a linked shop loses its cloud session while entries are waiting, reconnect the original email under **Settings → Account & cloud access**. The queue stays on this device; a different account cannot sync it. An unlinked anonymous Firebase identity cannot be recreated to recover an existing shop.
+- **Settings → Data & backups** exports JSON or CSV and can import supported legacy v1 backups. CountUp JSON exports do **not** yet have an in-app restore, and do not contain the pending sync queue. Keep the original device data until everything has synced.
+- Subscription payments are separate from customer Mobile Money sales. Use only the MTN/Airtel account details shown on the Plan screen, pay the displayed plan amount and submit the transaction reference. The reference is reviewed manually; sending it does not activate a plan. Keep the receipt until review is complete.
 
-### Option C — You Lost Both Your PIN and Your Recovery Code (72-Hour Safety Reset)
-If both your PIN and your paper recovery code are lost:
-1. Contact CountUp support so an administrator can verify your identity and initiate an **Approved 72-Hour PIN Reset**.
-2. **Anti-SIM-Swap Safety Window (72 Hours)**:
-   - CountUp immediately sends a **warning SMS** to your shop phone number and displays an urgent banner with a **Cancel Reset** button on any already-signed-in shop phone.
-   - **If you did NOT ask for a PIN reset**, tap **Cancel Reset** immediately inside CountUp to block the request.
-3. Once the 72-hour waiting period completes without being cancelled, sign in on your phone with SMS OTP, choose **Complete Approved PIN Reset**, set your **new 4-digit PIN**, and write down the newly generated **One-Time Recovery Code**.
+## 7. Admin console
 
----
+The console requires the private, pre-authorized platform account; creating a shop does not make its owner an administrator.
 
-## 4. Backups & Restoring From a Backup File
+- On the sign-in page, choose **Admin sign in**, enter the authorized account email and password, then tap **Open admin console**. The server verifies the identity and grants a custom claim only to the configured verified account. An internet connection is required.
+- Administrators can search shops/accounts, review pending and previous manual-payment submissions, approve or reject with a reason, extend subscriptions, and suspend/reactivate shops. Approvals are audited and update the subscription dates; operators' transactions must be checked independently.
+- Shop owners can view only their own submission history. Payment review, role verification, extension and suspension actions are enforced by Firebase Functions and Firestore rules, not by hidden buttons.
 
-Open **Settings → Data & Backups**:
-
-### Downloading a Backup
-- Tap **Download JSON Backup** (recommended monthly and before switching phones) or **Export CSV** for spreadsheets.
-- Keep your downloaded `.json` backup file in a safe folder or cloud drive. *(Note: JSON backups contain synced/saved ledger records, not unsynced conflict drafts—always let waiting offline entries finish syncing first when possible.)*
-
-### Restoring From a Backup
-CountUp supports restoring both **CountUp v2 JSON backups** (`countup-backup-v2`) and **legacy v1 JSON backups** (up to **5 MB** / **50,000 primary records** / **200,000 total rows**, covering 2+ years of active kiosk history):
-
-1. Sign in to your new or empty shop while online and open **Settings → Data & Backups**.
-2. Under **Restore from Backup**, choose your `.json` backup file.
-3. CountUp uploads and checks the file safely first, showing a **Preview** (shop name, products, receipts, customers, credit balances, and expenses) without changing your shop yet.
-4. Confirm **Restore Backup** to import all records atomically and verify every receipt, stock count, and customer balance (`0` discrepancies).
-   - By default, CountUp protects non-empty shops from accidental overwrite unless you explicitly confirm merging non-overlapping records.
-   - Re-selecting the exact same backup file is safely detected as already imported so records are never duplicated.
-
----
-
-## 5. Products, Sales, Credit & Reports
-
-1. **Add & Manage Stock**: Open **Stock → Add New Item**, enter the name, selling price, quantity, and optional buying price (needed for profit calculation). Use **+5**, **+10**, or **Adjust** to update stock, or **Archive** discontinued items.
-2. **Record a Sale**: Open **Sell**, tap items, tap **Review sale** on mobile, pick **Cash**, **Mobile Money** (MTN/Airtel), or **On Credit** (choose/add customer), and tap **Save Sale**. Eligible same-day sales can be undone in **Reports → Sales ledger → Undo sale**.
-3. **Customer Credit Book**: Open **Credit**, select a customer, and tap **Record payment** when they pay cash or Mobile Money (partial repayments are supported). Tap **Send Reminder** to open a pre-filled WhatsApp reminder.
-4. **Reports & Expenses**: Open **Reports** (`Today`, `This Week`, `This Month`) to view total sales, money received, estimated profit, and record business expenses (**Record Expense**).
-
----
-
-## 6. Working Offline, Late Syncs & Conflict Review
-
-- **Offline Recording**: Sales, stock updates, credit repayments, and expenses save immediately on your phone while offline and sync automatically in order when data returns. Never clear browser storage while the waiting sync counter is above zero.
-- **Late-Synced Sales (>72 Hours Offline)**: If load-shedding or network loss keeps an active shop offline for more than 72 hours, CountUp still keeps your sales when you reconnect and shows a calm **"Synced late, kept"** note.
-- **Sync Conflict Review**:
-  - If a customer repayment or credit-sale undo conflicts with a newer balance from another session, tap **Review** to inspect the saved entry vs. current balance before confirming a correction or cancellation. Decisions are recorded in **Settings → Data & Backups → Sync review history**.
-  - If an offline stock count was based on an older stock level, **Stock** shows **Stock recount needed**—recount physical goods on the shelf and use **Adjust stock → Set to physical count**.
-- **Single Active Tab**: Keep CountUp open in one tab per device; additional tabs wait automatically so two tabs cannot overwrite local queue state.
-
----
-
-## 7. Subscriptions & Manual Mobile Money Renewal
-
-1. Open the **Plan** screen to view plan options (**1 Month — K99**, **3 Months — K269**, **6 Months — K499**).
-2. Send the exact plan amount manually using the **MTN Mobile Money** or **Airtel Money** details shown on the Plan screen (CountUp never asks for your Mobile Money PIN).
-3. Enter the operator **Transaction Reference**, **Payer Phone**, and **Payment Date** on the Plan screen and submit.
-4. Your status shows **Pending verification** until a platform administrator checks the operator statement and approves it (or rejects it with a clear reason so you can fix a typo in the reference).
-5. Every trial and paid plan includes a **3-day grace period** after expiry so you can keep recording sales while renewing. If a plan expires past grace, sales recording pauses while all your existing data remains safe to view and export.
-
----
-
-## 8. Platform Admin Console (`aal2` MFA)
-
-- Platform administration is restricted to pre-authorized verified administrator email accounts and requires **both** password sign-in and a **6-digit TOTP authenticator code (`aal2`)** enforced on the server.
-- From **Platform admin sign-in**, administrators can monitor **SMS cap/abuse alerts, failed sync batches, and reconciliation alerts**, verify all shop ledgers and subscriptions (`0 differences`), review manual Mobile Money references side-by-side before approving or rejecting with a required reason, extend plans, suspend/reactivate accounts, and assist owners with verified PIN lockout or 72-hour PIN resets.
+The project owner must configure Firebase Authentication and Functions secrets and deploy the rules and backend; see **Platform owner access** in the README. There is no default admin password, client-side owner address, payment gateway or automatic payment verification.

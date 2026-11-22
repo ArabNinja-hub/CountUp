@@ -3,19 +3,16 @@ import react from '@vitejs/plugin-react';
 import { copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Plugin } from 'vite';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig } from 'vite';
 import { BASE_PATH } from './base-path.ts';
 import { writeOfflineWorker } from './scripts/offline-shell.ts';
-import { writeCloudflareHeadersFile } from './scripts/security-headers.ts';
 
 /**
- * Emits Cloudflare Pages security headers (`dist/_headers`, pinning `connect-src`
- * to the exact `VITE_SUPABASE_URL` host when set), the GitHub Pages `404.html`
- * fallback (only when hosted under a subpath like `/CountUp/` so Cloudflare Pages
- * root builds keep native HTTP 200 SPA routing via `_redirects`), and the
- * content-addressed static offline worker (`dist/sw.js`).
+ * GitHub Pages has no SPA rewrite: any path it cannot resolve falls back to
+ * `404.html`. Emitting a copy of the app shell there means a deep link or a stale
+ * bookmark still boots the app instead of dead-ending on GitHub's 404 page.
  */
-function spaFallback(supabaseUrl?: string): Plugin {
+function spaFallback(): Plugin {
   let outDir = '';
   let workerTemplate = '';
   return {
@@ -26,22 +23,18 @@ function spaFallback(supabaseUrl?: string): Plugin {
       workerTemplate = path.resolve(config.root, 'src/offline-worker.js');
     },
     async closeBundle() {
-      await writeCloudflareHeadersFile(outDir, supabaseUrl);
-      if (BASE_PATH !== '/') {
-        await copyFile(path.join(outDir, 'index.html'), path.join(outDir, '404.html'));
-      }
+      await copyFile(path.join(outDir, 'index.html'), path.join(outDir, '404.html'));
       await writeOfflineWorker(outDir, workerTemplate);
     },
   };
 }
 
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), 'VITE_');
-  const supabaseUrl = process.env.VITE_SUPABASE_URL ?? env.VITE_SUPABASE_URL;
-
+export default defineConfig(() => {
   return {
+    // GitHub Pages deployment - repository is at https://github.com/ArabNinja-hub/CountUp
+    // Kept in sync with the Express server via base-path.ts (see notes there).
     base: BASE_PATH,
-    plugins: [react(), tailwindcss(), spaFallback(supabaseUrl)],
+    plugins: [react(), tailwindcss(), spaFallback()],
     resolve: {
       alias: {
         '@': import.meta.dirname,
