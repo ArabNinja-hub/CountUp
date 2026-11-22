@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   supabase-rls:
-    name: Real Supabase RLS + Custom Access Token Hook + MFA (aal2)
+    name: Real Supabase RLS + Edge Functions Bundle + MFA (aal2)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -22,6 +22,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
 
       - name: Install dependencies
         run: |
@@ -36,8 +41,26 @@ jobs:
         with:
           version: 3.2.0
 
-      - name: Start local Supabase stack (Postgres + GoTrue + PostgREST + Realtime + Migrations)
-        run: supabase start -x studio,imgproxy,vector,logflare
+      - name: Check & type-bundle all 17 Edge Functions with Deno
+        run: npm run check:edge-functions
+
+      - name: Start local Supabase stack (Postgres + GoTrue + PostgREST + Realtime + Edge Runtime)
+        run: |
+          if ! supabase start -x studio,imgproxy,vector,logflare > /tmp/supabase-start.log 2>&1; then
+            cat /tmp/supabase-start.log
+            MSG=$(tail -n 30 /tmp/supabase-start.log | sed 's/%/%25/g; s/\r/%0D/g; :a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=supabase start failed::${MSG}"
+            exit 1
+          fi
+          cat /tmp/supabase-start.log
+
+      - name: Smoke-test bundling & boot of all 17 Edge Functions via Supabase Edge Runtime
+        run: |
+          set -euo pipefail
+          eval "$(supabase status -o env)"
+          export SUPABASE_URL="${API_URL}"
+          export SUPABASE_ANON_KEY="${ANON_KEY}"
+          node scripts/check-edge-functions.mjs --static-only --smoke-serve
 
       - name: Run end-to-end RLS, Session Binding, MFA (aal2) & Overlap Sync suite
         run: |

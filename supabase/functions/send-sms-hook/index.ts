@@ -9,7 +9,7 @@ import { readSmsRateLimitPolicyFromEnv, resolveSmsProvider } from '../_shared/sm
 async function hmacSha256Hex(keyBytes: Uint8Array, payload: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    new Uint8Array(keyBytes),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']

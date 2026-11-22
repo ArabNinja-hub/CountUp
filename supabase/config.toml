@@ -64,3 +64,5 @@ uri = "pg-functions://postgres/public/custom_access_token_hook"
 # enabled = true
 # uri = "http://host.docker.internal:54321/functions/v1/send-sms-hook"
 # secrets = "env(SEND_SMS_HOOK_SECRET)"
+
+
