@@ -134,13 +134,9 @@ async function smokeTestServedFunctions(functions) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(isSmsWebhook
-          ? {}
-          : {
-              Authorization: `Bearer ${anonKey}`,
-              apikey: anonKey,
-              Origin: 'https://disallowed-ci-smoke-origin.example',
-            }),
+        Authorization: `Bearer ${anonKey}`,
+        apikey: anonKey,
+        ...(isSmsWebhook ? {} : { Origin: 'https://disallowed-ci-smoke-origin.example' }),
       },
       body: '{}',
     });
@@ -212,7 +208,14 @@ async function main() {
     console.log(`[edge-check] Running deno check on all ${entrypoints.length} Edge Functions...`);
     execFileSync(
       cmd,
-      [...prefixArgs, 'check', '--no-config', '--node-modules-dir=none', ...entrypoints],
+      [
+        ...prefixArgs,
+        'check',
+        '--no-config',
+        '--no-lock',
+        '--node-modules-dir=none',
+        ...entrypoints,
+      ],
       {
         cwd: repoRoot,
         stdio: 'inherit',

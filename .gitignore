@@ -11,3 +11,7 @@ coverage/
 # Firebase CLI
 .firebase/
 firebase-debug.log*
+
+# Deno lockfile (Edge Functions resolve npm specifiers inside Supabase bundler)
+deno.lock
+

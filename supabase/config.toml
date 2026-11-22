@@ -65,12 +65,4 @@ uri = "pg-functions://postgres/public/custom_access_token_hook"
 # uri = "http://host.docker.internal:54321/functions/v1/send-sms-hook"
 # secrets = "env(SEND_SMS_HOOK_SECRET)"
 
-# GoTrue calls `send-sms-hook` using Standard Webhooks (`webhook-signature`),
-# without an `Authorization: Bearer` JWT header.
-[functions.send-sms-hook]
-verify_jwt = false
-
-# Called prior to OTP sign-in (and compatible with both legacy JWT and `sb_publishable_` keys).
-[functions.check-otp-rate-limit]
-verify_jwt = false
 
