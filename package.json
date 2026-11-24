@@ -22,6 +22,7 @@
     "functions:build": "npm --prefix functions run build",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run lint && npm run test",
+    "check:edge-functions": "bash scripts/check-edge-functions.sh",
     "deploy:rules": "firebase deploy --only firestore:rules",
     "deploy": "gh-pages -d dist"
   },

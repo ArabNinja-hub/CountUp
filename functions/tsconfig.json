@@ -5,6 +5,7 @@
     "moduleResolution": "node",
     "outDir": "lib",
     "rootDir": "..",
+    "rewriteRelativeImportExtensions": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

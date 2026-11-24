@@ -12,7 +12,7 @@ import {
   validateIdentityCheckNote,
   validateShopName,
   verifySecretHash,
-} from './authSecurity';
+} from './authSecurity.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TRIAL_DAYS = 30;
