@@ -9,7 +9,9 @@ import { readSmsRateLimitPolicyFromEnv, resolveSmsProvider } from '../_shared/sm
 async function hmacSha256Hex(keyBytes: Uint8Array, payload: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    // Copy into an ArrayBuffer-backed view: WebCrypto's BufferSource type does
+    // not accept a Uint8Array that could be backed by a SharedArrayBuffer.
+    new Uint8Array(keyBytes),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']

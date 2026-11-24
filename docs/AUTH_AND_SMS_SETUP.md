@@ -48,7 +48,7 @@ Using native Chromium C++/BoringSSL WebCrypto (`crypto.subtle.deriveBits`) with 
 
 ## 3. Required Environment Variables & Secrets
 
-### Browser Environment Variables (`.env` / Cloudflare Pages)
+### Browser Environment Variables (`.env` / Cloudflare Worker build variables)
 
 Only public, safe-for-browser keys go here:
 
@@ -66,7 +66,7 @@ Set these in **Supabase Dashboard → Edge Functions → Secrets** (or `supabase
 
 | Secret Name | Purpose |
 | --- | --- |
-| `ALLOWED_ORIGIN` | Exact web app origin allowed by CORS, e.g. `https://countup.pages.dev` (comma-separated if staging + prod). |
+| `ALLOWED_ORIGIN` | Exact web app origin allowed by CORS, e.g. `https://countup.<your-subdomain>.workers.dev` (comma-separated if staging + prod). |
 | `COUNTUP_PIN_PEPPER` | Random secret string (at least 32 characters) mixed into server PBKDF2 hashes for PINs, recovery codes, hashed `used_trial_phones`, and hashed SMS rate-limit keys. |
 | `COUNTUP_PLATFORM_ADMIN_EMAIL` *(or `COUNTUP_PLATFORM_ADMIN_EMAILS`)* | Comma-separated verified email address(es) allowed to claim `platform_admin` (primary admin + optional offline backup admin; **every** admin session strictly requires TOTP MFA `aal2`). |
 | `SEND_SMS_HOOK_SECRET` | Webhook signing secret generated in **Supabase Dashboard → Authentication → Hooks → Send SMS**. |

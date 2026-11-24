@@ -1,0 +1,32 @@
+name: Supabase Edge Functions (Deno check)
+
+# `supabase functions deploy` resolves every function's Deno module graph before
+# uploading. Vite/tsc accept extensionless relative imports, but Deno does not:
+# a missing `.ts` breaks ALL functions at deploy time (see shared/edgeAuthDomain).
+# This job type-checks and bundles every function entry point on each PR/push, so
+# that failure is caught in CI instead of at the deploy step.
+on:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  edge-functions:
+    name: Type-check every Edge Function with Deno
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.5.2
+
+      - name: Type-check and bundle every function
+        run: bash scripts/check-edge-functions.sh

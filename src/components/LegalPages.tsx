@@ -55,7 +55,7 @@ const legalContent: Record<LegalDocType, LegalDoc> = {
         title: 'Infrastructure & Third-Party Processors',
         content: [
           'Supabase (Database, Authentication, Realtime & Edge Functions): Stores your PostgreSQL shop records, enforces Row-Level Security (RLS) per verified shop session, runs server-side Edge Functions, and delivers live sync wake-ups over TLS/WSS.',
-          'Cloudflare (Hosting, CDN, WAF & Turnstile): Serves the CountUp web application through Cloudflare Pages, protects against DDoS and automated abuse, and verifies sign-in requests with Cloudflare Turnstile without tracking you across third-party ad networks.',
+          'Cloudflare (Hosting, CDN, WAF & Turnstile): Serves the CountUp web application through Cloudflare Workers Static Assets, protects against DDoS and automated abuse, and verifies sign-in requests with Cloudflare Turnstile without tracking you across third-party ad networks.',
           'SMS Gateway Provider (Africa’s Talking, Twilio, or configured Zambian SMS gateway): Delivers 6-digit one-time sign-in codes and urgent account-security SMS warnings to your +260 phone number.',
           'Google Fonts: Serves the Plus Jakarta Sans and JetBrains Mono typefaces when online.',
           'WhatsApp (Optional User Action): Only opens on your device when you tap "Send Reminder" for a credit customer; CountUp never accesses your WhatsApp contacts or messages.',

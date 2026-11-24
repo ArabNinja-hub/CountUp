@@ -1,8 +1,10 @@
 /**
  * Single source of truth for the subpath the app is served from.
  *
- * - Cloudflare Pages (`CF_PAGES=1` or `VITE_BASE_PATH=/`) serves the site from
- *   the domain root `'/'` (`https://<project>.pages.dev/` or custom domain).
+ * - Cloudflare Workers (`VITE_BASE_PATH=/`, set by `npm run build:cloudflare`)
+ *   serves the site from the domain root `'/'` (e.g.
+ *   `https://countup.<subdomain>.workers.dev/` or a custom domain). Legacy
+ *   `CF_PAGES=1` builds are still recognized.
  * - GitHub Pages hosts project sites at `https://<owner>.github.io/<repo>/`, so
  *   when neither `VITE_BASE_PATH` nor `CF_PAGES=1` is set, the default remains
  *   `'/CountUp/'`.
