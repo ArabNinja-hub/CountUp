@@ -32,7 +32,7 @@ function readPngDimensions(buf: Buffer): { width: number; height: number } {
   };
 }
 
-describe('Phase 5: Cloudflare Pages Headers, Strict CSP, Service Worker & PWA Manifest', () => {
+describe('Phase 5: Cloudflare Worker Static Assets Headers, Strict CSP, Service Worker & PWA Manifest', () => {
   it('generates strict Content-Security-Policy & security headers allowing Sign-in, Turnstile, Realtime, Google Fonts & SW while blocking untrusted origins', async () => {
     const publicHeaders = await readFile(path.resolve('public/_headers'), 'utf8');
     expect(publicHeaders).toBe(buildCloudflareHeadersFile());
@@ -82,15 +82,22 @@ describe('Phase 5: Cloudflare Pages Headers, Strict CSP, Service Worker & PWA Ma
     expect(directives.get('img-src')).toEqual(["'self'", 'data:']);
     expect(directives.get('manifest-src')).toEqual(["'self'"]);
 
-    // Security & cache headers in _headers and SPA fallback in _redirects
+    // Security & cache headers in _headers; SPA fallback in wrangler.jsonc
     expect(publicHeaders).toContain('X-Content-Type-Options: nosniff');
     expect(publicHeaders).toContain('Referrer-Policy: strict-origin-when-cross-origin');
     expect(publicHeaders).toContain('X-Frame-Options: DENY');
     expect(publicHeaders).toContain('Permissions-Policy: ');
     expect(publicHeaders).toMatch(/\/sw\.js\s+Cache-Control: no-cache, no-store, must-revalidate/);
 
-    const redirects = await readFile(path.resolve('public/_redirects'), 'utf8');
-    expect(redirects).toContain('/* /index.html 200');
+    // Workers Static Assets owns SPA routing. A Pages-style `/* /index.html 200`
+    // _redirects rule is rejected as an infinite loop, so the Worker config must
+    // provide the fallback and no redirects file may be shipped.
+    const wrangler = await readFile(path.resolve('wrangler.jsonc'), 'utf8');
+    expect(wrangler).toMatch(/"name"\s*:\s*"countup"/);
+    expect(wrangler).toMatch(/"directory"\s*:\s*"\.\/dist"/);
+    expect(wrangler).toMatch(/"not_found_handling"\s*:\s*"single-page-application"/);
+    expect(wrangler).toMatch(/"command"\s*:\s*"npm run build:cloudflare"/);
+    await expect(readFile(path.resolve('public/_redirects'), 'utf8')).rejects.toThrow();
   });
 
   it('excludes _headers/_redirects from precache, never intercepts Auth/API/Edge Functions, and rolls out updates cleanly', async () => {

@@ -11,3 +11,6 @@ coverage/
 # Firebase CLI
 .firebase/
 firebase-debug.log*
+
+# Wrangler local dev state
+.wrangler/

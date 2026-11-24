@@ -143,7 +143,7 @@ Use this step-by-step checklist with **two real phones** (or one phone + a separ
 
 ## Step 10 — Verify on Android Chrome: PWA Install, Strict CSP & Offline Reopen
 
-1. Open your **Staging Cloudflare Pages URL** in **Chrome on Android** (`https://...`).
+1. Open your **Staging Cloudflare Worker / Preview URL** in **Chrome on Android** (`https://...`).
 2. Open **Chrome DevTools Remote Inspection** (or verify zero broken widgets on-screen):
    - Confirm **zero Content-Security-Policy (CSP) violation errors** while loading Google Fonts, rendering the **Cloudflare Turnstile** widget on the sign-in screen, signing in via SMS OTP + PIN, receiving **Supabase Realtime** updates, and registering `/sw.js`.
 3. Tap Chrome's **⋮ menu → Add to Home screen / Install app** and confirm **Install**:

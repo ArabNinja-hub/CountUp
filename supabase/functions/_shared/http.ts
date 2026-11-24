@@ -10,7 +10,7 @@ import {
 
 /**
  * Strict CORS policy: only explicit origins listed in ALLOWED_ORIGIN (comma-separated,
- * e.g. "https://countup.pages.dev,http://localhost:3000") are permitted.
+ * e.g. "https://countup.<subdomain>.workers.dev,http://localhost:3000") are permitted.
  * Never returns Access-Control-Allow-Origin: *.
  */
 export function resolveCorsHeaders(req: Request): {

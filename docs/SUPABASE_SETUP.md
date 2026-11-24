@@ -8,10 +8,10 @@ This guide covers **separate Staging vs. Production Supabase projects**, **Site 
 
 Always maintain **two completely separate Supabase projects**:
 
-| Environment | Supabase Project | Connected Cloudflare Pages Environment | SMS Provider Mode |
+| Environment | Supabase Project | Connected Cloudflare Worker Environment | SMS Provider Mode |
 | --- | --- | --- | --- |
-| **Staging** | `countup-staging` | Cloudflare Pages **Preview** deployments (`*.countup.pages.dev`) + local testing | Sandbox or dedicated low-cap test sender (`SMS_DAILY_NEW_REGISTRATION_CAP=25`) |
-| **Production** | `countup-production` | Cloudflare Pages **Production** branch (`main`, e.g. `https://countup.zm`) | Live Zambian sender (`Africa's Talking`, `Twilio`, or local HTTP gateway) |
+| **Staging** | `countup-staging` | Cloudflare Worker **Preview** deployments (`https://countup-staging.<subdomain>.workers.dev`) + local testing | Sandbox or dedicated low-cap test sender (`SMS_DAILY_NEW_REGISTRATION_CAP=25`) |
+| **Production** | `countup-production` | Cloudflare Worker `countup` production branch (`main`, e.g. `https://countup.<subdomain>.workers.dev` or `https://countup.zm`) | Live Zambian sender (`Africa's Talking`, `Twilio`, or local HTTP gateway) |
 
 **Why never share one project?**
 - Staging tests (such as deleting shops, triggering PIN lockouts, or importing a 4.5 MB multi-year benchmark backup) can never touch real shopkeeper ledgers, exhaust your production daily SMS budget, or mix test references into your live Mobile Money review queue.
@@ -27,8 +27,8 @@ Open **Supabase Dashboard → Authentication → URL Configuration**:
 
 | Setting | Production Value | Staging Value |
 | --- | --- | --- |
-| **Site URL** | `https://countup.zm` *(or `https://<prod-project>.pages.dev`)* | `https://staging.<project>.pages.dev` |
-| **Redirect URLs** | `https://countup.zm/**` | `https://*.<project>.pages.dev/**`, `http://localhost:3000/**` |
+| **Site URL** | `https://countup.zm` *(or `https://countup.<subdomain>.workers.dev`)* | `https://countup-staging.<subdomain>.workers.dev` |
+| **Redirect URLs** | `https://countup.zm/**` | `https://countup-staging.<subdomain>.workers.dev/**`, `http://localhost:3000/**` |
 
 > Never add broad wildcards like `https://**` or `http://localhost:*` to the **Production** project's Redirect URLs—only admin password-reset links use Redirect URLs, and restricting them to your exact production domain prevents host-header / redirect link hijacking.
 
@@ -55,7 +55,7 @@ Deploy all Edge Functions (`supabase functions deploy`) and configure these serv
 
 | Secret | Example / Requirement |
 | --- | --- |
-| `ALLOWED_ORIGIN` | **Exact origin(s), no trailing slash**: `https://countup.zm` on Production (or `https://staging.countup.pages.dev,http://localhost:3000` on Staging). Every Edge Function rejects unlisted `Origin` headers with `403 forbidden_origin` and never emits `*`. |
+| `ALLOWED_ORIGIN` | **Exact origin(s), no trailing slash**: `https://countup.zm` on Production (or `https://countup.<your-subdomain>.workers.dev` if using the default Worker URL; `https://countup-staging.<subdomain>.workers.dev,http://localhost:3000` on Staging). Every Edge Function rejects unlisted `Origin` headers with `403 forbidden_origin` and never emits `*`. |
 | `COUNTUP_PIN_PEPPER` | `openssl rand -hex 32` (64 hex chars; back this up in your password manager safe—changing it invalidates existing PIN/recovery hashes). |
 | `COUNTUP_PLATFORM_ADMIN_EMAIL` | `ops-primary@countup.zm,ops-backup@countup.zm` |
 | `SEND_SMS_HOOK_SECRET` | Secret from **Authentication → Hooks → Send SMS**. |

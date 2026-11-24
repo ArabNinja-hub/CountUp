@@ -9,11 +9,12 @@ import { writeOfflineWorker } from './scripts/offline-shell.ts';
 import { writeCloudflareHeadersFile } from './scripts/security-headers.ts';
 
 /**
- * Emits Cloudflare Pages security headers (`dist/_headers`, pinning `connect-src`
- * to the exact `VITE_SUPABASE_URL` host when set), the GitHub Pages `404.html`
- * fallback (only when hosted under a subpath like `/CountUp/` so Cloudflare Pages
- * root builds keep native HTTP 200 SPA routing via `_redirects`), and the
- * content-addressed static offline worker (`dist/sw.js`).
+ * Emits Cloudflare Workers Static Assets security headers (`dist/_headers`,
+ * pinning `connect-src` to the exact `VITE_SUPABASE_URL` host when set), the
+ * GitHub Pages `404.html` fallback (only when hosted under a subpath like
+ * `/CountUp/`), and the content-addressed static offline worker (`dist/sw.js`).
+ * SPA routing on Workers is configured by `wrangler.jsonc` via
+ * `assets.not_found_handling`, not by a Pages-style `_redirects` file.
  */
 function spaFallback(supabaseUrl?: string): Plugin {
   let outDir = '';
